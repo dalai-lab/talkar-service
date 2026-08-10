@@ -1,0 +1,86 @@
+﻿services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: talkar
+      POSTGRES_PASSWORD: ${TALKAR_DB_PASSWORD:-talkarsecret}
+      POSTGRES_DB: talkar_db
+    ports:
+      - "5433:5432" # Exposed on 5433 to not conflict with Dograh's DB
+    volumes:
+      - talkar_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U talkar -d talkar_db"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    networks:
+      - talkar-network
+
+  redis:
+    image: redis:7
+    ports:
+      - "6380:6379" # Exposed on 6380 to not conflict with Dograh's Redis
+    volumes:
+      - talkar_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+    networks:
+      - talkar-network
+
+  api:
+    build:
+      context: ./talkar-service
+    env_file:
+      - ./talkar-service/.env
+    environment:
+      # Override DB/Redis URLs to use the container hostnames
+      TALKAR_DB_URL: "postgresql+asyncpg://talkar:${TALKAR_DB_PASSWORD:-talkarsecret}@db:5432/talkar_db"
+      REDIS_URL: "redis://redis:6379"
+    ports:
+      - "8001:8001"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - talkar-network
+
+  worker:
+    build:
+      context: ./talkar-service
+    command: ["arq", "worker.WorkerSettings"]
+    env_file:
+      - ./talkar-service/.env
+    environment:
+      TALKAR_DB_URL: "postgresql+asyncpg://talkar:${TALKAR_DB_PASSWORD:-talkarsecret}@db:5432/talkar_db"
+      REDIS_URL: "redis://redis:6379"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - talkar-network
+
+  admin:
+    build:
+      context: ./talkar-admin
+    environment:
+      NEXT_PUBLIC_TALKAR_API_URL: "https://billing.talkar.in"
+    ports:
+      - "3001:3001"
+    networks:
+      - talkar-network
+
+volumes:
+  talkar_db_data:
+  talkar_redis_data:
+
+networks:
+  talkar-network:
+    driver: bridge
