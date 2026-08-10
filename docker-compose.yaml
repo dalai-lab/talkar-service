@@ -1,4 +1,4 @@
-﻿services:
+services:
   db:
     image: postgres:15
     environment:
@@ -70,6 +70,8 @@
   admin:
     build:
       context: ./talkar-admin
+      args:
+        NEXT_PUBLIC_TALKAR_API_URL: "https://billing.talkar.in"
     environment:
       NEXT_PUBLIC_TALKAR_API_URL: "https://billing.talkar.in"
     ports:
