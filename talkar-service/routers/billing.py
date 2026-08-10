@@ -124,7 +124,7 @@ async def check_quota(data: DograhQuotaRequest, db: AsyncSession = Depends(get_d
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.organization_id))
     customer = result.scalar_one_or_none()
     if not customer:
-        return {"has_quota": False}
+        return {"has_quota": True}  # Unknown org — not a Talkar customer, pass through
         
     wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
     wallet = wallet_res.scalar_one_or_none()
