@@ -32,7 +32,7 @@ export default function ApplicationsPage() {
       const res = await adminFetch(`/admin/applications`);
       if (res.ok) {
         const data = await res.json();
-        setApps(data);
+        setApps(Array.isArray(data) ? data : (data.detail ? [] : Object.values(data).flat() || []));
       }
     } catch (e) {
       console.error(e);

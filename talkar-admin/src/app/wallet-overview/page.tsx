@@ -31,7 +31,8 @@ export default function WalletOverviewPage() {
       
       if (alertsRes.ok) {
         const data = await alertsRes.json();
-        setAlerts(data);
+        const combinedAlerts = Array.isArray(data) ? data : [...(data.zero_balance || []), ...(data.low_balance || [])];
+        setAlerts(combinedAlerts);
       }
     } catch (e) {
       console.error(e);
