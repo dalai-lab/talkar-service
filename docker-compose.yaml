@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: ${TALKAR_DB_PASSWORD:-talkarsecret}
       POSTGRES_DB: talkar_db
     ports:
-      - "5433:5432" # Exposed on 5433 to not conflict with Dograh's DB
+      - "5441:5432" # Exposed on 5441 to not conflict with Dograh's DB
     volumes:
       - talkar_db_data:/var/lib/postgresql/data
     healthcheck:
@@ -41,7 +41,7 @@ services:
       TALKAR_DB_URL: "postgresql+asyncpg://talkar:${TALKAR_DB_PASSWORD:-talkarsecret}@db:5432/talkar_db"
       REDIS_URL: "redis://redis:6379"
     ports:
-      - "8001:8001"
+      - "8002:8001"
     depends_on:
       db:
         condition: service_healthy
