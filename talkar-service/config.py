@@ -27,6 +27,14 @@ class Settings(BaseSettings):
     # Redis for ARQ cron worker
     REDIS_URL: str = "redis://localhost:6379"
 
+    # Email (ZeptoMail SMTP)
+    SMTP_HOST: str = "smtp.zeptomail.in"
+    SMTP_PORT: int = 587
+    SMTP_EMAIL: str = "emailapikey"
+    SMTP_PASSWORD: str = ""
+    FROM_EMAIL: str = "noreply@talkar.in"
+    ADMIN_EMAIL: str = "admin@talkar.in"
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 settings = Settings()

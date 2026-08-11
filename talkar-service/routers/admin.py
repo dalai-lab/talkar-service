@@ -88,14 +88,15 @@ async def approve_application(customer_id: int, data: ApproveApplicationRequest,
     existing_form["approved_plan"] = data.plan
     customer.onboarding_form = existing_form
 
-    # Create setup fee Razorpay order
-    setup_fee_paise = 2500000 if data.plan == "pro" else 1000000  # Pro=₹25k, Starter=₹10k
+    # TESTING: ₹1 setup fee. Change to real amounts before production launch:
+    # setup_fee_paise = 2500000 if data.plan == "pro" else 1000000  # Pro=₹25k, Starter=₹10k
+    setup_fee_paise = 100  # ₹1 for testing
     order = await razorpay_client.create_setup_fee_order(setup_fee_paise, f"setup_{customer.id}", customer.id, data.plan)
     customer.setup_fee_order_id = order["id"]
 
     await db.commit()
 
-    fee_display = "₹25,000" if data.plan == "pro" else "₹10,000"
+    fee_display = "₹1 (test)"
     await notification_service.send_email(
         to_email=customer.contact_email,
         subject="Your Talkar Application is Approved!",
