@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from typing import Optional
 import logging
 from services import notification_service
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -80,9 +81,15 @@ async def get_customer_status(
     if not customer:
         return {"status": "active", "customer_id": None}
 
-    resp: dict = {"status": customer.status, "customer_id": customer.id}
+    resp: dict = {
+        "status": customer.status, 
+        "customer_id": customer.id,
+        "razorpay_key_id": settings.RAZORPAY_KEY_ID
+    }
     if customer.status == "rejected" and customer.onboarding_form:
         resp["rejection_reason"] = customer.onboarding_form.get("rejection_reason")
+    if customer.status == "approved" and customer.setup_fee_order_id:
+        resp["setup_fee_order_id"] = customer.setup_fee_order_id
     if customer.status == "suspended":
         from db.models import Wallet
         wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
