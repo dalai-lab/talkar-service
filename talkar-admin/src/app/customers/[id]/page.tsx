@@ -8,7 +8,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 
 
 export default function CustomerDetailPage() {
@@ -19,10 +20,15 @@ export default function CustomerDetailPage() {
   const [customer, setCustomer] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
-  // Modals state
+  // Credit modal
   const [isCreditOpen, setIsCreditOpen] = useState(false);
   const [creditAmount, setCreditAmount] = useState("");
   const [creditDesc, setCreditDesc] = useState("");
+
+  // Plan upgrade modal
+  const [isPlanOpen, setIsPlanOpen] = useState(false);
+  const [newPlan, setNewPlan] = useState("");
+  const [planLoading, setPlanLoading] = useState(false);
 
   useEffect(() => {
     fetchCustomer();
@@ -34,6 +40,7 @@ export default function CustomerDetailPage() {
       if (res.ok) {
         const data = await res.json();
         setCustomer(data);
+        setNewPlan(data.onboarding_form?.approved_plan || "");
       }
     } catch (e) {
       console.error(e);
@@ -55,9 +62,34 @@ export default function CustomerDetailPage() {
         setCreditAmount("");
         setCreditDesc("");
         alert("Credit granted successfully!");
+        fetchCustomer();
       }
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const handleUpgradePlan = async () => {
+    if (!newPlan) return;
+    setPlanLoading(true);
+    try {
+      const res = await adminFetch(`/admin/customers/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan: newPlan })
+      });
+      if (res.ok) {
+        setIsPlanOpen(false);
+        alert(`Plan updated to "${newPlan}" and Dograh config has been re-provisioned!`);
+        fetchCustomer();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Failed to update plan: ${err.detail || "Unknown error"}`);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setPlanLoading(false);
     }
   };
 
@@ -65,9 +97,17 @@ export default function CustomerDetailPage() {
     if (!confirm("Are you sure you want to suspend this account?")) return;
     try {
       const res = await adminFetch(`/admin/customers/${id}/suspend`, { method: "POST" });
-      if (res.ok) {
-        fetchCustomer();
-      }
+      if (res.ok) fetchCustomer();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleDenyUpgrade = async () => {
+    if (!confirm("Are you sure you want to deny this upgrade request?")) return;
+    try {
+      const res = await adminFetch(`/admin/customers/${id}/deny-upgrade`, { method: "POST" });
+      if (res.ok) fetchCustomer();
     } catch (e) {
       console.error(e);
     }
@@ -78,6 +118,9 @@ export default function CustomerDetailPage() {
       const res = await adminFetch(`/admin/customers/${id}/provision/retry`, { method: "POST" });
       if (res.ok) {
         alert("Provisioning queued for retry!");
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Provisioning failed: ${err.detail || "Unknown error"}`);
       }
     } catch (e) {
       console.error(e);
@@ -86,6 +129,9 @@ export default function CustomerDetailPage() {
 
   if (loading) return <div>Loading...</div>;
   if (!customer) return <div>Customer not found.</div>;
+
+  const currentPlan = customer.onboarding_form?.approved_plan || "None";
+  const serviceType = customer.onboarding_form?.wantsBuildForMe === false ? "Self-Serve" : "Managed (Build for me)";
 
   return (
     <div className="space-y-6">
@@ -98,20 +144,42 @@ export default function CustomerDetailPage() {
           <div className="flex gap-2 mt-2">
             <Badge variant="outline">ID: {customer.id}</Badge>
             <Badge>{customer.status}</Badge>
+            <Badge variant="secondary">{serviceType}</Badge>
           </div>
         </div>
         <div className="space-x-2">
           <Button variant="outline" onClick={() => setIsCreditOpen(true)}>Grant Manual Credit</Button>
+          <Button variant="outline" onClick={() => setIsPlanOpen(true)}>Upgrade / Change Plan</Button>
           <Button variant="outline" onClick={handleRetryProvisioning}>Retry Provisioning</Button>
           <Button variant="destructive" onClick={handleSuspend}>Suspend Account</Button>
         </div>
       </div>
 
+      {customer.onboarding_form?.plan_upgrade_requested && (
+        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4">
+          <p className="font-medium">⚠️ Upgrade Request Pending</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            Customer requested upgrade to <strong>{customer.onboarding_form.plan_upgrade_requested}</strong>
+            {" "}on {new Date(customer.onboarding_form.plan_upgrade_requested_at).toLocaleDateString()}.
+          </p>
+          <div className="mt-3 flex gap-2">
+            <Button 
+              onClick={() => {
+                setNewPlan(customer.onboarding_form.plan_upgrade_requested);
+                setIsPlanOpen(true);
+              }}
+            >
+              Approve Upgrade
+            </Button>
+            <Button variant="outline" onClick={handleDenyUpgrade}>
+              Deny Request
+            </Button>
+          </div>
+        </div>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <Card>
-          <CardHeader>
-            <CardTitle>Contact Information</CardTitle>
-          </CardHeader>
+          <CardHeader><CardTitle>Contact Information</CardTitle></CardHeader>
           <CardContent className="space-y-4">
             <div>
               <Label className="text-muted-foreground text-xs">Primary Contact</Label>
@@ -123,49 +191,38 @@ export default function CustomerDetailPage() {
             </div>
             <div>
               <Label className="text-muted-foreground text-xs">Phone Number</Label>
-              <p>{customer.contact_phone || "N/A"}</p>
+              <p>{customer.contact_phone || customer.onboarding_form?.pocPhone || "N/A"}</p>
             </div>
           </CardContent>
         </Card>
 
         <Card>
-          <CardHeader>
-            <CardTitle>Application Data</CardTitle>
-          </CardHeader>
+          <CardHeader><CardTitle>Application Data</CardTitle></CardHeader>
           <CardContent className="space-y-4">
             <div>
               <Label className="text-muted-foreground text-xs">Industry</Label>
-              <p>{customer.industry || "N/A"}</p>
+              <p>{customer.industry || customer.onboarding_form?.industry || "N/A"}</p>
             </div>
             <div>
               <Label className="text-muted-foreground text-xs">Use Case</Label>
               <p>{customer.onboarding_form?.useCaseType || "N/A"}</p>
+              <p className="text-sm text-muted-foreground">{customer.onboarding_form?.useCaseDescription || ""}</p>
             </div>
             <div>
-              <Label className="text-muted-foreground text-xs">Dograh Integration</Label>
-              <p>Org ID: {customer.dograh_org_id || "Unprovisioned"}</p>
+              <Label className="text-muted-foreground text-xs">Dograh Org ID</Label>
+              <p>{customer.dograh_org_id || "Unprovisioned"}</p>
             </div>
             <div>
-              <Label className="text-muted-foreground text-xs">Plan</Label>
-              <div className="flex gap-2 mt-1">
-                <Badge>{customer.plan || "None"}</Badge>
-                <Button variant="outline" size="sm" onClick={async () => {
-                  const newPlan = prompt("Enter new plan (starter, pro, enterprise):");
-                  if (newPlan) {
-                    await adminFetch(`/admin/customers/${id}`, {
-                      method: "PATCH",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ plan: newPlan })
-                    });
-                    fetchCustomer();
-                  }
-                }}>Update Plan</Button>
+              <Label className="text-muted-foreground text-xs">Current Plan</Label>
+              <div className="flex gap-2 items-center mt-1">
+                <Badge>{currentPlan}</Badge>
               </div>
             </div>
           </CardContent>
         </Card>
       </div>
 
+      {/* Grant Credit Modal */}
       <Dialog open={isCreditOpen} onOpenChange={setIsCreditOpen}>
         <DialogContent>
           <DialogHeader>
@@ -174,16 +231,53 @@ export default function CustomerDetailPage() {
           <div className="py-4 space-y-4">
             <div className="space-y-2">
               <Label>Amount (INR)</Label>
-              <Input type="number" placeholder="e.g. 5000" value={creditAmount} onChange={(e) => setCreditAmount(e.target.value)} />
+              <Input type="number" placeholder="e.g. 5000" value={creditAmount} onChange={e => setCreditAmount(e.target.value)} />
             </div>
             <div className="space-y-2">
               <Label>Description / Reason</Label>
-              <Input placeholder="e.g. Apology for downtime" value={creditDesc} onChange={(e) => setCreditDesc(e.target.value)} />
+              <Input placeholder="e.g. Apology for downtime" value={creditDesc} onChange={e => setCreditDesc(e.target.value)} />
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsCreditOpen(false)}>Cancel</Button>
             <Button onClick={handleGrantCredit} disabled={!creditAmount || !creditDesc}>Grant Credit</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Plan Upgrade Modal */}
+      <Dialog open={isPlanOpen} onOpenChange={setIsPlanOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Upgrade / Change Plan</DialogTitle>
+            <DialogDescription>
+              Changing the plan will immediately update the customer&apos;s Dograh config (LLM model, concurrent call limits, TTS provider) and subscription pricing.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            <div className="space-y-2">
+              <Label>Current Plan</Label>
+              <Badge className="block w-fit">{currentPlan}</Badge>
+            </div>
+            <div className="space-y-2">
+              <Label>New Plan</Label>
+              <Select value={newPlan} onValueChange={(v) => v && setNewPlan(v)}>
+                <SelectTrigger><SelectValue placeholder="Select plan" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="starter">Starter — ₹5,000/mo · ₹18/min · 2 concurrent calls</SelectItem>
+                  <SelectItem value="pro">Pro — ₹15,000/mo · ₹14/min · 10 concurrent calls</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              ⚠️ This will re-run provisioning and update their Dograh workspace immediately.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsPlanOpen(false)}>Cancel</Button>
+            <Button onClick={handleUpgradePlan} disabled={!newPlan || planLoading}>
+              {planLoading ? "Updating..." : "Confirm Plan Change"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

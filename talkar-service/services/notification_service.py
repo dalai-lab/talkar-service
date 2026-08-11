@@ -66,6 +66,17 @@ async def notify_customer_setup_complete(customer_id: int):
         body=f"Hi {name},\n\nYour AI voice agent has been set up and is ready to use. Log in to your Talkar dashboard to explore your agent.\n\nWelcome aboard!\nThe Talkar Team"
     )
 
+async def notify_customer_self_serve_active(customer_id: int):
+    info = await _get_customer_email(customer_id)
+    if not info:
+        return
+    email, name = info
+    await send_email(
+        to_email=email,
+        subject="Your Talkar Account is Active — Start Building",
+        body=f"Hi {name},\n\nYour setup fee payment is confirmed and your account is now active.\n\nLog in to your dashboard to start building your AI voice agent. Your API keys and configuration are ready.\n\nThe Talkar Team"
+    )
+
 
 async def notify_admin_customer_ready_for_build(customer_id: int):
     info = await _get_customer_email(customer_id)

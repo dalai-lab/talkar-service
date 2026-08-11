@@ -156,12 +156,40 @@ async def update_customer(customer_id: int, data: CustomerUpdateRequest, db: Asy
     
     if data.status: customer.status = data.status
     if data.plan:
+        # Update subscription record
         sub = await db.execute(select(Subscription).where(Subscription.customer_id == customer_id))
         sub = sub.scalar_one_or_none()
-        if sub: sub.plan = data.plan
+        if sub:
+            sub.plan = data.plan
+            # Update per-minute rate and concurrent limit for the new plan
+            sub.per_minute_rate_paise = 1400 if data.plan == "pro" else 1800
+            sub.concurrent_call_limit = 10 if data.plan == "pro" else 2
+            sub.monthly_fee_paise = 1500000 if data.plan == "pro" else 500000
 
-    await db.commit()
+        # Store new plan in onboarding_form so provisioning picks it up
+        existing_form = customer.onboarding_form or {}
+        existing_form["approved_plan"] = data.plan
+        existing_form.pop("plan_upgrade_requested", None)
+        existing_form.pop("plan_upgrade_requested_at", None)
+        customer.onboarding_form = dict(existing_form)
+
+        await db.commit()
+
+        # Re-run provisioning to update Dograh org config (LLM model, TTS, limits)
+        if customer.status in ("active", "agent_building"):
+            from services.provisioning_service import run_provisioning
+            try:
+                await run_provisioning(customer_id, data.plan, db)
+            except Exception as e:
+                # Don't fail the whole request — plan is saved, provisioning can be retried
+                import logging
+                logging.getLogger(__name__).error(f"Re-provisioning failed after plan upgrade: {e}")
+    else:
+        await db.commit()
+
     return {"status": "success"}
+
+
 
 @router.post("/customers/{customer_id}/credit")
 async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
@@ -170,15 +198,33 @@ async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: As
     if not wallet: raise HTTPException(404, "Wallet not found")
 
     wallet.balance_paise += data.amount_paise
+    
+    # Store transaction
     txn = WalletTransaction(
         customer_id=customer_id,
-        type="grant",
+        type="manual_credit",
         amount_paise=data.amount_paise,
         description=data.description
     )
     db.add(txn)
+    
     await db.commit()
     return {"status": "success", "new_balance": wallet.balance_paise}
+
+@router.post("/customers/{customer_id}/deny-upgrade")
+async def deny_plan_upgrade(customer_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    result = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = result.scalar_one_or_none()
+    if not customer: raise HTTPException(404, "Customer not found")
+    
+    if customer.onboarding_form and "plan_upgrade_requested" in customer.onboarding_form:
+        existing_form = dict(customer.onboarding_form)
+        existing_form.pop("plan_upgrade_requested", None)
+        existing_form.pop("plan_upgrade_requested_at", None)
+        customer.onboarding_form = existing_form
+        await db.commit()
+    
+    return {"status": "success"}
 
 @router.post("/customers/{customer_id}/suspend")
 async def suspend_customer(customer_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):

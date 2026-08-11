@@ -2,9 +2,10 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from db.session import get_db
-from db.models import Customer
+from db.models import Customer, Subscription
 from pydantic import BaseModel
 from typing import Optional
+from datetime import datetime
 import logging
 from services import notification_service
 from config import settings
@@ -135,16 +136,7 @@ async def get_customer(customer_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Customer not found")
     return customer
 
-@router.patch("/{customer_id}/status")
-async def update_customer_status(customer_id: int, data: UpdateStatusRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Customer).where(Customer.id == customer_id))
-    customer = result.scalar_one_or_none()
-    if not customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
-    customer.status = data.status
-    await db.commit()
-    await db.refresh(customer)
-    return customer
+
 
 @router.post("/{customer_id}/onboarding")
 async def submit_onboarding(customer_id: int, data: dict, db: AsyncSession = Depends(get_db)):
@@ -165,3 +157,39 @@ async def submit_onboarding(customer_id: int, data: dict, db: AsyncSession = Dep
         body=f"{customer.company_name} ({customer.contact_email}) submitted their onboarding form. Review at admin.talkar.ai/applications"
     )
     return customer
+
+
+class PlanUpgradeRequest(BaseModel):
+    requested_plan: str
+
+@router.post("/by-org/{org_id}/request-plan-upgrade")
+async def request_plan_upgrade(org_id: int, data: PlanUpgradeRequest, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+    
+    # Get current plan
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+    sub = sub_res.scalar_one_or_none()
+    current_plan = sub.plan if sub else "starter"
+    
+    if current_plan == data.requested_plan:
+        raise HTTPException(400, f"Already on {data.requested_plan} plan")
+    
+    # Store request in onboarding_form JSON
+    existing_form = customer.onboarding_form or {}
+    existing_form["plan_upgrade_requested"] = data.requested_plan
+    existing_form["plan_upgrade_requested_at"] = datetime.utcnow().isoformat()
+    # explicitly assign to trigger SQLAlchemy JSON mutation detection if not using mutable JSON
+    customer.onboarding_form = dict(existing_form) 
+    await db.commit()
+    
+    # Email admin
+    await notification_service.send_email(
+        to_email=settings.ADMIN_EMAIL,
+        subject=f"[Talkar] Plan Upgrade Request — {customer.company_name}",
+        body=f"{customer.company_name} ({customer.contact_email}) has requested an upgrade from {current_plan} to {data.requested_plan}. Approve at admin.talkar.in/customers/{customer.id}"
+    )
+    
+    return {"status": "request_submitted"}

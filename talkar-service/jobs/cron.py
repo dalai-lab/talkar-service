@@ -160,3 +160,88 @@ async def cleanup_abandoned_signups(ctx):
             
         await db.commit()
     logger.info("Abandoned signup cleanup completed.")
+
+async def charge_monthly_subscriptions(ctx):
+    """
+    Runs daily at 8:00 AM IST.
+    Deducts monthly_fee_paise from wallets where next_billing_date <= today.
+    Idempotent: checks for existing monthly_fee transaction in this billing cycle.
+    """
+    from datetime import date
+    from db.models import Subscription, WalletTransaction
+    
+    logger.info("Starting monthly subscription billing...")
+    today = date.today()
+    
+    async with AsyncSessionLocal() as db:
+        # Find all due subscriptions
+        result = await db.execute(
+            select(Subscription).where(
+                Subscription.next_billing_date <= today,
+                Subscription.status == "active"
+            )
+        )
+        due_subs = result.scalars().all()
+        
+        for sub in due_subs:
+            # Idempotency: check if we already charged this cycle
+            # A "monthly_fee" transaction must NOT exist between (next_billing_date - 30d) and next_billing_date
+            from datetime import timedelta
+            cycle_start = sub.next_billing_date - timedelta(days=31)
+            
+            existing_charge = await db.execute(
+                select(WalletTransaction).where(
+                    WalletTransaction.customer_id == sub.customer_id,
+                    WalletTransaction.type == "monthly_fee",
+                    WalletTransaction.created_at >= datetime.combine(cycle_start, datetime.min.time()),
+                )
+            )
+            if existing_charge.scalar_one_or_none():
+                logger.info(f"Monthly fee already charged for customer {sub.customer_id} this cycle. Skipping.")
+                # Just advance the billing date if needed
+                sub.next_billing_date = sub.next_billing_date + timedelta(days=30)
+                await db.commit()
+                continue
+            
+            # Deduct the fee atomically
+            result2 = await db.execute(
+                update(Wallet)
+                .where(Wallet.customer_id == sub.customer_id)
+                .values(balance_paise=Wallet.balance_paise - sub.monthly_fee_paise)
+                .returning(Wallet)
+            )
+            wallet = result2.scalar_one_or_none()
+            
+            if not wallet:
+                logger.error(f"No wallet for customer {sub.customer_id}. Skipping billing.")
+                continue
+            
+            # Record transaction
+            txn = WalletTransaction(
+                customer_id=sub.customer_id,
+                type="monthly_fee",
+                amount_paise=-sub.monthly_fee_paise,
+                description=f"Monthly subscription fee ({sub.plan} plan)"
+            )
+            db.add(txn)
+            
+            # Advance next billing date
+            sub.next_billing_date = sub.next_billing_date + timedelta(days=30)
+            
+            await db.commit()
+            logger.info(f"Charged ₹{sub.monthly_fee_paise/100:.0f} monthly fee for customer {sub.customer_id}")
+            
+            # If wallet went negative, suspend + email
+            if wallet.balance_paise < 0:
+                cust_res = await db.execute(select(Customer).where(Customer.id == sub.customer_id))
+                cust = cust_res.scalar_one_or_none()
+                if cust:
+                    cust.status = "suspended"
+                    await db.commit()
+                    await notification_service.send_email(
+                        to_email=cust.contact_email,
+                        subject="Talkar — Monthly Fee Payment Failed",
+                        body=f"Hi {cust.contact_name},\n\nYour wallet had insufficient funds for this month's subscription fee (₹{sub.monthly_fee_paise/100:.0f}). Your account has been suspended.\n\nPlease top up your wallet to reactivate.\n\nThe Talkar Team"
+                    )
+    
+    logger.info("Monthly subscription billing complete.")

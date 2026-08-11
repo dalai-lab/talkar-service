@@ -1,12 +1,17 @@
-from fastapi import APIRouter, Request, Depends, HTTPException
+from fastapi import APIRouter, Request, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
+from sqlalchemy.sql import func
 from db.session import get_db
-from db.models import Customer, Subscription, Wallet, WalletTransaction
+from db.models import Customer, Subscription, Wallet, WalletTransaction, CallLog
 from services import razorpay_client, billing_service, provisioning_service, notification_service
 from pydantic import BaseModel
+from typing import Optional
 import json
 import logging
+import hmac
+import hashlib
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +22,7 @@ class SetupFeeRequest(BaseModel):
     plan: str
 
 class TopupRequest(BaseModel):
-    customer_id: int
+    dograh_org_id: int
     amount_rupees: int
 
 class CreateSubscriptionRequest(BaseModel):
@@ -59,10 +64,121 @@ async def create_topup_order(data: TopupRequest, db: AsyncSession = Depends(get_
     if data.amount_rupees < 500:
         raise HTTPException(400, "Minimum top-up is ₹500")
         
+    # Look up customer by org_id
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+    if customer.status not in ("active", "suspended"):
+        raise HTTPException(400, "Account not eligible for top-up")
+        
     amount_paise = data.amount_rupees * 100
-    order = await razorpay_client.create_topup_order(amount_paise, f"topup_{data.customer_id}", data.customer_id)
+    order = await razorpay_client.create_topup_order(amount_paise, f"topup_{customer.id}", customer.id)
     
     return {"razorpay_order_id": order["id"], "amount_paise": amount_paise, "currency": "INR"}
+
+
+class ConfirmTopupRequest(BaseModel):
+    razorpay_payment_id: str
+    razorpay_order_id: str
+    razorpay_signature: str
+    dograh_org_id: int
+    amount_paise: int
+
+@router.post("/confirm-topup")
+async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(get_db)):
+    # 1. Verify signature (skip in mock mode)
+    if settings.RAZORPAY_KEY_SECRET:
+        msg = f"{data.razorpay_order_id}|{data.razorpay_payment_id}"
+        expected = hmac.new(
+            settings.RAZORPAY_KEY_SECRET.encode(),
+            msg.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(expected, data.razorpay_signature):
+            raise HTTPException(400, "Invalid payment signature")
+    
+    # 2. Find customer
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+    
+    # 3. Idempotency — check if this order was already processed
+    existing_txn = await db.execute(
+        select(WalletTransaction).where(WalletTransaction.razorpay_order_id == data.razorpay_order_id)
+    )
+    if existing_txn.scalar_one_or_none():
+        wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
+        w = wallet_res.scalar_one_or_none()
+        return {"status": "already_processed", "new_balance_paise": w.balance_paise if w else 0}
+    
+    # 4. Credit wallet
+    wallet = await billing_service.credit_wallet(db, customer.id, data.amount_paise, data.razorpay_order_id)
+    
+    # 5. Auto-reactivate if suspended
+    if customer.status == "suspended" and wallet.balance_paise >= 50000:
+        customer.status = "active"
+        await db.commit()
+    
+    return {"status": "ok", "new_balance_paise": wallet.balance_paise}
+
+class ConfirmPaymentRequest(BaseModel):
+    razorpay_payment_id: str
+    razorpay_order_id: str
+    razorpay_signature: str
+
+@router.post("/confirm-payment")
+async def confirm_setup_fee_payment(data: ConfirmPaymentRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Called by the Dograh frontend handler after Razorpay checkout completes.
+    This is an alternative to the webhook — verifies the payment server-side
+    and triggers provisioning. Works in both mock (no keys) and live mode.
+    """
+    import hmac as _hmac
+    import hashlib as _hashlib
+    from config import settings as _settings
+
+    # Verify signature if we have the key, otherwise pass through (dev/mock mode)
+    if _settings.RAZORPAY_KEY_SECRET:
+        expected = _hmac.new(
+            _settings.RAZORPAY_KEY_SECRET.encode(),
+            f"{data.razorpay_order_id}|{data.razorpay_payment_id}".encode(),
+            _hashlib.sha256
+        ).hexdigest()
+        if not _hmac.compare_digest(expected, data.razorpay_signature):
+            raise HTTPException(400, "Invalid payment signature")
+
+    # Find customer by order ID
+    result = await db.execute(select(Customer).where(Customer.setup_fee_order_id == data.razorpay_order_id))
+    customer = result.scalar_one_or_none()
+
+    if not customer:
+        raise HTTPException(404, "No customer found for this order. May be a top-up payment.")
+
+    # Idempotency: already processed
+    if customer.status != "approved":
+        return {"status": "already_processed", "customer_status": customer.status}
+
+    notes = {}
+    plan = customer.onboarding_form.get("approved_plan", "starter") if customer.onboarding_form else "starter"
+
+    # Self-serve skips build queue and goes straight to active
+    wants_build = customer.onboarding_form.get("wantsBuildForMe", True) if customer.onboarding_form else True
+    
+    if wants_build:
+        customer.status = "agent_building"
+    else:
+        customer.status = "active"
+        
+    await db.commit()
+
+    # Run provisioning (creates wallet, subscription, writes Dograh config)
+    await provisioning_service.run_provisioning(customer.id, plan, db)
+
+    return {"status": "ok", "customer_status": customer.status}
+
+
 
 @router.post("/webhook/razorpay")
 async def razorpay_webhook(request: Request, db: AsyncSession = Depends(get_db)):
@@ -233,8 +349,197 @@ async def get_wallet_by_org(org_id: int, db: AsyncSession = Depends(get_db)):
         
     return {
         "balance_paise": wallet.balance_paise,
-        "auto_recharge_enabled": wallet.auto_recharge_enabled
+        "auto_recharge_enabled": wallet.auto_recharge_enabled,
+        "auto_recharge_threshold_paise": wallet.auto_recharge_threshold_paise,
+        "auto_recharge_amount_paise": wallet.auto_recharge_amount_paise,
+        "has_saved_card": bool(wallet.razorpay_payment_method_id)
     }
+
+class CreateRazorpayCustomerRequest(BaseModel):
+    dograh_org_id: int
+    name: str
+    email: str
+
+@router.post("/razorpay-customer/create")
+async def create_razorpay_customer(data: CreateRazorpayCustomerRequest, db: AsyncSession = Depends(get_db)):
+    """Step 1: Create a Razorpay customer record linked to their wallet."""
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+    
+    wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
+    wallet = wallet_res.scalar_one_or_none()
+    if not wallet:
+        raise HTTPException(404, "Wallet not found")
+    
+    if wallet.razorpay_customer_id:
+        return {"razorpay_customer_id": wallet.razorpay_customer_id}  # Already exists
+    
+    # Create in Razorpay (mock if no keys)
+    if razorpay_client.client:
+        import asyncio
+        rzp_customer = await asyncio.to_thread(razorpay_client.client.customer.create, {
+            "name": data.name,
+            "email": data.email,
+        })
+        wallet.razorpay_customer_id = rzp_customer["id"]
+    else:
+        wallet.razorpay_customer_id = f"mock_cust_{customer.id}"
+    
+    await db.commit()
+    return {"razorpay_customer_id": wallet.razorpay_customer_id}
+
+class SaveCardRequest(BaseModel):
+    dograh_org_id: int
+    razorpay_payment_method_id: str
+
+@router.post("/save-card")
+async def save_card(data: SaveCardRequest, db: AsyncSession = Depends(get_db)):
+    """Step 2: Save the card token after customer completes mandate authorization."""
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+    
+    wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
+    wallet = wallet_res.scalar_one_or_none()
+    if not wallet:
+        raise HTTPException(404, "Wallet not found")
+    
+    wallet.razorpay_payment_method_id = data.razorpay_payment_method_id
+    await db.commit()
+    
+    return {"status": "card_saved"}
+
+@router.get("/subscription/by-org/{org_id}")
+async def get_subscription_by_org(org_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+    
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+    sub = sub_res.scalar_one_or_none()
+    if not sub:
+        # Provisioning may not have run yet — return graceful empty
+        return {"plan": None, "status": "not_provisioned"}
+    
+    return {
+        "plan": sub.plan,
+        "monthly_fee_paise": sub.monthly_fee_paise,
+        "per_minute_rate_paise": sub.per_minute_rate_paise,
+        "concurrent_call_limit": sub.concurrent_call_limit,
+        "next_billing_date": str(sub.next_billing_date),
+        "status": sub.status,
+        "plan_upgrade_requested": customer.onboarding_form.get("plan_upgrade_requested") if customer.onboarding_form else None
+    }
+
+@router.get("/transactions/by-org/{org_id}")
+async def get_transactions_by_org(
+    org_id: int,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    type: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+    
+    base_query = select(WalletTransaction).where(WalletTransaction.customer_id == customer.id)
+    if type and type != "all":
+        base_query = base_query.where(WalletTransaction.type == type)
+    
+    count_result = await db.execute(select(func.count()).select_from(base_query.subquery()))
+    total = count_result.scalar()
+    
+    page_query = base_query.order_by(WalletTransaction.created_at.desc()).offset((page - 1) * limit).limit(limit)
+    txn_result = await db.execute(page_query)
+    transactions = txn_result.scalars().all()
+    
+    return {
+        "transactions": [
+            {
+                "id": t.id,
+                "type": t.type,
+                "amount_paise": t.amount_paise,
+                "description": t.description,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+            }
+            for t in transactions
+        ],
+        "total": total,
+        "page": page,
+    }
+
+@router.get("/usage/by-org/{org_id}")
+async def get_usage_by_org(
+    org_id: int,
+    month: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db)
+):
+    from datetime import datetime
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+    
+    now = datetime.utcnow()
+    if month:
+        year, mon = map(int, month.split("-"))
+    else:
+        year, mon = now.year, now.month
+    
+    month_start = datetime(year, mon, 1)
+    month_end = datetime(year + 1, 1, 1) if mon == 12 else datetime(year, mon + 1, 1)
+    
+    logs_result = await db.execute(
+        select(CallLog).where(
+            CallLog.customer_id == customer.id,
+            CallLog.processed_at >= month_start,
+            CallLog.processed_at < month_end
+        )
+    )
+    logs = logs_result.scalars().all()
+    
+    import math
+    return {
+        "total_calls": len(logs),
+        "total_minutes": math.ceil(sum(l.duration_seconds for l in logs) / 60) if logs else 0,
+        "total_spend_paise": sum(l.cost_to_customer_paise for l in logs),
+        "month": f"{year}-{mon:02d}"
+    }
+
+class AutoRechargeSettings(BaseModel):
+    enabled: bool
+    threshold_paise: int
+    amount_paise: int
+
+@router.patch("/wallet/auto-recharge/by-org/{org_id}")
+async def update_auto_recharge(org_id: int, data: AutoRechargeSettings, db: AsyncSession = Depends(get_db)):
+    if data.threshold_paise < 10000:
+        raise HTTPException(400, "Minimum threshold is ₹100")
+    if data.amount_paise < 50000:
+        raise HTTPException(400, "Minimum recharge amount is ₹500")
+    
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+    
+    wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
+    wallet = wallet_res.scalar_one_or_none()
+    if not wallet:
+        raise HTTPException(404, "Wallet not found")
+    
+    wallet.auto_recharge_enabled = data.enabled
+    wallet.auto_recharge_threshold_paise = data.threshold_paise
+    wallet.auto_recharge_amount_paise = data.amount_paise
+    await db.commit()
+    
+    return {"status": "ok"}
 
 
 @router.post("/subscription/create")

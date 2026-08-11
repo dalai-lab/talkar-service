@@ -104,8 +104,13 @@ async def run_provisioning(customer_id: int, plan: str = None, db: AsyncSession 
 
         # Step 7: Customer status → agent_building is set by webhook before this runs
         logger.info(f"Provisioning successful for customer {customer_id}")
-        await notification_service.notify_customer_setup_complete(customer_id)
-        await notification_service.notify_admin_customer_ready_for_build(customer_id)
+        wants_build = customer.onboarding_form.get("wantsBuildForMe", True) if customer.onboarding_form else True
+        if wants_build:
+            # Managed customer: admin will email them when agent is done
+            await notification_service.notify_admin_customer_ready_for_build(customer_id)
+        else:
+            # Self-serve: they are active now, invite them to start building
+            await notification_service.notify_customer_self_serve_active(customer_id)
 
     except Exception as e:
         logger.error(f"Provisioning failed for customer {customer_id}: {str(e)}")
