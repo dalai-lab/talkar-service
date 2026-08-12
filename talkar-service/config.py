@@ -44,7 +44,7 @@ WALLET_ACTIVATION_THRESHOLD_PAISE = 200000  # ₹2,000
 
 TIER_CONFIG = {
     "starter": {
-        "per_minute_rate_paise": 1200,   # ₹12/min
+        "per_minute_rate_paise": 2500,   # ₹25/min
         "concurrent_call_limit": 2,
         "max_call_duration_seconds": 900,
         "llm_model": "gpt-4o-mini",
@@ -60,7 +60,7 @@ TIER_CONFIG = {
         "free_phone_numbers": 2,
     },
     "elite": {
-        "per_minute_rate_paise": 2500,   # ₹25/min
+        "per_minute_rate_paise": 1200,   # ₹12/min
         "concurrent_call_limit": 9999,
         "max_call_duration_seconds": 9999,
         "llm_model": "gpt-4o",

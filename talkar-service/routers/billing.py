@@ -49,12 +49,39 @@ async def create_topup_order(data: TopupRequest, db: AsyncSession = Depends(get_
     return {"razorpay_order_id": order["id"], "amount_paise": amount_paise, "currency": "INR"}
 
 
+class UpgradeOrderRequest(BaseModel):
+    dograh_org_id: int
+    requested_tier: str
+
+@router.post("/upgrade/create-order")
+async def create_upgrade_order(data: UpgradeOrderRequest, db: AsyncSession = Depends(get_db)):
+    from config import TIER_CONFIG
+    if data.requested_tier not in TIER_CONFIG:
+        raise HTTPException(400, "Invalid tier")
+        
+    min_deposits = {"pro": 10000, "elite": 25000}
+    if data.requested_tier not in min_deposits:
+        raise HTTPException(400, "Tier does not require an upgrade deposit")
+        
+    amount_rupees = min_deposits[data.requested_tier]
+    amount_paise = amount_rupees * 100
+    
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+        
+    order = await razorpay_client.create_topup_order(amount_paise, f"upgrade_{customer.id}_{data.requested_tier}", customer.id)
+    return {"razorpay_order_id": order["id"], "amount_paise": amount_paise, "currency": "INR", "requested_tier": data.requested_tier}
+
+
 class ConfirmTopupRequest(BaseModel):
     razorpay_payment_id: str
     razorpay_order_id: str
     razorpay_signature: str
     dograh_org_id: int
     amount_paise: int
+    requested_tier: Optional[str] = None
 
 @router.post("/confirm-topup")
 async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(get_db)):
@@ -87,7 +114,28 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
     # 4. Credit wallet
     wallet = await billing_service.credit_wallet(db, customer.id, data.amount_paise, data.razorpay_order_id)
     
-    # 5. Auto-reactivate if suspended or pending_deposit
+    # 5. Process Tier Upgrade if requested
+    if data.requested_tier:
+        from config import TIER_CONFIG
+        if data.requested_tier in TIER_CONFIG:
+            sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+            sub = sub_res.scalar_one_or_none()
+            if sub:
+                sub.plan = data.requested_tier
+                sub.per_minute_rate_paise = TIER_CONFIG[data.requested_tier]["per_minute_rate_paise"]
+                
+            existing_form = customer.onboarding_form or {}
+            existing_form["approved_tier"] = data.requested_tier
+            existing_form.pop("tier_upgrade_requested", None)
+            existing_form.pop("tier_upgrade_requested_at", None)
+            customer.onboarding_form = dict(existing_form)
+            await db.commit()
+            
+            # Run provisioning synchronously to sync to Dograh
+            from services.provisioning_service import run_provisioning
+            await run_provisioning(customer.id, data.requested_tier, db)
+    
+    # 6. Auto-reactivate if suspended or pending_deposit
     if customer.status == "pending_deposit":
         if wallet.balance_paise >= WALLET_ACTIVATION_THRESHOLD_PAISE:
             customer.status = "pending_plan_selection"
