@@ -7,6 +7,7 @@ from services import razorpay_client, notification_service
 from services.admin_auth import get_current_admin, create_admin_access_token
 from pydantic import BaseModel
 from typing import Optional
+from config import WALLET_ACTIVATION_THRESHOLD_PAISE
 
 router = APIRouter()
 
@@ -15,10 +16,12 @@ class AdminLoginRequest(BaseModel):
     password: str
 
 class ApproveApplicationRequest(BaseModel):
-    plan: str # 'starter' | 'pro' | 'enterprise'
+    integration_fee_paise: int = 0
+    integration_description: str = ""
 
 class RejectApplicationRequest(BaseModel):
     reason: str
+    reapply_countdown_days: int = 30
 
 class RequestInfoRequest(BaseModel):
     message: str
@@ -35,7 +38,7 @@ class AdminCreateRequest(BaseModel):
 
 class CustomerUpdateRequest(BaseModel):
     status: Optional[str] = None
-    plan: Optional[str] = None
+    tier: Optional[str] = None
 
 # --- AUTH ---
 
@@ -79,30 +82,33 @@ async def approve_application(customer_id: int, data: ApproveApplicationRequest,
     if not customer: raise HTTPException(404, "Customer not found")
     if customer.status != "under_review": raise HTTPException(400, "Customer is not under review")
     
-    # Update status
-    customer.status = "approved"
-
-    # Store the approved plan in onboarding_form JSON (no migration needed).
-    # provisioning_service reads this if plan is not passed explicitly (e.g. on retry).
+    # Store the integration fee in onboarding_form JSON
     existing_form = customer.onboarding_form or {}
-    existing_form["approved_plan"] = data.plan
+    existing_form["integration_fee_paise"] = data.integration_fee_paise
+    existing_form["integration_description"] = data.integration_description
     customer.onboarding_form = existing_form
 
-    # TESTING: ₹1 setup fee. Change to real amounts before production launch:
-    # setup_fee_paise = 2500000 if data.plan == "pro" else 1000000  # Pro=₹25k, Starter=₹10k
-    setup_fee_paise = 100  # ₹1 for testing
-    order = await razorpay_client.create_setup_fee_order(setup_fee_paise, f"setup_{customer.id}", customer.id, data.plan)
-    customer.setup_fee_order_id = order["id"]
-
-    await db.commit()
-
-    fee_display = "₹1 (test)"
-    await notification_service.send_email(
-        to_email=customer.contact_email,
-        subject="Your Talkar Application is Approved!",
-        body=f"Hi {customer.contact_name}, your application is approved! Please complete your setup fee payment ({fee_display}) to get started. Your payment link will appear on your dashboard."
-    )
-    return {"status": "approved", "setup_fee_order_id": order["id"]}
+    if data.integration_fee_paise == 0:
+        customer.status = "agent_building"
+        await db.commit()
+        await notification_service.send_email(
+            to_email=customer.contact_email,
+            subject="Your Talkar Application is Approved!",
+            body=f"Hi {customer.contact_name}, your application is approved! We are now building your agent."
+        )
+        return {"status": "agent_building"}
+    else:
+        customer.status = "approved"
+        order = await razorpay_client.create_setup_fee_order(data.integration_fee_paise, f"setup_{customer.id}", customer.id, "custom")
+        customer.setup_fee_order_id = order["id"]
+        await db.commit()
+        fee_display = f"₹{data.integration_fee_paise / 100:.2f}"
+        await notification_service.send_email(
+            to_email=customer.contact_email,
+            subject="Your Talkar Application is Approved!",
+            body=f"Hi {customer.contact_name}, your application is approved! Please complete your integration fee payment ({fee_display}) to get started. Your payment link will appear on your dashboard."
+        )
+        return {"status": "approved", "setup_fee_order_id": order["id"]}
 
 @router.post("/applications/{customer_id}/reject")
 async def reject_application(customer_id: int, data: RejectApplicationRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
@@ -111,9 +117,10 @@ async def reject_application(customer_id: int, data: RejectApplicationRequest, d
     if not customer: raise HTTPException(404, "Customer not found")
     
     customer.status = "rejected"
-    # Store rejection reason in onboarding_form alongside the other data
+    # Store rejection reason and reapply countdown in onboarding_form
     existing_form = customer.onboarding_form or {}
     existing_form["rejection_reason"] = data.reason
+    existing_form["reapply_countdown_days"] = data.reapply_countdown_days
     customer.onboarding_form = existing_form
     await db.commit()
     
@@ -155,22 +162,23 @@ async def update_customer(customer_id: int, data: CustomerUpdateRequest, db: Asy
     if not customer: raise HTTPException(404, "Customer not found")
     
     if data.status: customer.status = data.status
-    if data.plan:
+    if data.tier:
+        from config import TIER_CONFIG
+        tier_cfg = TIER_CONFIG.get(data.tier)
+        if not tier_cfg: raise HTTPException(400, "Invalid tier")
+
         # Update subscription record
         sub = await db.execute(select(Subscription).where(Subscription.customer_id == customer_id))
         sub = sub.scalar_one_or_none()
         if sub:
-            sub.plan = data.plan
-            # Update per-minute rate and concurrent limit for the new plan
-            sub.per_minute_rate_paise = 1400 if data.plan == "pro" else 1800
-            sub.concurrent_call_limit = 10 if data.plan == "pro" else 2
-            sub.monthly_fee_paise = 1500000 if data.plan == "pro" else 500000
+            sub.plan = data.tier
+            sub.per_minute_rate_paise = tier_cfg["per_minute_rate_paise"]
 
-        # Store new plan in onboarding_form so provisioning picks it up
+        # Store new tier in onboarding_form so provisioning picks it up
         existing_form = customer.onboarding_form or {}
-        existing_form["approved_plan"] = data.plan
-        existing_form.pop("plan_upgrade_requested", None)
-        existing_form.pop("plan_upgrade_requested_at", None)
+        existing_form["approved_tier"] = data.tier
+        existing_form.pop("tier_upgrade_requested", None)
+        existing_form.pop("tier_upgrade_requested_at", None)
         customer.onboarding_form = dict(existing_form)
 
         await db.commit()
@@ -179,11 +187,11 @@ async def update_customer(customer_id: int, data: CustomerUpdateRequest, db: Asy
         if customer.status in ("active", "agent_building"):
             from services.provisioning_service import run_provisioning
             try:
-                await run_provisioning(customer_id, data.plan, db)
+                await run_provisioning(customer_id, None, db)
             except Exception as e:
-                # Don't fail the whole request — plan is saved, provisioning can be retried
+                # Don't fail the whole request — tier is saved, provisioning can be retried
                 import logging
-                logging.getLogger(__name__).error(f"Re-provisioning failed after plan upgrade: {e}")
+                logging.getLogger(__name__).error(f"Re-provisioning failed after tier upgrade: {e}")
     else:
         await db.commit()
 
@@ -211,16 +219,16 @@ async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: As
     await db.commit()
     return {"status": "success", "new_balance": wallet.balance_paise}
 
-@router.post("/customers/{customer_id}/deny-upgrade")
-async def deny_plan_upgrade(customer_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+@router.post("/customers/{customer_id}/deny-tier-upgrade")
+async def deny_tier_upgrade(customer_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
     result = await db.execute(select(Customer).where(Customer.id == customer_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
     
-    if customer.onboarding_form and "plan_upgrade_requested" in customer.onboarding_form:
+    if customer.onboarding_form and "tier_upgrade_requested" in customer.onboarding_form:
         existing_form = dict(customer.onboarding_form)
-        existing_form.pop("plan_upgrade_requested", None)
-        existing_form.pop("plan_upgrade_requested_at", None)
+        existing_form.pop("tier_upgrade_requested", None)
+        existing_form.pop("tier_upgrade_requested_at", None)
         customer.onboarding_form = existing_form
         await db.commit()
     
@@ -266,15 +274,28 @@ async def mark_ready(customer_id: int, db: AsyncSession = Depends(get_db), curre
     result = await db.execute(select(Customer).where(Customer.id == customer_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
-    customer.status = "active"
-    await db.commit()
-    # SOT p.194: notify customer agent is live
-    await notification_service.send_email(
-        to_email=customer.contact_email,
-        subject="Your AI Agent is Live!",
-        body=f"Hi {customer.contact_name}, your Talkar AI agent is live! Add credits to your wallet to start receiving calls. Log in at app.talkar.ai"
-    )
-    return {"status": "active"}
+    
+    wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer_id))
+    wallet = wallet_res.scalar_one_or_none()
+    
+    if wallet and wallet.balance_paise >= WALLET_ACTIVATION_THRESHOLD_PAISE:
+        customer.status = "pending_plan_selection"
+        await db.commit()
+        await notification_service.send_email(
+            to_email=customer.contact_email,
+            subject="Your AI Agent is Ready! Choose a plan",
+            body=f"Hi {customer.contact_name}, your Talkar AI agent is live! Log in to choose your plan and activate."
+        )
+        return {"status": "pending_plan_selection"}
+    else:
+        customer.status = "pending_deposit"
+        await db.commit()
+        await notification_service.send_email(
+            to_email=customer.contact_email,
+            subject="Your AI Agent is Ready! Activate your wallet",
+            body=f"Hi {customer.contact_name}, your Talkar AI agent is live! Add ₹2000 to your wallet to activate it."
+        )
+        return {"status": "pending_deposit"}
 
 # --- WALLET / STATS ---
 
@@ -345,3 +366,67 @@ async def remove_team_member(admin_id: int, db: AsyncSession = Depends(get_db), 
         await db.delete(admin)
         await db.commit()
     return {"status": "deleted"}
+
+# --- PHONE NUMBERS ---
+from db.models import PhoneNumberRequest, PhoneNumber
+
+class AssignPhoneNumberRequest(BaseModel):
+    number: str
+    plivo_number_id: str
+
+class ApprovePhoneNumberRequestBody(BaseModel):
+    numbers: list[str]
+
+class DenyPhoneNumberRequestBody(BaseModel):
+    admin_note: str
+
+@router.post("/customers/{customer_id}/assign-phone-number")
+async def assign_phone_number(customer_id: int, data: AssignPhoneNumberRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    result = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = result.scalar_one_or_none()
+    if not customer: raise HTTPException(404, "Customer not found")
+    
+    pn = PhoneNumber(
+        customer_id=customer_id,
+        number=data.number,
+        plivo_number_id=data.plivo_number_id
+    )
+    db.add(pn)
+    await db.commit()
+    return {"status": "assigned"}
+
+@router.get("/phone-number-requests")
+async def get_phone_number_requests(db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    result = await db.execute(select(PhoneNumberRequest).order_by(PhoneNumberRequest.requested_at.desc()))
+    return result.scalars().all()
+
+@router.patch("/phone-number-requests/{request_id}/approve")
+async def approve_phone_number_request(request_id: int, data: ApprovePhoneNumberRequestBody, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    result = await db.execute(select(PhoneNumberRequest).where(PhoneNumberRequest.id == request_id))
+    req = result.scalar_one_or_none()
+    if not req: raise HTTPException(404, "Request not found")
+    
+    req.status = "approved"
+    req.resolved_at = func.now()
+    
+    for number in data.numbers:
+        pn = PhoneNumber(
+            customer_id=req.customer_id,
+            number=number,
+        )
+        db.add(pn)
+        
+    await db.commit()
+    return {"status": "approved"}
+
+@router.patch("/phone-number-requests/{request_id}/deny")
+async def deny_phone_number_request(request_id: int, data: DenyPhoneNumberRequestBody, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    result = await db.execute(select(PhoneNumberRequest).where(PhoneNumberRequest.id == request_id))
+    req = result.scalar_one_or_none()
+    if not req: raise HTTPException(404, "Request not found")
+    
+    req.status = "denied"
+    req.admin_note = data.admin_note
+    req.resolved_at = func.now()
+    await db.commit()
+    return {"status": "denied"}

@@ -27,14 +27,23 @@ class Subscription(Base):
     customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
     plan = Column(Text, nullable=False)
     status = Column(Text, nullable=False, default="active")
-    monthly_fee_paise = Column(BigInteger, nullable=False)
     per_minute_rate_paise = Column(BigInteger, nullable=False)
-    concurrent_call_limit = Column(Integer, nullable=False)
     setup_fee_paid = Column(Boolean, default=False)
     start_date = Column(Date, nullable=False)
-    next_billing_date = Column(Date, nullable=False)
-    razorpay_subscription_id = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class PhoneNumberRequest(Base):
+    __tablename__ = "phone_number_requests"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
+    quantity = Column(Integer, nullable=False, default=1)
+    region = Column(Text)
+    use_case = Column(Text)
+    status = Column(Text, default="pending")  # pending | approved | denied
+    admin_note = Column(Text)
+    requested_at = Column(DateTime(timezone=True), server_default=func.now())
+    resolved_at = Column(DateTime(timezone=True))
 
 class Wallet(Base):
     __tablename__ = "wallets"

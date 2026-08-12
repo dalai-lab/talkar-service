@@ -26,14 +26,22 @@ CREATE TABLE subscriptions (
   customer_id               INTEGER NOT NULL REFERENCES customers(id),
   plan                      TEXT NOT NULL,
   status                    TEXT NOT NULL DEFAULT 'active',
-  monthly_fee_paise         BIGINT NOT NULL,
   per_minute_rate_paise     BIGINT NOT NULL,
-  concurrent_call_limit     INTEGER NOT NULL,
   setup_fee_paid            BOOLEAN DEFAULT false,
   start_date                DATE NOT NULL,
-  next_billing_date         DATE NOT NULL,
-  razorpay_subscription_id  TEXT,
   created_at                TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE phone_number_requests (
+  id                SERIAL PRIMARY KEY,
+  customer_id       INTEGER NOT NULL REFERENCES customers(id),
+  quantity          INTEGER NOT NULL DEFAULT 1,
+  region            TEXT,
+  use_case          TEXT,
+  status            TEXT DEFAULT 'pending',
+  admin_note        TEXT,
+  requested_at      TIMESTAMPTZ DEFAULT now(),
+  resolved_at       TIMESTAMPTZ
 );
 
 CREATE TABLE wallets (

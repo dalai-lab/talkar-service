@@ -38,3 +38,33 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 settings = Settings()
+
+# V2 Config Additions
+WALLET_ACTIVATION_THRESHOLD_PAISE = 200000  # ₹2,000
+
+TIER_CONFIG = {
+    "starter": {
+        "per_minute_rate_paise": 1200,   # ₹12/min
+        "concurrent_call_limit": 2,
+        "max_call_duration_seconds": 900,
+        "llm_model": "gpt-4o-mini",
+        "tts_provider": "deepgram",
+        "free_phone_numbers": 1,
+    },
+    "pro": {
+        "per_minute_rate_paise": 1800,   # ₹18/min
+        "concurrent_call_limit": 10,
+        "max_call_duration_seconds": 1800,
+        "llm_model": "gpt-4o",
+        "tts_provider": "elevenlabs",
+        "free_phone_numbers": 2,
+    },
+    "elite": {
+        "per_minute_rate_paise": 2500,   # ₹25/min
+        "concurrent_call_limit": 9999,
+        "max_call_duration_seconds": 9999,
+        "llm_model": "gpt-4o",
+        "tts_provider": "elevenlabs",
+        "free_phone_numbers": 5,
+    },
+}

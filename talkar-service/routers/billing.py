@@ -11,22 +11,15 @@ import json
 import logging
 import hmac
 import hashlib
-from config import settings
+from config import settings, WALLET_ACTIVATION_THRESHOLD_PAISE
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-class SetupFeeRequest(BaseModel):
-    customer_id: int
-    plan: str
-
 class TopupRequest(BaseModel):
     dograh_org_id: int
     amount_rupees: int
-
-class CreateSubscriptionRequest(BaseModel):
-    customer_id: int
 
 class DograhQuotaRequest(BaseModel):
     organization_id: int
@@ -36,28 +29,6 @@ class DograhDeductRequest(BaseModel):
     duration_seconds: int
     organization_id: int
 
-@router.post("/setup-fee/create-order")
-async def create_setup_fee_order(data: SetupFeeRequest, db: AsyncSession = Depends(get_db)):
-    # 1. Validate customer
-    result = await db.execute(select(Customer).where(Customer.id == data.customer_id))
-    customer = result.scalar_one_or_none()
-    if not customer: raise HTTPException(404, "Customer not found")
-    
-    if customer.status != "approved":
-        raise HTTPException(400, f"Cannot create setup fee order. Customer status is '{customer.status}', expected 'approved'.")
-    
-    # Example logic for setup fee amount
-    setup_fee_paise = 2500000 if data.plan == "pro" else 1000000 
-    
-    # 2. Create order
-    order = await razorpay_client.create_setup_fee_order(setup_fee_paise, f"setup_{customer.id}", data.customer_id, data.plan)
-    
-    # 3. Store order ID
-    customer.setup_fee_order_id = order["id"]
-    await db.commit()
-    
-    # 2A Spec: Returns { razorpay_order_id, amount, currency }
-    return {"razorpay_order_id": order["id"], "amount": setup_fee_paise, "currency": "INR"}
 
 @router.post("/topup/create-order")
 async def create_topup_order(data: TopupRequest, db: AsyncSession = Depends(get_db)):
@@ -69,7 +40,7 @@ async def create_topup_order(data: TopupRequest, db: AsyncSession = Depends(get_
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
-    if customer.status not in ("active", "suspended"):
+    if customer.status not in ("active", "suspended", "pending_deposit"):
         raise HTTPException(400, "Account not eligible for top-up")
         
     amount_paise = data.amount_rupees * 100
@@ -116,8 +87,17 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
     # 4. Credit wallet
     wallet = await billing_service.credit_wallet(db, customer.id, data.amount_paise, data.razorpay_order_id)
     
-    # 5. Auto-reactivate if suspended
-    if customer.status == "suspended" and wallet.balance_paise >= 50000:
+    # 5. Auto-reactivate if suspended or pending_deposit
+    if customer.status == "pending_deposit":
+        if wallet.balance_paise >= WALLET_ACTIVATION_THRESHOLD_PAISE:
+            customer.status = "pending_plan_selection"
+            await db.commit()
+            await notification_service.send_email(
+                to_email=customer.contact_email,
+                subject="Choose Your Talkar Plan",
+                body="Your wallet is funded! Log in to choose your plan and go live."
+            )
+    elif customer.status == "suspended" and wallet.balance_paise >= 50000:
         customer.status = "active"
         await db.commit()
     
@@ -160,21 +140,11 @@ async def confirm_setup_fee_payment(data: ConfirmPaymentRequest, db: AsyncSessio
     if customer.status != "approved":
         return {"status": "already_processed", "customer_status": customer.status}
 
-    notes = {}
-    plan = customer.onboarding_form.get("approved_plan", "starter") if customer.onboarding_form else "starter"
-
-    # Self-serve skips build queue and goes straight to active
-    wants_build = customer.onboarding_form.get("wantsBuildForMe", True) if customer.onboarding_form else True
-    
-    if wants_build:
-        customer.status = "agent_building"
-    else:
-        customer.status = "active"
-        
+    customer.status = "agent_building"
     await db.commit()
 
     # Run provisioning (creates wallet, subscription, writes Dograh config)
-    await provisioning_service.run_provisioning(customer.id, plan, db)
+    await provisioning_service.run_provisioning(customer.id, None, db)
 
     return {"status": "ok", "customer_status": customer.status}
 
@@ -216,22 +186,12 @@ async def razorpay_webhook(request: Request, db: AsyncSession = Depends(get_db))
             customer.status = "agent_building"  # Immediate visual update
             await db.commit()
             # New signature: run_provisioning(customer_id, plan, db)
-            await provisioning_service.run_provisioning(customer.id, plan, db)
+            await provisioning_service.run_provisioning(customer.id, None, db)
         else:
             # It's a top-up
             customer_id = notes.get("customer_id")
             if customer_id:
                 await billing_service.credit_wallet(db, int(customer_id), amount_paise, order_id)
-                
-    elif event_type == "subscription.charged":
-        logger.info(f"Subscription charged: {event['payload']['subscription']['entity']['id']}")
-        # SOT 209: Talkar Billing Service credits wallet for subscription
-        # Logic would go here
-        
-    elif event_type == "subscription.halted":
-        sub_id = event['payload']['subscription']['entity']['id']
-        logger.error(f"Subscription halted: {sub_id}")
-        await notification_service.notify_admin_subscription_halted(sub_id)
 
     return {"status": "ok"}
 
@@ -272,7 +232,8 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
     # Get subscription for per-minute rate
     sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
     sub = sub_res.scalar_one_or_none()
-    rate = sub.per_minute_rate_paise if sub else 1800  # fallback to Starter rate (₹18/min)
+    from config import TIER_CONFIG
+    rate = sub.per_minute_rate_paise if sub else TIER_CONFIG["starter"]["per_minute_rate_paise"]
 
     # --- SOT edge case: zero-duration call (pipeline crash, abnormal termination) ---
     # SOT line 278: log it with cost=0, do not retry, alert admin
@@ -423,16 +384,13 @@ async def get_subscription_by_org(org_id: int, db: AsyncSession = Depends(get_db
     sub = sub_res.scalar_one_or_none()
     if not sub:
         # Provisioning may not have run yet — return graceful empty
-        return {"plan": None, "status": "not_provisioned"}
+        return {"tier": None, "status": "not_provisioned"}
     
     return {
-        "plan": sub.plan,
-        "monthly_fee_paise": sub.monthly_fee_paise,
+        "tier": sub.plan,
         "per_minute_rate_paise": sub.per_minute_rate_paise,
-        "concurrent_call_limit": sub.concurrent_call_limit,
-        "next_billing_date": str(sub.next_billing_date),
         "status": sub.status,
-        "plan_upgrade_requested": customer.onboarding_form.get("plan_upgrade_requested") if customer.onboarding_form else None
+        "tier_upgrade_requested": customer.onboarding_form.get("tier_upgrade_requested") if customer.onboarding_form else None
     }
 
 @router.get("/transactions/by-org/{org_id}")
@@ -541,30 +499,4 @@ async def update_auto_recharge(org_id: int, data: AutoRechargeSettings, db: Asyn
     
     return {"status": "ok"}
 
-
-@router.post("/subscription/create")
-async def create_subscription(data: CreateSubscriptionRequest, db: AsyncSession = Depends(get_db)):
-    # 2D spec: Creates Razorpay Subscription linked to customer's Razorpay ID
-    result = await db.execute(select(Subscription).where(Subscription.customer_id == data.customer_id))
-    subscription = result.scalar_one_or_none()
-    
-    if not subscription:
-        raise HTTPException(404, "Subscription plan not found for customer")
-        
-    wallet_result = await db.execute(select(Wallet).where(Wallet.customer_id == data.customer_id))
-    wallet = wallet_result.scalar_one_or_none()
-    
-    if not wallet or not wallet.razorpay_customer_id:
-        raise HTTPException(400, "Customer Razorpay ID not setup")
-        
-    sub_data = await razorpay_client.create_subscription(
-        plan_id=subscription.plan, 
-        amount_paise=subscription.monthly_fee_paise,
-        customer_razorpay_id=wallet.razorpay_customer_id
-    )
-    
-    subscription.razorpay_subscription_id = sub_data["id"]
-    await db.commit()
-    
-    return {"razorpay_subscription_id": sub_data["id"]}
 

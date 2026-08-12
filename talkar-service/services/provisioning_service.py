@@ -29,29 +29,25 @@ async def run_provisioning(customer_id: int, plan: str = None, db: AsyncSession 
             logger.error(f"Provisioning failed: Customer {customer_id} not found")
             return
 
-        # Resolve plan from DB if not explicitly passed
-        if plan is None:
-            sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer_id))
-            existing_sub = sub_res.scalar_one_or_none()
-            if existing_sub:
-                plan = existing_sub.plan
-            elif customer.onboarding_form and customer.onboarding_form.get("approved_plan"):
-                # Set at approval time by admin.py — always present for legitimate provisioning calls
-                plan = customer.onboarding_form["approved_plan"]
-            else:
-                logger.error(f"No plan found for customer {customer_id} — cannot provision")
-                return
+        # Resolve tier from DB
+        tier = customer.onboarding_form.get("approved_tier") if customer.onboarding_form else None
+        if not tier:
+            # Fallback for old rows
+            tier = customer.onboarding_form.get("approved_plan", "starter") if customer.onboarding_form else "starter"
 
-        logger.info(f"Starting provisioning for customer {customer_id} with plan {plan}")
+        logger.info(f"Starting provisioning for customer {customer_id} with tier {tier}")
+        
+        from config import TIER_CONFIG
+        tier_cfg = TIER_CONFIG.get(tier, TIER_CONFIG["starter"])
 
-        # Step 1: Overwrite Dograh's auto-injected MPS config with Talkar keys (SOT 158)
-        tts_provider = "elevenlabs" if plan == "pro" else "deepgram"
-        tts_key = settings.TALKAR_ELEVENLABS_KEY if plan == "pro" else settings.TALKAR_DEEPGRAM_KEY
+        # Step 1: Overwrite Dograh's auto-injected MPS config with Talkar keys
+        tts_provider = tier_cfg["tts_provider"]
+        tts_key = settings.TALKAR_ELEVENLABS_KEY if tts_provider == "elevenlabs" else settings.TALKAR_DEEPGRAM_KEY
         model_config = {
             "llm": {
                 "provider": "openai",
                 "api_key": settings.TALKAR_OPENAI_KEY or "",
-                "model": "gpt-4o-mini" if plan == "starter" else "gpt-4o"
+                "model": tier_cfg["llm_model"]
             },
             "tts": {"provider": tts_provider, "api_key": tts_key or ""},
             "stt": {"provider": "deepgram", "api_key": settings.TALKAR_DEEPGRAM_KEY or ""}
@@ -61,56 +57,38 @@ async def run_provisioning(customer_id: int, plan: str = None, db: AsyncSession 
         # Step 2: Write TALKAR_ORG_TYPE = "customer" (controls sidebar filtering)
         await dograh_client.upsert_org_config(customer.dograh_org_id, "TALKAR_ORG_TYPE", "customer")
 
-        # Step 3: Write CONCURRENT_CALL_LIMIT based on plan (SOT Table: 2 for Starter, 10 for Pro)
-        limit = 2 if plan == "starter" else 10
-        await dograh_client.upsert_org_config(customer.dograh_org_id, "CONCURRENT_CALL_LIMIT", str(limit))
-
-        # Step 3.1: Write max call duration per plan (SOT 657: Starter=20min, Pro=45min)
-        max_duration = 1200 if plan == "starter" else 2700
-        await dograh_client.upsert_org_config(customer.dograh_org_id, "WORKFLOW_TIMEOUT_SECONDS", str(max_duration))
+        # Step 3: Write CONCURRENT_CALL_LIMIT and WORKFLOW_TIMEOUT_SECONDS based on tier
+        await dograh_client.upsert_org_config(customer.dograh_org_id, "CONCURRENT_CALL_LIMIT", str(tier_cfg["concurrent_call_limit"]))
+        await dograh_client.upsert_org_config(customer.dograh_org_id, "WORKFLOW_TIMEOUT_SECONDS", str(tier_cfg["max_call_duration_seconds"]))
 
         # Step 4: Create wallet record in Talkar DB (balance = 0)
-        # Check if wallet already exists (idempotency)
         existing_wallet = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
         if not existing_wallet.scalar_one_or_none():
             wallet = Wallet(customer_id=customer.id, balance_paise=0)
             db.add(wallet)
 
-        # Step 5: Create Subscription record in Talkar DB
-        # Per SOT pricing: Starter ₹5,000/mo @ ₹18/min | Pro ₹15,000/mo @ ₹14/min
-        # Check if subscription already exists (idempotency)
+        # Step 5: Create Subscription record in Talkar DB (or update if exists)
         existing_sub_check = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
-        if not existing_sub_check.scalar_one_or_none():
-            monthly_fee_paise = 500000 if plan == "starter" else 1500000  # ₹5,000 or ₹15,000
-            per_minute_paise = 1800 if plan == "starter" else 1400         # ₹18 or ₹14 per SOT
-
+        existing_sub = existing_sub_check.scalar_one_or_none()
+        if not existing_sub:
             subscription = Subscription(
                 customer_id=customer.id,
-                plan=plan,
+                plan=tier,
                 status="active",
-                monthly_fee_paise=monthly_fee_paise,
-                per_minute_rate_paise=per_minute_paise,
-                concurrent_call_limit=limit,
+                per_minute_rate_paise=tier_cfg["per_minute_rate_paise"],
                 setup_fee_paid=True,
-                start_date=datetime.date.today(),
-                next_billing_date=datetime.date.today() + datetime.timedelta(days=30)
+                start_date=datetime.date.today()
             )
             db.add(subscription)
+        else:
+            # Re-provisioning an existing customer (e.g. tier upgrade)
+            existing_sub.plan = tier
+            existing_sub.per_minute_rate_paise = tier_cfg["per_minute_rate_paise"]
 
         await db.commit()
 
-        # Step 6: Razorpay recurring subscription is created when customer saves card for auto-recharge
-        # The actual monthly fee subscription creation requires a card token — deferred to card-save flow
-
-        # Step 7: Customer status → agent_building is set by webhook before this runs
         logger.info(f"Provisioning successful for customer {customer_id}")
-        wants_build = customer.onboarding_form.get("wantsBuildForMe", True) if customer.onboarding_form else True
-        if wants_build:
-            # Managed customer: admin will email them when agent is done
-            await notification_service.notify_admin_customer_ready_for_build(customer_id)
-        else:
-            # Self-serve: they are active now, invite them to start building
-            await notification_service.notify_customer_self_serve_active(customer_id)
+        await notification_service.notify_admin_customer_ready_for_build(customer_id)
 
     except Exception as e:
         logger.error(f"Provisioning failed for customer {customer_id}: {str(e)}")

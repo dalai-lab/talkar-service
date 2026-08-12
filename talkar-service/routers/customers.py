@@ -89,6 +89,7 @@ async def get_customer_status(
     }
     if customer.status == "rejected" and customer.onboarding_form:
         resp["rejection_reason"] = customer.onboarding_form.get("rejection_reason")
+        resp["reapply_countdown"] = f"{customer.onboarding_form.get('reapply_countdown_days', 30)}d 0h"
     if customer.status == "approved" and customer.setup_fee_order_id:
         resp["setup_fee_order_id"] = customer.setup_fee_order_id
     if customer.status == "suspended":
@@ -159,37 +160,111 @@ async def submit_onboarding(customer_id: int, data: dict, db: AsyncSession = Dep
     return customer
 
 
-class PlanUpgradeRequest(BaseModel):
-    requested_plan: str
+class SelectTierRequest(BaseModel):
+    tier: str  # "starter" | "pro" | "elite"
 
-@router.post("/by-org/{org_id}/request-plan-upgrade")
-async def request_plan_upgrade(org_id: int, data: PlanUpgradeRequest, db: AsyncSession = Depends(get_db)):
+@router.post("/by-org/{org_id}/select-tier")
+async def select_tier(org_id: int, data: SelectTierRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
     customer = result.scalar_one_or_none()
-    if not customer:
-        raise HTTPException(404, "Customer not found")
+    if not customer: raise HTTPException(404, "Customer not found")
+    if customer.status != "pending_plan_selection":
+        raise HTTPException(400, "Customer is not pending plan selection")
+        
+    from config import TIER_CONFIG
+    tier_cfg = TIER_CONFIG.get(data.tier)
+    if not tier_cfg: raise HTTPException(400, "Invalid tier")
     
-    # Get current plan
+    # Store approved_tier in onboarding_form
+    existing_form = customer.onboarding_form or {}
+    existing_form["approved_tier"] = data.tier
+    customer.onboarding_form = dict(existing_form)
+    
+    # Update Subscription
     sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
     sub = sub_res.scalar_one_or_none()
-    current_plan = sub.plan if sub else "starter"
+    if sub:
+        sub.plan = data.tier
+        sub.per_minute_rate_paise = tier_cfg["per_minute_rate_paise"]
+        
+    customer.status = "active"
+    await db.commit()
     
-    if current_plan == data.requested_plan:
-        raise HTTPException(400, f"Already on {data.requested_plan} plan")
+    # Re-run provisioning
+    from services.provisioning_service import run_provisioning
+    await run_provisioning(customer.id, None, db)
     
-    # Store request in onboarding_form JSON
+    await notification_service.send_email(
+        to_email=customer.contact_email,
+        subject="Your Talkar Agent is Live!",
+        body=f"Hi {customer.contact_name}, your AI agent is fully active on the {data.tier} tier!"
+    )
+    return {"status": "active"}
+
+class TierUpgradeRequest(BaseModel):
+    requested_tier: str
+
+@router.post("/by-org/{org_id}/request-tier-upgrade")
+async def request_tier_upgrade(org_id: int, data: TierUpgradeRequest, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
+    customer = result.scalar_one_or_none()
+    if not customer: raise HTTPException(404, "Customer not found")
+    
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+    sub = sub_res.scalar_one_or_none()
+    current_tier = sub.plan if sub else "starter"
+    
+    if current_tier == data.requested_tier:
+        raise HTTPException(400, f"Already on {data.requested_tier} tier")
+        
     existing_form = customer.onboarding_form or {}
-    existing_form["plan_upgrade_requested"] = data.requested_plan
-    existing_form["plan_upgrade_requested_at"] = datetime.utcnow().isoformat()
-    # explicitly assign to trigger SQLAlchemy JSON mutation detection if not using mutable JSON
+    existing_form["tier_upgrade_requested"] = data.requested_tier
+    existing_form["tier_upgrade_requested_at"] = datetime.utcnow().isoformat()
     customer.onboarding_form = dict(existing_form) 
     await db.commit()
     
-    # Email admin
     await notification_service.send_email(
         to_email=settings.ADMIN_EMAIL,
-        subject=f"[Talkar] Plan Upgrade Request — {customer.company_name}",
-        body=f"{customer.company_name} ({customer.contact_email}) has requested an upgrade from {current_plan} to {data.requested_plan}. Approve at admin.talkar.in/customers/{customer.id}"
+        subject=f"[Talkar] Tier Upgrade Request — {customer.company_name}",
+        body=f"{customer.company_name} ({customer.contact_email}) has requested an upgrade from {current_tier} to {data.requested_tier}. Approve at admin.talkar.in/customers/{customer.id}"
     )
+    return {"status": "request_submitted"}
+
+class PhoneNumberRequestBody(BaseModel):
+    quantity: int
+    region: str
+    use_case: str
+
+@router.post("/by-org/{org_id}/request-phone-numbers")
+async def request_phone_numbers(org_id: int, data: PhoneNumberRequestBody, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
+    customer = result.scalar_one_or_none()
+    if not customer: raise HTTPException(404, "Customer not found")
+    if customer.status != "active": raise HTTPException(400, "Customer not active")
     
+    from db.models import PhoneNumberRequest
+    # Check for existing pending request
+    existing = await db.execute(
+        select(PhoneNumberRequest).where(
+            PhoneNumberRequest.customer_id == customer.id,
+            PhoneNumberRequest.status == "pending"
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(409, "You already have a pending phone number request")
+        
+    req = PhoneNumberRequest(
+        customer_id=customer.id,
+        quantity=data.quantity,
+        region=data.region,
+        use_case=data.use_case
+    )
+    db.add(req)
+    await db.commit()
+    
+    await notification_service.send_email(
+        to_email=settings.ADMIN_EMAIL,
+        subject=f"[Talkar] Phone Number Request — {customer.company_name}",
+        body=f"{customer.company_name} requested {data.quantity} numbers in {data.region}. Use Case: {data.use_case}."
+    )
     return {"status": "request_submitted"}
