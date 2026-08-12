@@ -7,7 +7,14 @@ app = FastAPI(title="Talkar Service API")
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Replace with actual frontend URLs in production
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "https://talkar.in",
+        "https://admin.talkar.in",
+        "https://billing.talkar.in"
+    ],
+    allow_origin_regex="https://.*\.talkar\.in",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
