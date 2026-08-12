@@ -96,10 +96,26 @@ export default function BuildQueuePage() {
                     </TableCell>
                     <TableCell className="text-right space-x-2">
                       <Button variant="outline" size="sm" onClick={async () => {
-                        await adminFetch(`/admin/build-queue/${c.id}/assign`, { method: "PATCH" });
-                        alert("Assigned to you!");
-                        fetchQueue();
-                      }}>Assign to Me</Button>
+                        try {
+                          const res = await adminFetch(`/admin/build-queue/${c.id}/assign`, { method: "PATCH" });
+                          if (res.ok) {
+                            const data = await res.json();
+                            if (data.access_token) {
+                              // Open Dograh impersonation route in a new tab
+                              const dograhUrl = process.env.NEXT_PUBLIC_DOGRAH_URL || "https://talkar.in";
+                              window.open(`${dograhUrl}/auth/impersonate?token=${data.access_token}`, "_blank");
+                            } else {
+                              alert("Assigned, but no magic link could be generated.");
+                            }
+                            fetchQueue();
+                          } else {
+                            const error = await res.json();
+                            alert(`Failed to assign: ${error.detail || res.statusText}`);
+                          }
+                        } catch (e) {
+                          alert("Network error. Could not assign.");
+                        }
+                      }}>Impersonate & Build</Button>
                       <Button size="sm" onClick={() => handleMarkReady(c.id)}>Mark as Ready</Button>
                     </TableCell>
                   </TableRow>

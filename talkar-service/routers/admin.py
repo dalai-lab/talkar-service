@@ -266,8 +266,33 @@ async def get_build_queue(db: AsyncSession = Depends(get_db), current_admin: Tal
 
 @router.patch("/build-queue/{customer_id}/assign")
 async def assign_build(customer_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
-    # Assign builder logic stub
-    return {"status": "assigned"}
+    import httpx
+    from config import settings
+    
+    result = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = result.scalar_one_or_none()
+    if not customer: raise HTTPException(404, "Customer not found")
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{settings.DOGRAH_API_URL}/api/v1/superuser/impersonate",
+            headers={
+                "Authorization": f"Bearer {settings.DOGRAH_ADMIN_TOKEN}",
+                "Content-Type": "application/json"
+            },
+            json={"email": customer.contact_email}
+        )
+        if response.status_code != 200:
+            logger.error(f"Impersonation failed: {response.text}")
+            raise HTTPException(500, f"Failed to generate impersonation link. Is the email registered in Dograh?")
+            
+        data = response.json()
+        
+    return {
+        "status": "assigned",
+        "access_token": data.get("access_token"),
+        "refresh_token": data.get("refresh_token")
+    }
 
 @router.patch("/build-queue/{customer_id}/ready")
 async def mark_ready(customer_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
