@@ -6,6 +6,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { 
   Dialog,
   DialogContent,
@@ -21,7 +22,11 @@ export default function ApplicationsPage() {
   const [selectedApp, setSelectedApp] = useState<any | null>(null);
   const [isApproveOpen, setIsApproveOpen] = useState(false);
   const [isRejectOpen, setIsRejectOpen] = useState(false);
+  const [isRequestInfoOpen, setIsRequestInfoOpen] = useState(false);
+  const [requestInfoMessage, setRequestInfoMessage] = useState("");
   const [rejectReason, setRejectReason] = useState("");
+  const [integrationFee, setIntegrationFee] = useState("0");
+  const [integrationDescription, setIntegrationDescription] = useState("");
 
   useEffect(() => {
     fetchApplications();
@@ -41,16 +46,22 @@ export default function ApplicationsPage() {
     }
   };
 
-  const handleApprove = async (plan: string) => {
+  const handleApprove = async () => {
     if (!selectedApp) return;
     try {
+      const feePaise = parseInt(integrationFee) * 100;
       const res = await adminFetch(`/admin/applications/${selectedApp.id}/approve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan })
+        body: JSON.stringify({ 
+          integration_fee_paise: feePaise || 0,
+          integration_description: feePaise > 0 ? integrationDescription : ""
+        })
       });
       if (res.ok) {
         setIsApproveOpen(false);
+        setIntegrationFee("0");
+        setIntegrationDescription("");
         fetchApplications();
       }
     } catch (e) {
@@ -127,14 +138,7 @@ export default function ApplicationsPage() {
                       <Button 
                         variant="outline" 
                         size="sm"
-                        onClick={async () => {
-                          await adminFetch(`/admin/applications/${app.id}/request-info`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ message: "Please provide more details." })
-                          });
-                          alert("Information requested!");
-                        }}
+                        onClick={() => { setSelectedApp(app); setIsRequestInfoOpen(true); }}
                       >
                         Request Info
                       </Button>
@@ -167,19 +171,34 @@ export default function ApplicationsPage() {
           </DialogHeader>
           <div className="py-4 space-y-4">
             <p className="text-sm text-muted-foreground">
-              Approving <strong>{selectedApp?.company_name}</strong> will generate a setup fee Razorpay link and notify the customer. Select their plan:
+              Approving <strong>{selectedApp?.company_name}</strong> will generate a setup fee Razorpay link and notify the customer.
             </p>
-            <div className="grid grid-cols-2 gap-4">
-              <Button variant="outline" className="h-24 flex flex-col items-center justify-center space-y-2" onClick={() => handleApprove("starter")}>
-                <span className="font-bold">Starter Plan</span>
-                <span className="text-xs text-muted-foreground">₹10,000 Setup</span>
-              </Button>
-              <Button variant="outline" className="h-24 flex flex-col items-center justify-center space-y-2 border-blue-500 bg-blue-50" onClick={() => handleApprove("pro")}>
-                <span className="font-bold text-blue-700">Pro Plan</span>
-                <span className="text-xs text-blue-600/70">₹25,000 Setup</span>
-              </Button>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Custom Integration Fee (₹)</label>
+              <Input 
+                type="number" 
+                value={integrationFee} 
+                onChange={(e: any) => setIntegrationFee(e.target.value)} 
+                placeholder="0 for no fee"
+              />
+              <p className="text-xs text-muted-foreground">₹0 = agent build is always free. Customer selects their own tier after wallet deposit.</p>
             </div>
+            {parseInt(integrationFee) > 0 && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Integration Description</label>
+                <textarea 
+                  className="w-full min-h-[80px] p-2 border rounded-md text-sm" 
+                  value={integrationDescription} 
+                  onChange={(e: any) => setIntegrationDescription(e.target.value)} 
+                  placeholder="E.g., HubSpot CRM webhook integration + Custom reporting pipeline..."
+                />
+              </div>
+            )}
           </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsApproveOpen(false)}>Cancel</Button>
+            <Button onClick={handleApprove}>Confirm Approval</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -202,6 +221,49 @@ export default function ApplicationsPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsRejectOpen(false)}>Cancel</Button>
             <Button variant="destructive" onClick={handleReject} disabled={!rejectReason.trim()}>Confirm Rejection</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={isRequestInfoOpen} onOpenChange={setIsRequestInfoOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Request Information</DialogTitle>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            <p className="text-sm text-muted-foreground">
+              What additional information do you need from <strong>{selectedApp?.company_name}</strong>?
+            </p>
+            <textarea 
+              className="w-full min-h-[100px] p-3 border rounded-md" 
+              placeholder="e.g. Please clarify your use case for outbound calls..."
+              value={requestInfoMessage}
+              onChange={(e) => setRequestInfoMessage(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsRequestInfoOpen(false)}>Cancel</Button>
+            <Button 
+              onClick={async () => {
+                if (!selectedApp || !requestInfoMessage.trim()) return;
+                try {
+                  const res = await adminFetch(`/admin/applications/${selectedApp.id}/request-info`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ message: requestInfoMessage })
+                  });
+                  if (res.ok) {
+                    setIsRequestInfoOpen(false);
+                    setRequestInfoMessage("");
+                    alert("Information requested!");
+                  }
+                } catch (e) {
+                  console.error(e);
+                }
+              }} 
+              disabled={!requestInfoMessage.trim()}
+            >
+              Send Request
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

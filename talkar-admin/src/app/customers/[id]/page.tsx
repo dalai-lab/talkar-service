@@ -30,17 +30,29 @@ export default function CustomerDetailPage() {
   const [newPlan, setNewPlan] = useState("");
   const [planLoading, setPlanLoading] = useState(false);
 
+  const [phoneNumbers, setPhoneNumbers] = useState<any[]>([]);
+  const [phoneNumberInput, setPhoneNumberInput] = useState("");
+  const [plivoIdInput, setPlivoIdInput] = useState("");
+  const [isAssigningPhone, setIsAssigningPhone] = useState(false);
+
   useEffect(() => {
     fetchCustomer();
   }, [id]);
 
   const fetchCustomer = async () => {
     try {
-      const res = await adminFetch(`/admin/customers/${id}`);
+      const [res, phoneRes] = await Promise.all([
+        adminFetch(`/admin/customers/${id}`),
+        adminFetch(`/admin/customers/${id}/phone-numbers`)
+      ]);
       if (res.ok) {
         const data = await res.json();
         setCustomer(data);
-        setNewPlan(data.onboarding_form?.approved_plan || "");
+        setNewPlan(data.onboarding_form?.approved_tier || "");
+      }
+      if (phoneRes.ok) {
+        const pData = await phoneRes.json();
+        setPhoneNumbers(pData);
       }
     } catch (e) {
       console.error(e);
@@ -76,11 +88,11 @@ export default function CustomerDetailPage() {
       const res = await adminFetch(`/admin/customers/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan: newPlan })
+        body: JSON.stringify({ tier: newPlan })
       });
       if (res.ok) {
         setIsPlanOpen(false);
-        alert(`Plan updated to "${newPlan}" and Dograh config has been re-provisioned!`);
+        alert(`Tier updated to "${newPlan}" and Dograh config has been re-provisioned!`);
         fetchCustomer();
       } else {
         const err = await res.json().catch(() => ({}));
@@ -106,10 +118,34 @@ export default function CustomerDetailPage() {
   const handleDenyUpgrade = async () => {
     if (!confirm("Are you sure you want to deny this upgrade request?")) return;
     try {
-      const res = await adminFetch(`/admin/customers/${id}/deny-upgrade`, { method: "POST" });
+      const res = await adminFetch(`/admin/customers/${id}/deny-tier-upgrade`, { method: "POST" });
       if (res.ok) fetchCustomer();
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const handleAssignPhone = async () => {
+    if (!phoneNumberInput) return;
+    setIsAssigningPhone(true);
+    try {
+      const res = await adminFetch(`/admin/customers/${id}/assign-phone-number`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ number: phoneNumberInput, plivo_number_id: plivoIdInput })
+      });
+      if (res.ok) {
+        setPhoneNumberInput("");
+        setPlivoIdInput("");
+        fetchCustomer();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Failed to assign: ${err.detail || "Unknown error"}`);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsAssigningPhone(false);
     }
   };
 
@@ -130,8 +166,7 @@ export default function CustomerDetailPage() {
   if (loading) return <div>Loading...</div>;
   if (!customer) return <div>Customer not found.</div>;
 
-  const currentPlan = customer.onboarding_form?.approved_plan || "None";
-  const serviceType = customer.onboarding_form?.wantsBuildForMe === false ? "Self-Serve" : "Managed (Build for me)";
+  const currentPlan = customer.onboarding_form?.approved_tier || "None";
 
   return (
     <div className="space-y-6">
@@ -144,28 +179,26 @@ export default function CustomerDetailPage() {
           <div className="flex gap-2 mt-2">
             <Badge variant="outline">ID: {customer.id}</Badge>
             <Badge>{customer.status}</Badge>
-            <Badge variant="secondary">{serviceType}</Badge>
           </div>
         </div>
         <div className="space-x-2">
           <Button variant="outline" onClick={() => setIsCreditOpen(true)}>Grant Manual Credit</Button>
-          <Button variant="outline" onClick={() => setIsPlanOpen(true)}>Upgrade / Change Plan</Button>
+          <Button variant="outline" onClick={() => setIsPlanOpen(true)} disabled={!['active', 'suspended'].includes(customer.status)}>Change Tier</Button>
           <Button variant="outline" onClick={handleRetryProvisioning}>Retry Provisioning</Button>
           <Button variant="destructive" onClick={handleSuspend}>Suspend Account</Button>
         </div>
       </div>
 
-      {customer.onboarding_form?.plan_upgrade_requested && (
+      {customer.onboarding_form?.tier_upgrade_requested && (
         <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4">
-          <p className="font-medium">⚠️ Upgrade Request Pending</p>
+          <p className="font-medium">⚠️ Tier Upgrade Request Pending</p>
           <p className="text-sm text-muted-foreground mt-1">
-            Customer requested upgrade to <strong>{customer.onboarding_form.plan_upgrade_requested}</strong>
-            {" "}on {new Date(customer.onboarding_form.plan_upgrade_requested_at).toLocaleDateString()}.
+            Customer requested upgrade to <strong>{customer.onboarding_form.tier_upgrade_requested}</strong>.
           </p>
           <div className="mt-3 flex gap-2">
             <Button 
               onClick={() => {
-                setNewPlan(customer.onboarding_form.plan_upgrade_requested);
+                setNewPlan(customer.onboarding_form.tier_upgrade_requested);
                 setIsPlanOpen(true);
               }}
             >
@@ -213,7 +246,7 @@ export default function CustomerDetailPage() {
               <p>{customer.dograh_org_id || "Unprovisioned"}</p>
             </div>
             <div>
-              <Label className="text-muted-foreground text-xs">Current Plan</Label>
+              <Label className="text-muted-foreground text-xs">Current Tier</Label>
               <div className="flex gap-2 items-center mt-1">
                 <Badge>{currentPlan}</Badge>
               </div>
@@ -221,6 +254,47 @@ export default function CustomerDetailPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader><CardTitle>Phone Numbers</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          <div className="bg-muted/30 p-4 rounded-md space-y-4">
+            <h4 className="font-medium text-sm">Assign New Number</h4>
+            <div className="flex gap-4 items-end">
+              <div className="space-y-2 flex-1">
+                <Label>Phone Number (E.164)</Label>
+                <Input placeholder="+919876543210" value={phoneNumberInput} onChange={e => setPhoneNumberInput(e.target.value)} />
+              </div>
+              <div className="space-y-2 flex-1">
+                <Label>Plivo / Twilio ID (optional)</Label>
+                <Input placeholder="e.g. 1234567890" value={plivoIdInput} onChange={e => setPlivoIdInput(e.target.value)} />
+              </div>
+              <Button onClick={handleAssignPhone} disabled={isAssigningPhone || !phoneNumberInput}>
+                {isAssigningPhone ? "Assigning..." : "Assign Number"}
+              </Button>
+            </div>
+          </div>
+          
+          <div className="pt-4 border-t">
+            <h4 className="font-medium text-sm mb-2">Assigned Numbers</h4>
+            {phoneNumbers.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No phone numbers assigned.</p>
+            ) : (
+              <div className="space-y-2">
+                {phoneNumbers.map((pn) => (
+                  <div key={pn.id} className="flex justify-between items-center bg-background border p-3 rounded-md">
+                    <div>
+                      <p className="font-mono">{pn.number}</p>
+                      {pn.plivo_number_id && <p className="text-xs text-muted-foreground">Provider ID: {pn.plivo_number_id}</p>}
+                    </div>
+                    <Badge>{pn.status}</Badge>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Grant Credit Modal */}
       <Dialog open={isCreditOpen} onOpenChange={setIsCreditOpen}>
@@ -249,23 +323,24 @@ export default function CustomerDetailPage() {
       <Dialog open={isPlanOpen} onOpenChange={setIsPlanOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Upgrade / Change Plan</DialogTitle>
+            <DialogTitle>Change Tier</DialogTitle>
             <DialogDescription>
-              Changing the plan will immediately update the customer&apos;s Dograh config (LLM model, concurrent call limits, TTS provider) and subscription pricing.
+              Changing the tier will immediately update the customer&apos;s Dograh config (LLM model, concurrent call limits, TTS provider) and subscription pricing.
             </DialogDescription>
           </DialogHeader>
           <div className="py-4 space-y-4">
             <div className="space-y-2">
-              <Label>Current Plan</Label>
+              <Label>Current Tier</Label>
               <Badge className="block w-fit">{currentPlan}</Badge>
             </div>
             <div className="space-y-2">
-              <Label>New Plan</Label>
+              <Label>New Tier</Label>
               <Select value={newPlan} onValueChange={(v) => v && setNewPlan(v)}>
-                <SelectTrigger><SelectValue placeholder="Select plan" /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="Select tier" /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="starter">Starter — ₹5,000/mo · ₹18/min · 2 concurrent calls</SelectItem>
-                  <SelectItem value="pro">Pro — ₹15,000/mo · ₹14/min · 10 concurrent calls</SelectItem>
+                  <SelectItem value="starter">Starter — ₹12/min · 2 concurrent calls · Deepgram</SelectItem>
+                  <SelectItem value="pro">Pro — ₹18/min · 10 concurrent calls · ElevenLabs</SelectItem>
+                  <SelectItem value="elite">Elite — ₹25/min · Unlimited calls · ElevenLabs</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -276,7 +351,7 @@ export default function CustomerDetailPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsPlanOpen(false)}>Cancel</Button>
             <Button onClick={handleUpgradePlan} disabled={!newPlan || planLoading}>
-              {planLoading ? "Updating..." : "Confirm Plan Change"}
+              {planLoading ? "Updating..." : "Confirm Tier Change"}
             </Button>
           </DialogFooter>
         </DialogContent>

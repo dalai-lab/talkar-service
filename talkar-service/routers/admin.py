@@ -274,6 +274,7 @@ async def mark_ready(customer_id: int, db: AsyncSession = Depends(get_db), curre
     result = await db.execute(select(Customer).where(Customer.id == customer_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
+    if customer.status != "agent_building": raise HTTPException(400, "Customer is not in agent_building state")
     
     wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer_id))
     wallet = wallet_res.scalar_one_or_none()
@@ -379,6 +380,11 @@ class ApprovePhoneNumberRequestBody(BaseModel):
 
 class DenyPhoneNumberRequestBody(BaseModel):
     admin_note: str
+
+@router.get("/customers/{customer_id}/phone-numbers")
+async def get_customer_phone_numbers(customer_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    result = await db.execute(select(PhoneNumber).where(PhoneNumber.customer_id == customer_id))
+    return result.scalars().all()
 
 @router.post("/customers/{customer_id}/assign-phone-number")
 async def assign_phone_number(customer_id: int, data: AssignPhoneNumberRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):

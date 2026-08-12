@@ -12,13 +12,15 @@ import {
   Wallet, 
   Activity, 
   TrendingUp, 
-  Building 
+  Building,
+  Phone
 } from "lucide-react";
 
 const NAV_ITEMS = [
   { title: "Applications", href: "/applications", icon: ListTodo },
   { title: "Customers", href: "/customers", icon: Users },
   { title: "Build Queue", href: "/build-queue", icon: Building },
+  { title: "Number Requests", href: "/phone-number-requests", icon: Phone },
   { title: "Wallet Overview", href: "/wallet-overview", icon: Wallet },
   { title: "Call Activity", href: "/call-activity", icon: Activity },
   { title: "Profitability", href: "/profitability", icon: TrendingUp },

@@ -44,7 +44,7 @@ export default function ProfitabilityPage() {
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold text-green-700">₹{metrics.revenue.toFixed(2)}</div>
-            <p className="text-xs text-muted-foreground mt-1">From setup fees & subscriptions</p>
+            <p className="text-xs text-muted-foreground mt-1">From integration fees & per-minute billing</p>
           </CardContent>
         </Card>
         
