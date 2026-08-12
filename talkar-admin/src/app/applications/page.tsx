@@ -123,7 +123,12 @@ export default function ApplicationsPage() {
                 apps.map((app) => (
                   <TableRow key={app.id}>
                     <TableCell>{new Date(app.created_at).toLocaleDateString()}</TableCell>
-                    <TableCell className="font-medium">{app.company_name}</TableCell>
+                    <TableCell className="font-medium">
+                      {app.company_name}
+                      {app.onboarding_form?.needsApiIntegration && (
+                        <div className="mt-1"><Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">Custom API Req</Badge></div>
+                      )}
+                    </TableCell>
                     <TableCell>
                       {app.contact_name}
                       <br />
@@ -171,8 +176,17 @@ export default function ApplicationsPage() {
           </DialogHeader>
           <div className="py-4 space-y-4">
             <p className="text-sm text-muted-foreground">
-              Approving <strong>{selectedApp?.company_name}</strong> will generate a setup fee Razorpay link and notify the customer.
+              {selectedApp?.onboarding_form?.needsApiIntegration 
+                ? `Approving ${selectedApp?.company_name} will generate a custom integration fee Razorpay link and notify the customer.`
+                : `Approving ${selectedApp?.company_name} will mark their agent as ready for building. No integration fee is required by default.`}
             </p>
+            
+            {selectedApp?.onboarding_form?.needsApiIntegration && (
+              <div className="bg-blue-50/50 border border-blue-100 p-3 rounded-md text-sm mb-4">
+                <span className="font-semibold text-blue-900 block mb-1">Customer's Integration Request:</span>
+                <span className="text-blue-800">{selectedApp.onboarding_form.apiIntegrationDetails}</span>
+              </div>
+            )}
             <div className="space-y-2">
               <label className="text-sm font-medium">Custom Integration Fee (₹)</label>
               <Input 
