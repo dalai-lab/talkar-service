@@ -206,6 +206,11 @@ class TierUpgradeRequest(BaseModel):
 
 @router.post("/by-org/{org_id}/request-tier-upgrade")
 async def request_tier_upgrade(org_id: int, data: TierUpgradeRequest, db: AsyncSession = Depends(get_db)):
+    from config import TIER_CONFIG
+    
+    if data.requested_tier not in TIER_CONFIG:
+        raise HTTPException(400, f"Invalid tier: {data.requested_tier}")
+        
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
@@ -217,18 +222,32 @@ async def request_tier_upgrade(org_id: int, data: TierUpgradeRequest, db: AsyncS
     if current_tier == data.requested_tier:
         raise HTTPException(400, f"Already on {data.requested_tier} tier")
         
+    # Instantly update subscription
+    if sub:
+        sub.plan = data.requested_tier
+        sub.per_minute_rate_paise = TIER_CONFIG[data.requested_tier]["per_minute_rate_paise"]
+    
     existing_form = customer.onboarding_form or {}
-    existing_form["tier_upgrade_requested"] = data.requested_tier
-    existing_form["tier_upgrade_requested_at"] = datetime.utcnow().isoformat()
+    # Apply the new tier
+    existing_form["approved_tier"] = data.requested_tier
+    # Clear any old upgrade requests
+    existing_form.pop("tier_upgrade_requested", None)
+    existing_form.pop("tier_upgrade_requested_at", None)
+    
     customer.onboarding_form = dict(existing_form) 
     await db.commit()
     
+    # Run best-effort synchronous provisioning to sync to Dograh
+    from services.provisioning_service import run_provisioning
+    await run_provisioning(customer.id, data.requested_tier, db)
+    
+    # Notify customer of instant upgrade/downgrade
     await notification_service.send_email(
-        to_email=settings.ADMIN_EMAIL,
-        subject=f"[Talkar] Tier Upgrade Request — {customer.company_name}",
-        body=f"{customer.company_name} ({customer.contact_email}) has requested an upgrade from {current_tier} to {data.requested_tier}. Approve at admin.talkar.in/customers/{customer.id}"
+        to_email=customer.contact_email,
+        subject=f"Your Talkar Tier has been updated to {data.requested_tier.title()}",
+        body=f"Hi {customer.contact_name},\n\nYour tier has been instantly updated from {current_tier} to {data.requested_tier}. Your agent's concurrency limits and pricing have been adjusted automatically.\n\nThank you for using Talkar!"
     )
-    return {"status": "request_submitted"}
+    return {"status": "success", "new_tier": data.requested_tier}
 
 class PhoneNumberRequestBody(BaseModel):
     quantity: int
