@@ -277,7 +277,7 @@ async def assign_build(customer_id: int, db: AsyncSession = Depends(get_db), cur
         response = await client.post(
             f"{settings.DOGRAH_API_URL}/api/v1/superuser/impersonate",
             headers={
-                "Authorization": f"Bearer {settings.DOGRAH_ADMIN_TOKEN}",
+                "X-API-Key": settings.DOGRAH_ADMIN_TOKEN,
                 "Content-Type": "application/json"
             },
             json={"email": customer.contact_email}
