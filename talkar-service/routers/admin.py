@@ -283,8 +283,10 @@ async def assign_build(customer_id: int, db: AsyncSession = Depends(get_db), cur
             json={"email": customer.contact_email}
         )
         if response.status_code != 200:
+            import logging
+            logger = logging.getLogger(__name__)
             logger.error(f"Impersonation failed: {response.text}")
-            raise HTTPException(500, f"Failed to generate impersonation link. Is the email registered in Dograh?")
+            raise HTTPException(500, f"Failed to generate impersonation link. Dograh error: {response.text}")
             
         data = response.json()
         
