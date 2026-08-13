@@ -131,6 +131,25 @@ async def submit_onboarding_by_org(dograh_org_id: int, data: dict, db: AsyncSess
     )
     return customer
 
+@router.post("/{customer_id}/onboarding")
+async def submit_onboarding_by_id(customer_id: int, data: dict, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if customer.status != "pending_approval":
+        raise HTTPException(status_code=400, detail="Customer is not in pending_approval state")
+    customer.onboarding_form = data.get("form", {})
+    customer.documents = data.get("documents", [])
+    customer.status = "under_review"
+    await db.commit()
+    await db.refresh(customer)
+    await notification_service.send_email(
+        to_email="admin@talkar.ai",
+        subject=f"New Application: {customer.company_name}",
+        body=f"{customer.company_name} ({customer.contact_email}) submitted their onboarding form. Review at admin.talkar.ai/applications"
+    )
+    return customer
 # Parameterized paths after static ones
 
 @router.get("/{customer_id}")
