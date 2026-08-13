@@ -64,11 +64,12 @@ async def get_all_customers(
 async def get_customer_status(
     dograh_org_id: Optional[int] = None,
     customer_id: Optional[int] = None,
+    contact_email: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ):
     """
     Called by Dograh UI middleware to gate account access.
-    dograh_org_id or customer_id as query param.
+    dograh_org_id, customer_id, or contact_email as query param.
     Unknown orgs return status=active (non-Talkar users pass through).
     """
     customer = None
@@ -77,6 +78,9 @@ async def get_customer_status(
         customer = result.scalar_one_or_none()
     elif customer_id:
         result = await db.execute(select(Customer).where(Customer.id == customer_id))
+        customer = result.scalar_one_or_none()
+    elif contact_email:
+        result = await db.execute(select(Customer).where(Customer.contact_email == contact_email))
         customer = result.scalar_one_or_none()
 
     if not customer:
