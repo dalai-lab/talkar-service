@@ -217,6 +217,30 @@ export default function CustomerDetailPage() {
     }
   };
 
+  const [isImpersonating, setIsImpersonating] = useState(false);
+  const handleImpersonate = async () => {
+    setIsImpersonating(true);
+    try {
+      const res = await adminFetch(`/admin/customers/${id}/impersonate`, { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        const token = data.access_token;
+        // The main site lives at talkar.in. When impersonating locally, we might need to point to localhost or talkar.in.
+        // The auth route is /auth/impersonate
+        const TALKAR_UI_URL = process.env.NEXT_PUBLIC_TALKAR_URL || "https://talkar.in";
+        window.open(`${TALKAR_UI_URL}/auth/impersonate?token=${token}`, '_blank');
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Impersonation failed: ${err.detail || "Unknown error"}`);
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Failed to connect to admin API");
+    } finally {
+      setIsImpersonating(false);
+    }
+  };
+
   if (loading) return <div>Loading...</div>;
   if (!customer) return <div>Customer not found.</div>;
 
@@ -236,6 +260,9 @@ export default function CustomerDetailPage() {
           </div>
         </div>
         <div className="space-x-2">
+          <Button variant="default" onClick={handleImpersonate} disabled={isImpersonating}>
+            {isImpersonating ? "..." : "Impersonate User"}
+          </Button>
           <Button variant="outline" onClick={() => setIsCreditOpen(true)}>Grant Manual Credit</Button>
           <Button variant="outline" onClick={() => setIsDeductOpen(true)}>Deduct Balance</Button>
           <Button variant="outline" onClick={() => setIsPlanOpen(true)} disabled={!['active', 'suspended'].includes(customer.status)}>Change Tier</Button>

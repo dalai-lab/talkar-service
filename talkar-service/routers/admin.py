@@ -157,6 +157,38 @@ async def get_customer(customer_id: int, db: AsyncSession = Depends(get_db), cur
     if not customer: raise HTTPException(404, "Customer not found")
     return customer
 
+@router.post("/customers/{customer_id}/impersonate")
+async def impersonate_customer(customer_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    import httpx
+    from config import settings
+    
+    result = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = result.scalar_one_or_none()
+    if not customer: raise HTTPException(404, "Customer not found")
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{settings.DOGRAH_API_URL}/api/v1/superuser/impersonate",
+            headers={
+                "X-API-Key": settings.DOGRAH_ADMIN_TOKEN,
+                "Content-Type": "application/json"
+            },
+            json={"user_id": customer.dograh_user_id}
+        )
+        if response.status_code != 200:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Impersonation failed: {response.text}")
+            raise HTTPException(500, f"Failed to generate impersonation link. Dograh error: {response.text}")
+            
+        data = response.json()
+        
+    return {
+        "status": "impersonated",
+        "access_token": data.get("access_token"),
+        "refresh_token": data.get("refresh_token")
+    }
+
 @router.patch("/customers/{customer_id}")
 async def update_customer(customer_id: int, data: CustomerUpdateRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
     result = await db.execute(select(Customer).where(Customer.id == customer_id))
