@@ -62,10 +62,11 @@ async def run_provisioning(customer_id: int, plan: str = None, db: AsyncSession 
         await dograh_client.upsert_org_config(customer.dograh_org_id, "WORKFLOW_TIMEOUT_SECONDS", {"value": tier_cfg["max_call_duration_seconds"]})
 
         # Step 4: Create wallet record in Talkar DB (balance = 0)
-        existing_wallet = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
-        if not existing_wallet.scalar_one_or_none():
-            wallet = Wallet(customer_id=customer.id, balance_paise=0)
-            db.add(wallet)
+        if customer.billing_org_id is None:
+            existing_wallet = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
+            if not existing_wallet.scalar_one_or_none():
+                wallet = Wallet(customer_id=customer.id, balance_paise=0)
+                db.add(wallet)
 
         # Step 5: Create Subscription record in Talkar DB (or update if exists)
         existing_sub_check = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))

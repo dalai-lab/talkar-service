@@ -219,15 +219,15 @@ async def update_agent_rate(customer_id: int, agent_id: int, data: UpdateAgentRa
 
 @router.post("/customers/{customer_id}/credit")
 async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
-    wallet = await db.execute(select(Wallet).where(Wallet.customer_id == customer_id))
-    wallet = wallet.scalar_one_or_none()
+    from services.billing_service import get_billing_wallet
+    wallet, master_id = await get_billing_wallet(db, customer_id)
     if not wallet: raise HTTPException(404, "Wallet not found")
 
     wallet.balance_paise += data.amount_paise
     
     # Store transaction
     txn = WalletTransaction(
-        customer_id=customer_id,
+        customer_id=master_id,
         type="manual_credit",
         amount_paise=data.amount_paise,
         description=data.description
@@ -248,14 +248,14 @@ async def admin_deduct_customer(customer_id: int, data: AdminDeductRequest, db: 
     if not customer: raise HTTPException(404, "Customer not found")
     if data.amount_paise <= 0: raise HTTPException(400, "Amount must be positive")
     
-    wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer_id))
-    wallet = wallet_res.scalar_one_or_none()
+    from services.billing_service import get_billing_wallet
+    wallet, master_id = await get_billing_wallet(db, customer_id)
     if not wallet: raise HTTPException(404, "Wallet not found")
     
     # Deduct balance
     result = await db.execute(
         update(Wallet)
-        .where(Wallet.customer_id == customer_id)
+        .where(Wallet.customer_id == master_id)
         .values(balance_paise=Wallet.balance_paise - data.amount_paise)
         .returning(Wallet)
     )
@@ -263,7 +263,7 @@ async def admin_deduct_customer(customer_id: int, data: AdminDeductRequest, db: 
     
     # Record transaction
     transaction = WalletTransaction(
-        customer_id=customer_id,
+        customer_id=master_id,
         type="manual_deduct",
         amount_paise=-data.amount_paise,
         description=f"Admin deduction: {data.reason} (by {current_admin.email})"

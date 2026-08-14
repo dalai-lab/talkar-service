@@ -27,15 +27,20 @@ class UpdateStatusRequest(BaseModel):
 
 @router.post("/")
 async def create_customer(data: CreateCustomerRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Customer).where(Customer.contact_email == data.email))
-    if result.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Customer with this email already exists")
+    result = await db.execute(select(Customer).where(Customer.contact_email == data.email).order_by(Customer.id))
+    existing = result.scalars().first()
+    
+    billing_org_id = None
+    if existing:
+        billing_org_id = existing.billing_org_id if existing.billing_org_id else existing.id
+
     customer = Customer(
         contact_email=data.email,
         contact_name=data.contact_name,
         company_name=data.company_name,
         dograh_org_id=data.dograh_org_id,
         dograh_user_id=data.dograh_user_id,
+        billing_org_id=billing_org_id,
         status="pending_approval"
     )
     db.add(customer)
@@ -301,12 +306,13 @@ class SupportRequestPayload(BaseModel):
     agent_id: Optional[int] = None
 
 @router.post("/support-requests")
-async def create_support_request(data: SupportRequestPayload, contact_email: str = Query(...), x_talkar_email: Optional[str] = Header(None), db: AsyncSession = Depends(get_db)):
-    if not x_talkar_email or x_talkar_email != contact_email:
-        raise HTTPException(403, "Not authorized for this email")
-    result = await db.execute(select(Customer).where(Customer.contact_email == contact_email))
+async def create_support_request(data: SupportRequestPayload, dograh_org_id: int = Query(...), x_talkar_email: Optional[str] = Header(None), db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
+    
+    if not x_talkar_email or x_talkar_email != customer.contact_email:
+        raise HTTPException(403, "Not authorized for this organization")
     
     from db.models import SupportRequest
     req = SupportRequest(
@@ -327,12 +333,13 @@ async def create_support_request(data: SupportRequestPayload, contact_email: str
     return {"status": "success"}
 
 @router.get("/support-requests")
-async def get_support_requests(contact_email: str = Query(...), x_talkar_email: Optional[str] = Header(None), db: AsyncSession = Depends(get_db)):
-    if not x_talkar_email or x_talkar_email != contact_email:
-        raise HTTPException(403, "Not authorized for this email")
-    result = await db.execute(select(Customer).where(Customer.contact_email == contact_email))
+async def get_support_requests(dograh_org_id: int = Query(...), x_talkar_email: Optional[str] = Header(None), db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
+
+    if not x_talkar_email or x_talkar_email != customer.contact_email:
+        raise HTTPException(403, "Not authorized for this organization")
     
     from db.models import SupportRequest
     reqs = await db.execute(select(SupportRequest).where(SupportRequest.customer_id == customer.id).order_by(SupportRequest.created_at.desc()))

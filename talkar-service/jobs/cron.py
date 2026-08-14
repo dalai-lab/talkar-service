@@ -82,9 +82,7 @@ async def check_suspensions(ctx):
     async with AsyncSessionLocal() as db:
         # Suspend accounts dormant for 14+ days
         suspend_query = text("""
-            UPDATE customers SET status = 'suspended'
-            WHERE status = 'active'
-              AND id IN (
+            WITH MasterSuspensions AS (
                 SELECT w.customer_id FROM wallets w
                 WHERE w.balance_paise = 0
                   AND NOT EXISTS (
@@ -92,7 +90,11 @@ async def check_suspensions(ctx):
                     WHERE wt.customer_id = w.customer_id 
                     AND wt.created_at >= now() - interval '14 days'
                   )
-              )
+            )
+            UPDATE customers SET status = 'suspended'
+            WHERE status = 'active'
+              AND (id IN (SELECT customer_id FROM MasterSuspensions)
+                   OR billing_org_id IN (SELECT customer_id FROM MasterSuspensions))
             RETURNING id, contact_email
         """)
         suspended_result = await db.execute(suspend_query)

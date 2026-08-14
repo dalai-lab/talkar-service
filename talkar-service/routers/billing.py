@@ -259,8 +259,8 @@ async def check_quota(data: DograhQuotaRequest, db: AsyncSession = Depends(get_d
     if not customer:
         return {"has_quota": True}  # Pass through if data integrity issue
         
-    wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
-    wallet = wallet_res.scalar_one_or_none()
+    from services.billing_service import get_billing_wallet
+    wallet, master_id = await get_billing_wallet(db, customer.id)
     
     if not wallet or wallet.balance_paise <= 0:
         return {"has_quota": False}
@@ -333,9 +333,12 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
     db.add(call_log)
 
     # SOT line 282: atomic deduction — UPDATE...RETURNING to get new balance
+    from services.billing_service import get_billing_wallet
+    wallet, master_id = await get_billing_wallet(db, customer.id)
+    
     result2 = await db.execute(
         update(Wallet)
-        .where(Wallet.customer_id == customer.id)
+        .where(Wallet.customer_id == master_id)
         .values(balance_paise=Wallet.balance_paise - cost_paise)
         .returning(Wallet)
     )
@@ -369,8 +372,9 @@ async def get_wallet_by_org(org_id: int, db: AsyncSession = Depends(get_db)):
     if not customer:
         raise HTTPException(404, "Customer not found")
         
-    wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
-    wallet = wallet_res.scalar_one_or_none()
+    from services.billing_service import get_billing_wallet
+    wallet, master_id = await get_billing_wallet(db, customer.id)
+    
     if not wallet:
         raise HTTPException(404, "Wallet not found")
         
@@ -395,8 +399,9 @@ async def create_razorpay_customer(data: CreateRazorpayCustomerRequest, db: Asyn
     if not customer:
         raise HTTPException(404, "Customer not found")
     
-    wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
-    wallet = wallet_res.scalar_one_or_none()
+    from services.billing_service import get_billing_wallet
+    wallet, master_id = await get_billing_wallet(db, customer.id)
+    
     if not wallet:
         raise HTTPException(404, "Wallet not found")
     
@@ -429,8 +434,9 @@ async def save_card(data: SaveCardRequest, db: AsyncSession = Depends(get_db)):
     if not customer:
         raise HTTPException(404, "Customer not found")
     
-    wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
-    wallet = wallet_res.scalar_one_or_none()
+    from services.billing_service import get_billing_wallet
+    wallet, master_id = await get_billing_wallet(db, customer.id)
+    
     if not wallet:
         raise HTTPException(404, "Wallet not found")
     
@@ -472,7 +478,11 @@ async def get_transactions_by_org(
     if not customer:
         raise HTTPException(404, "Customer not found")
     
-    base_query = select(WalletTransaction).where(WalletTransaction.customer_id == customer.id)
+    # Unified ledger: get all customer IDs with same email
+    customers_result = await db.execute(select(Customer.id).where(Customer.contact_email == customer.contact_email))
+    customer_ids = customers_result.scalars().all()
+    
+    base_query = select(WalletTransaction).where(WalletTransaction.customer_id.in_(customer_ids))
     if type and type != "all":
         base_query = base_query.where(WalletTransaction.type == type)
     

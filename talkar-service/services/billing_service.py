@@ -2,29 +2,46 @@ import logging
 from sqlalchemy import select, update
 from sqlalchemy.sql import func
 from sqlalchemy.ext.asyncio import AsyncSession
-from db.models import Wallet, WalletTransaction
+from db.models import Wallet, WalletTransaction, Customer
 from services import razorpay_client
 from services import notification_service
 
 logger = logging.getLogger(__name__)
 
+async def get_billing_wallet(db: AsyncSession, customer_id: int):
+    result = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = result.scalar_one_or_none()
+    if not customer: return None, None
+    master_customer_id = customer.billing_org_id if customer.billing_org_id else customer.id
+    
+    if customer.billing_org_id:
+        master_res = await db.execute(select(Customer).where(Customer.id == customer.billing_org_id))
+        master = master_res.scalar_one_or_none()
+        if master and master.status == "suspended":
+            raise ValueError(f"Master organization {master.id} is suspended. Cannot perform billing operations.")
+            
+    result = await db.execute(select(Wallet).where(Wallet.customer_id == master_customer_id))
+    wallet = result.scalar_one_or_none()
+    return wallet, master_customer_id
+
 async def credit_wallet(db: AsyncSession, customer_id: int, amount_paise: int, razorpay_order_id: str = None) -> Wallet:
     """Safely adds balance to a customer's wallet and records the ledger entry."""
+    wallet, master_id = await get_billing_wallet(db, customer_id)
+    if not wallet:
+        raise ValueError(f"Wallet not found for customer {customer_id}")
+
     # 1. Atomic update of wallet balance
     result = await db.execute(
         update(Wallet)
-        .where(Wallet.customer_id == customer_id)
+        .where(Wallet.customer_id == master_id)
         .values(balance_paise=Wallet.balance_paise + amount_paise)
         .returning(Wallet)
     )
     wallet = result.scalar_one_or_none()
     
-    if not wallet:
-        raise ValueError(f"Wallet not found for customer {customer_id}")
-
-    # 2. Record transaction
+    # 2. Record transaction on the master wallet owner
     transaction = WalletTransaction(
-        customer_id=customer_id,
+        customer_id=master_id,
         type="top_up",
         amount_paise=amount_paise,
         description="Wallet top-up via Razorpay",
@@ -37,8 +54,7 @@ async def credit_wallet(db: AsyncSession, customer_id: int, amount_paise: int, r
 
 async def check_and_trigger_auto_recharge(db: AsyncSession, customer_id: int):
     """Evaluates threshold and triggers Razorpay token charge if enabled."""
-    result = await db.execute(select(Wallet).where(Wallet.customer_id == customer_id))
-    wallet = result.scalar_one_or_none()
+    wallet, master_id = await get_billing_wallet(db, customer_id)
     
     if not wallet or not wallet.auto_recharge_enabled:
         return
@@ -52,12 +68,12 @@ async def check_and_trigger_auto_recharge(db: AsyncSession, customer_id: int):
                 amount_paise=wallet.auto_recharge_amount_paise,
             )
             if charge.get("status") == "captured":
-                await credit_wallet(db, customer_id, wallet.auto_recharge_amount_paise)
-                logger.info(f"Auto-recharge successful for customer {customer_id}")
+                await credit_wallet(db, master_id, wallet.auto_recharge_amount_paise)
+                logger.info(f"Auto-recharge successful for customer {master_id}")
         except Exception as e:
-            logger.error(f"Auto-recharge failed for customer {customer_id}: {e}")
-            await notification_service.notify_customer_auto_recharge_failed(customer_id)
-            await notification_service.notify_admin_auto_recharge_failed(customer_id)
+            logger.error(f"Auto-recharge failed for customer {master_id}: {e}")
+            await notification_service.notify_customer_auto_recharge_failed(master_id)
+            await notification_service.notify_admin_auto_recharge_failed(master_id)
 
 async def deduct_for_run(run_id: int):
     """
@@ -124,10 +140,12 @@ async def deduct_for_run(run_id: int):
         )
         db.add(call_log)
         
+        wallet, master_id = await get_billing_wallet(db, customer.id)
+        
         # Deduct wallet
         result = await db.execute(
             update(Wallet)
-            .where(Wallet.customer_id == customer.id)
+            .where(Wallet.customer_id == master_id)
             .values(balance_paise=Wallet.balance_paise - cost_paise)
             .returning(Wallet)
         )
