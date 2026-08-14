@@ -25,12 +25,18 @@ export default function CustomerDetailPage() {
   const [creditAmount, setCreditAmount] = useState("");
   const [creditDesc, setCreditDesc] = useState("");
 
+  // Deduct modal
+  const [isDeductOpen, setIsDeductOpen] = useState(false);
+  const [deductAmount, setDeductAmount] = useState("");
+  const [deductReason, setDeductReason] = useState("");
+
   // Plan upgrade modal
   const [isPlanOpen, setIsPlanOpen] = useState(false);
   const [newPlan, setNewPlan] = useState("");
   const [planLoading, setPlanLoading] = useState(false);
 
   const [phoneNumbers, setPhoneNumbers] = useState<any[]>([]);
+  const [agents, setAgents] = useState<any[]>([]);
   const [phoneNumberInput, setPhoneNumberInput] = useState("");
   const [plivoIdInput, setPlivoIdInput] = useState("");
   const [isAssigningPhone, setIsAssigningPhone] = useState(false);
@@ -41,9 +47,10 @@ export default function CustomerDetailPage() {
 
   const fetchCustomer = async () => {
     try {
-      const [res, phoneRes] = await Promise.all([
+      const [res, phoneRes, agentsRes] = await Promise.all([
         adminFetch(`/admin/customers/${id}`),
-        adminFetch(`/admin/customers/${id}/phone-numbers`)
+        adminFetch(`/admin/customers/${id}/phone-numbers`),
+        adminFetch(`/admin/customers/${id}/agents`)
       ]);
       if (res.ok) {
         const data = await res.json();
@@ -53,6 +60,10 @@ export default function CustomerDetailPage() {
       if (phoneRes.ok) {
         const pData = await phoneRes.json();
         setPhoneNumbers(pData);
+      }
+      if (agentsRes.ok) {
+        const aData = await agentsRes.json();
+        setAgents(aData);
       }
     } catch (e) {
       console.error(e);
@@ -75,6 +86,49 @@ export default function CustomerDetailPage() {
         setCreditDesc("");
         alert("Credit granted successfully!");
         fetchCustomer();
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleDeduct = async () => {
+    try {
+      const amountPaise = parseInt(deductAmount) * 100;
+      const res = await adminFetch(`/admin/customers/${id}/deduct`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount_paise: amountPaise, reason: deductReason })
+      });
+      if (res.ok) {
+        setIsDeductOpen(false);
+        setDeductAmount("");
+        setDeductReason("");
+        alert("Deduction successful!");
+        fetchCustomer();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Failed to deduct: ${err.detail || "Unknown error"}`);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleUpdateRate = async (agentId: number, rateStr: string) => {
+    try {
+      const ratePaise = rateStr ? parseInt(rateStr) * 100 : null;
+      const res = await adminFetch(`/admin/customers/${id}/agents/${agentId}/rate`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ per_minute_rate_paise: ratePaise })
+      });
+      if (res.ok) {
+        alert("Rate updated successfully!");
+        fetchCustomer();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Failed to update rate: ${err.detail || "Unknown error"}`);
       }
     } catch (e) {
       console.error(e);
@@ -183,6 +237,7 @@ export default function CustomerDetailPage() {
         </div>
         <div className="space-x-2">
           <Button variant="outline" onClick={() => setIsCreditOpen(true)}>Grant Manual Credit</Button>
+          <Button variant="outline" onClick={() => setIsDeductOpen(true)}>Deduct Balance</Button>
           <Button variant="outline" onClick={() => setIsPlanOpen(true)} disabled={!['active', 'suspended'].includes(customer.status)}>Change Tier</Button>
           <Button variant="outline" onClick={handleRetryProvisioning}>Retry Provisioning</Button>
           <Button variant="destructive" onClick={handleSuspend}>Suspend Account</Button>
@@ -256,6 +311,40 @@ export default function CustomerDetailPage() {
       </div>
 
       <Card>
+        <CardHeader><CardTitle>Agents & Billing Rates</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          {agents.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No agents found.</p>
+          ) : (
+            <div className="space-y-2">
+              {agents.map((ag) => (
+                <div key={ag.id} className="flex flex-col md:flex-row justify-between items-start md:items-center bg-background border p-4 rounded-md gap-4">
+                  <div>
+                    <p className="font-medium text-base">{ag.name}</p>
+                    <div className="flex gap-2 mt-1">
+                      <Badge variant="outline" className="text-xs">ID: {ag.id}</Badge>
+                      <Badge variant="outline" className="text-xs">Org: {ag.dograh_org_id || 'N/A'}</Badge>
+                      <Badge variant="secondary" className="text-xs">{ag.status}</Badge>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 bg-muted/30 p-2 rounded-md">
+                    <Label className="text-xs font-semibold whitespace-nowrap">Per-Minute Rate (paise)</Label>
+                    <Input 
+                      type="number" 
+                      placeholder={currentPlan === 'starter' ? '1200' : currentPlan === 'pro' ? '1800' : '2500'}
+                      defaultValue={ag.per_minute_rate_paise ?? ""}
+                      className="w-28 text-right font-mono"
+                      onBlur={(e) => handleUpdateRate(ag.id, e.target.value)}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
         <CardHeader><CardTitle>Phone Numbers</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <div className="bg-muted/30 p-4 rounded-md space-y-4">
@@ -315,6 +404,29 @@ export default function CustomerDetailPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsCreditOpen(false)}>Cancel</Button>
             <Button onClick={handleGrantCredit} disabled={!creditAmount || !creditDesc}>Grant Credit</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Deduct Balance Modal */}
+      <Dialog open={isDeductOpen} onOpenChange={setIsDeductOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Deduct Balance</DialogTitle>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            <div className="space-y-2">
+              <Label>Amount (INR)</Label>
+              <Input type="number" placeholder="e.g. 5000" value={deductAmount} onChange={e => setDeductAmount(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label>Reason</Label>
+              <Input placeholder="e.g. Phone number fee" value={deductReason} onChange={e => setDeductReason(e.target.value)} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsDeductOpen(false)}>Cancel</Button>
+            <Button variant="destructive" onClick={handleDeduct} disabled={!deductAmount || !deductReason}>Deduct</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

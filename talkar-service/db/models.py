@@ -100,6 +100,7 @@ class Agent(Base):
     language = Column(Text)
     dograh_workflow_id = Column(Integer)
     dograh_org_id = Column(Integer)
+    per_minute_rate_paise = Column(BigInteger, nullable=True)
     status = Column(Text, default="building")
     built_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -132,3 +133,17 @@ class TalkarAdmin(Base):
     name = Column(Text, nullable=False)
     role = Column(Text, nullable=False, default="admin")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class SupportRequest(Base):
+    __tablename__ = "support_requests"
+    id = Column(Integer, primary_key=True, index=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
+    type = Column(Text, nullable=False)   # 'new_agent'|'add_phone'|'modify_agent'|'billing'|'other'
+    subject = Column(Text, nullable=False)
+    description = Column(Text, nullable=False)
+    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=True)
+    status = Column(Text, nullable=False, default="open")  # open|in_progress|resolved|closed
+    admin_note = Column(Text)
+    resolved_by = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    resolved_at = Column(DateTime(timezone=True))

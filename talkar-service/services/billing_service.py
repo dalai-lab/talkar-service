@@ -78,11 +78,18 @@ async def deduct_for_run(run_id: int):
         org_id = run["organization_id"]
         duration = run.get("duration_seconds", 0)
         
-        # Get customer and subscription
-        result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
+        from db.models import Agent
+        # Bridge: lookup customer via Agent
+        agent_result = await db.execute(select(Agent).where(Agent.dograh_org_id == org_id))
+        agent = agent_result.scalar_one_or_none()
+        if not agent:
+            logger.warning(f"No agent found for org {org_id} — run {run_id} not billed")
+            return
+            
+        result = await db.execute(select(Customer).where(Customer.id == agent.customer_id))
         customer = result.scalar_one_or_none()
         if not customer:
-            logger.error(f"Customer not found for org {org_id}")
+            logger.critical(f"Agent {agent.id} has no parent customer!")
             return
             
         sub_result = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
@@ -101,11 +108,14 @@ async def deduct_for_run(run_id: int):
 
         # Calculate cost
         minutes = math.ceil(duration / 60.0)
-        cost_paise = minutes * subscription.per_minute_rate_paise
+        from config import TIER_CONFIG
+        rate = agent.per_minute_rate_paise or (subscription.per_minute_rate_paise if subscription else TIER_CONFIG["starter"]["per_minute_rate_paise"])
+        cost_paise = minutes * rate
         
         # Insert call log
         call_log = CallLog(
             customer_id=customer.id,
+            agent_id=agent.id,
             dograh_run_id=run_id,
             duration_seconds=duration,
             cost_to_customer_paise=cost_paise,

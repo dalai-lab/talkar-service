@@ -10,14 +10,19 @@ async def check_wallet(dograh_org_id: int, db: AsyncSession = Depends(get_db)):
     Called by Dograh quota_service before every call.
     Returns has_balance=True/False. Non-Talkar orgs (superusers) always pass through.
     """
-    from db.models import Customer, Wallet
+    from db.models import Customer, Wallet, Agent
     from sqlalchemy import select
 
-    result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
+    agent_result = await db.execute(select(Agent).where(Agent.dograh_org_id == dograh_org_id))
+    agent = agent_result.scalar_one_or_none()
+    if not agent:
+        # Not a Talkar agent (e.g. superuser/internal org) — let through
+        return {"has_balance": True, "reason": "not_a_talkar_agent"}
+
+    result = await db.execute(select(Customer).where(Customer.id == agent.customer_id))
     customer = result.scalar_one_or_none()
     if not customer:
-        # Not a Talkar customer (e.g. superuser/internal org) — let through
-        return {"has_balance": True, "reason": "not_a_talkar_customer"}
+        return {"has_balance": True, "reason": "data_integrity_error"}
 
     wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
     wallet = wallet_res.scalar_one_or_none()

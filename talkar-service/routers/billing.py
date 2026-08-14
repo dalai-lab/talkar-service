@@ -133,7 +133,10 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
             
             # Run provisioning synchronously to sync to Dograh
             from services.provisioning_service import run_provisioning
-            await run_provisioning(customer.id, data.requested_tier, db)
+            try:
+                await run_provisioning(customer.id, data.requested_tier, db)
+            except Exception as e:
+                logger.error(f"Provisioning failed after topup for customer {customer.id}: {e}")
     
     # 6. Auto-reactivate if suspended or pending_deposit
     if customer.status == "pending_deposit":
@@ -145,7 +148,7 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
                 subject="Choose Your Talkar Plan",
                 body="Your wallet is funded! Log in to choose your plan and go live."
             )
-    elif customer.status == "suspended" and wallet.balance_paise >= 50000:
+    elif customer.status == "suspended" and wallet.balance_paise >= WALLET_ACTIVATION_THRESHOLD_PAISE:
         customer.status = "active"
         await db.commit()
     
@@ -245,10 +248,16 @@ async def razorpay_webhook(request: Request, db: AsyncSession = Depends(get_db))
 
 @router.post("/check-quota")
 async def check_quota(data: DograhQuotaRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.organization_id))
+    from db.models import Agent
+    agent_result = await db.execute(select(Agent).where(Agent.dograh_org_id == data.organization_id))
+    agent = agent_result.scalar_one_or_none()
+    if not agent:
+        return {"has_quota": True}  # Unknown org — pass through
+        
+    result = await db.execute(select(Customer).where(Customer.id == agent.customer_id))
     customer = result.scalar_one_or_none()
     if not customer:
-        return {"has_quota": True}  # Unknown org — not a Talkar customer, pass through
+        return {"has_quota": True}  # Pass through if data integrity issue
         
     wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
     wallet = wallet_res.scalar_one_or_none()
@@ -263,12 +272,19 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
     import math
     from sqlalchemy.sql import func
     from services.billing_service import check_and_trigger_auto_recharge
-    from db.models import CallLog
+    from db.models import CallLog, Agent
 
-    result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.organization_id))
+    agent_result = await db.execute(select(Agent).where(Agent.dograh_org_id == data.organization_id))
+    agent = agent_result.scalar_one_or_none()
+    if not agent:
+        logger.warning(f"No agent found for org {data.organization_id} — run {data.workflow_run_id} not billed")
+        return {"status": "ignored", "reason": "no agent found for org"}
+
+    result = await db.execute(select(Customer).where(Customer.id == agent.customer_id))
     customer = result.scalar_one_or_none()
     if not customer:
-        return {"status": "ignored", "reason": "no customer found for org"}
+        logger.critical(f"Agent {agent.id} has no parent customer!")
+        return {"status": "error", "reason": "data integrity: agent without customer"}
 
     # --- Idempotency: never double-charge the same run ---
     existing = await db.execute(
@@ -281,13 +297,14 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
     sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
     sub = sub_res.scalar_one_or_none()
     from config import TIER_CONFIG
-    rate = sub.per_minute_rate_paise if sub else TIER_CONFIG["starter"]["per_minute_rate_paise"]
+    rate = agent.per_minute_rate_paise or (sub.per_minute_rate_paise if sub else TIER_CONFIG["starter"]["per_minute_rate_paise"])
 
     # --- SOT edge case: zero-duration call (pipeline crash, abnormal termination) ---
     # SOT line 278: log it with cost=0, do not retry, alert admin
     if data.duration_seconds <= 0:
         call_log = CallLog(
             customer_id=customer.id,
+            agent_id=agent.id,
             dograh_run_id=data.workflow_run_id,
             duration_seconds=0,
             cost_to_customer_paise=0,
@@ -306,6 +323,7 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
     # Insert call log (processed_at set now = wallet deducted)
     call_log = CallLog(
         customer_id=customer.id,
+        agent_id=agent.id,
         dograh_run_id=data.workflow_run_id,
         duration_seconds=data.duration_seconds,
         cost_to_customer_paise=cost_paise,

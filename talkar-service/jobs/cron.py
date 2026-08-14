@@ -85,9 +85,13 @@ async def check_suspensions(ctx):
             UPDATE customers SET status = 'suspended'
             WHERE status = 'active'
               AND id IN (
-                SELECT customer_id FROM wallets
-                WHERE balance_paise = 0
-                  AND updated_at < now() - interval '14 days'
+                SELECT w.customer_id FROM wallets w
+                WHERE w.balance_paise = 0
+                  AND NOT EXISTS (
+                    SELECT 1 FROM wallet_transactions wt 
+                    WHERE wt.customer_id = w.customer_id 
+                    AND wt.created_at >= now() - interval '14 days'
+                  )
               )
             RETURNING id, contact_email
         """)
@@ -156,6 +160,14 @@ async def cleanup_abandoned_signups(ctx):
             logger.info(f"Deleting abandoned customer {row.id}")
             if row.dograh_org_id:
                 await dograh_client.delete_org(row.dograh_org_id)
+            await db.execute(text("DELETE FROM phone_number_requests WHERE customer_id = :id"), {"id": row.id})
+            await db.execute(text("DELETE FROM phone_numbers WHERE customer_id = :id"), {"id": row.id})
+            await db.execute(text("DELETE FROM support_requests WHERE customer_id = :id"), {"id": row.id})
+            await db.execute(text("DELETE FROM call_logs WHERE customer_id = :id"), {"id": row.id})
+            await db.execute(text("DELETE FROM wallet_transactions WHERE customer_id = :id"), {"id": row.id})
+            await db.execute(text("DELETE FROM wallets WHERE customer_id = :id"), {"id": row.id})
+            await db.execute(text("DELETE FROM subscriptions WHERE customer_id = :id"), {"id": row.id})
+            await db.execute(text("DELETE FROM agents WHERE customer_id = :id"), {"id": row.id})
             await db.execute(text("DELETE FROM customers WHERE id = :id"), {"id": row.id})
             
         await db.commit()

@@ -92,6 +92,7 @@ CREATE TABLE agents (
   language          TEXT,
   dograh_workflow_id INTEGER,
   dograh_org_id     INTEGER,
+  per_minute_rate_paise BIGINT,
   status            TEXT DEFAULT 'building',
   built_at          TIMESTAMPTZ,
   created_at        TIMESTAMPTZ DEFAULT now()

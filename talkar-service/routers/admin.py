@@ -91,6 +91,8 @@ async def approve_application(customer_id: int, data: ApproveApplicationRequest,
     if data.integration_fee_paise == 0:
         customer.status = "agent_building"
         await db.commit()
+        from services.provisioning_service import run_provisioning
+        await run_provisioning(customer.id, None, db)
         await notification_service.send_email(
             to_email=customer.contact_email,
             subject="Your Talkar Application is Approved!",
@@ -197,6 +199,22 @@ async def update_customer(customer_id: int, data: CustomerUpdateRequest, db: Asy
 
     return {"status": "success"}
 
+class UpdateAgentRateRequest(BaseModel):
+    per_minute_rate_paise: Optional[int] = None
+
+@router.get("/customers/{customer_id}/agents")
+async def get_customer_agents(customer_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    result = await db.execute(select(Agent).where(Agent.customer_id == customer_id))
+    return result.scalars().all()
+
+@router.patch("/customers/{customer_id}/agents/{agent_id}/rate")
+async def update_agent_rate(customer_id: int, agent_id: int, data: UpdateAgentRateRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    result = await db.execute(select(Agent).where(Agent.id == agent_id, Agent.customer_id == customer_id))
+    agent = result.scalar_one_or_none()
+    if not agent: raise HTTPException(404, "Agent not found for this customer")
+    agent.per_minute_rate_paise = data.per_minute_rate_paise
+    await db.commit()
+    return {"status": "ok", "per_minute_rate_paise": agent.per_minute_rate_paise}
 
 
 @router.post("/customers/{customer_id}/credit")
@@ -217,7 +235,47 @@ async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: As
     db.add(txn)
     
     await db.commit()
-    return {"status": "success", "new_balance": wallet.balance_paise}
+    return {"status": "success", "new_balance_paise": wallet.balance_paise}
+
+class AdminDeductRequest(BaseModel):
+    amount_paise: int
+    reason: str
+
+@router.post("/customers/{customer_id}/deduct")
+async def admin_deduct_customer(customer_id: int, data: AdminDeductRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    result = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = result.scalar_one_or_none()
+    if not customer: raise HTTPException(404, "Customer not found")
+    if data.amount_paise <= 0: raise HTTPException(400, "Amount must be positive")
+    
+    wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer_id))
+    wallet = wallet_res.scalar_one_or_none()
+    if not wallet: raise HTTPException(404, "Wallet not found")
+    
+    # Deduct balance
+    result = await db.execute(
+        update(Wallet)
+        .where(Wallet.customer_id == customer_id)
+        .values(balance_paise=Wallet.balance_paise - data.amount_paise)
+        .returning(Wallet)
+    )
+    wallet = result.scalar_one_or_none()
+    
+    # Record transaction
+    transaction = WalletTransaction(
+        customer_id=customer_id,
+        type="manual_deduct",
+        amount_paise=-data.amount_paise,
+        description=f"Admin deduction: {data.reason} (by {current_admin.email})"
+    )
+    db.add(transaction)
+    await db.commit()
+
+    if wallet.balance_paise < 0:
+        import logging
+        logging.getLogger(__name__).warning(f"Customer {customer_id} wallet went negative after admin deduct: {wallet.balance_paise}")
+
+    return {"status": "success", "new_balance_paise": wallet.balance_paise}
 
 @router.post("/customers/{customer_id}/deny-tier-upgrade")
 async def deny_tier_upgrade(customer_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
@@ -255,7 +313,60 @@ async def retry_provisioning(customer_id: int, db: AsyncSession = Depends(get_db
         await run_provisioning(customer_id)
         return {"status": "provisioning_complete"}
     except Exception as e:
-        raise HTTPException(500, f"Provisioning failed: {str(e)}")
+        import logging
+        logging.getLogger(__name__).error(f"Failed to retry provisioning for customer {customer_id}: {e}")
+        raise HTTPException(500, f"Provisioning trigger failed: {str(e)}")
+
+# --- SUPPORT REQUESTS ---
+
+class SupportRequestUpdate(BaseModel):
+    status: Optional[str] = None
+    admin_note: Optional[str] = None
+
+@router.get("/support-requests")
+async def get_all_support_requests(db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    from db.models import SupportRequest
+    # Need to join with Customer to get company name and email
+    query = select(SupportRequest, Customer).join(Customer, SupportRequest.customer_id == Customer.id).order_by(SupportRequest.created_at.desc())
+    result = await db.execute(query)
+    
+    response = []
+    for req, customer in result.all():
+        data = {
+            "id": req.id,
+            "type": req.type,
+            "subject": req.subject,
+            "description": req.description,
+            "status": req.status,
+            "admin_note": req.admin_note,
+            "created_at": req.created_at,
+            "customer": {
+                "id": customer.id,
+                "company_name": customer.company_name,
+                "contact_email": customer.contact_email,
+                "dograh_org_id": customer.dograh_org_id
+            }
+        }
+        response.append(data)
+    return response
+
+@router.patch("/support-requests/{req_id}/resolve")
+async def update_support_request(req_id: int, data: SupportRequestUpdate, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    from db.models import SupportRequest
+    result = await db.execute(select(SupportRequest).where(SupportRequest.id == req_id))
+    req = result.scalar_one_or_none()
+    if not req: raise HTTPException(404, "Support request not found")
+    
+    if data.status:
+        req.status = data.status
+        if data.status in ["resolved", "closed"]:
+            req.resolved_at = func.now()
+            req.resolved_by = current_admin.name
+    if data.admin_note is not None:
+        req.admin_note = data.admin_note
+        
+    await db.commit()
+    return {"status": "success"}
 
 # --- BUILD QUEUE ---
 

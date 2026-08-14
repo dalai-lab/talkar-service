@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from db.session import get_db
@@ -162,25 +162,7 @@ async def get_customer(customer_id: int, db: AsyncSession = Depends(get_db)):
 
 
 
-@router.post("/{customer_id}/onboarding")
-async def submit_onboarding(customer_id: int, data: dict, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Customer).where(Customer.id == customer_id))
-    customer = result.scalar_one_or_none()
-    if not customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
-    if customer.status != "pending_approval":
-        raise HTTPException(status_code=400, detail="Customer is not in pending_approval state")
-    customer.onboarding_form = data.get("form", {})
-    customer.documents = data.get("documents", [])
-    customer.status = "under_review"
-    await db.commit()
-    await db.refresh(customer)
-    await notification_service.send_email(
-        to_email="admin@talkar.ai",
-        subject=f"New Application: {customer.company_name}",
-        body=f"{customer.company_name} ({customer.contact_email}) submitted their onboarding form. Review at admin.talkar.ai/applications"
-    )
-    return customer
+
 
 
 class SelectTierRequest(BaseModel):
@@ -237,6 +219,7 @@ async def request_tier_upgrade(org_id: int, data: TierUpgradeRequest, db: AsyncS
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
+    if customer.status != "active": raise HTTPException(400, "Customer must be active to upgrade tier")
     
     sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
     sub = sub_res.scalar_one_or_none()
@@ -310,3 +293,48 @@ async def request_phone_numbers(org_id: int, data: PhoneNumberRequestBody, db: A
         body=f"{customer.company_name} requested {data.quantity} numbers in {data.region}. Use Case: {data.use_case}."
     )
     return {"status": "request_submitted"}
+
+class SupportRequestPayload(BaseModel):
+    type: str
+    subject: str
+    description: str
+    agent_id: Optional[int] = None
+
+@router.post("/support-requests")
+async def create_support_request(data: SupportRequestPayload, contact_email: str = Query(...), x_talkar_email: Optional[str] = Header(None), db: AsyncSession = Depends(get_db)):
+    if not x_talkar_email or x_talkar_email != contact_email:
+        raise HTTPException(403, "Not authorized for this email")
+    result = await db.execute(select(Customer).where(Customer.contact_email == contact_email))
+    customer = result.scalar_one_or_none()
+    if not customer: raise HTTPException(404, "Customer not found")
+    
+    from db.models import SupportRequest
+    req = SupportRequest(
+        customer_id=customer.id,
+        type=data.type,
+        subject=data.subject,
+        description=data.description,
+        agent_id=data.agent_id
+    )
+    db.add(req)
+    await db.commit()
+    
+    await notification_service.send_email(
+        to_email="admin@talkar.ai",
+        subject=f"[Talkar Support] {data.subject} - {customer.company_name}",
+        body=f"New support request from {customer.company_name} ({customer.contact_email}):\n\nType: {data.type}\n\nDescription: {data.description}"
+    )
+    return {"status": "success"}
+
+@router.get("/support-requests")
+async def get_support_requests(contact_email: str = Query(...), x_talkar_email: Optional[str] = Header(None), db: AsyncSession = Depends(get_db)):
+    if not x_talkar_email or x_talkar_email != contact_email:
+        raise HTTPException(403, "Not authorized for this email")
+    result = await db.execute(select(Customer).where(Customer.contact_email == contact_email))
+    customer = result.scalar_one_or_none()
+    if not customer: raise HTTPException(404, "Customer not found")
+    
+    from db.models import SupportRequest
+    reqs = await db.execute(select(SupportRequest).where(SupportRequest.customer_id == customer.id).order_by(SupportRequest.created_at.desc()))
+    return reqs.scalars().all()
+
