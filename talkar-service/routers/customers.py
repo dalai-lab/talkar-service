@@ -94,6 +94,7 @@ async def get_customer_status(
     resp: dict = {
         "status": customer.status, 
         "customer_id": customer.id,
+        "dograh_org_id": customer.dograh_org_id,
         "razorpay_key_id": settings.RAZORPAY_KEY_ID
     }
     if customer.status == "rejected" and customer.onboarding_form:
