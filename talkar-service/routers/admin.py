@@ -183,6 +183,9 @@ async def update_customer(customer_id: int, data: CustomerUpdateRequest, db: Asy
         existing_form.pop("tier_upgrade_requested_at", None)
         customer.onboarding_form = dict(existing_form)
 
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(customer, "onboarding_form")
+
         await db.commit()
 
         # Re-run provisioning to update Dograh org config (LLM model, TTS, limits)
@@ -223,7 +226,13 @@ async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: As
     wallet, master_id = await get_billing_wallet(db, customer_id)
     if not wallet: raise HTTPException(404, "Wallet not found")
 
-    wallet.balance_paise += data.amount_paise
+    result = await db.execute(
+        update(Wallet)
+        .where(Wallet.customer_id == master_id)
+        .values(balance_paise=Wallet.balance_paise + data.amount_paise)
+        .returning(Wallet)
+    )
+    wallet = result.scalar_one_or_none()
     
     # Store transaction
     txn = WalletTransaction(
