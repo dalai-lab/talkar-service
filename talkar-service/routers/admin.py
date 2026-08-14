@@ -391,7 +391,7 @@ async def assign_build(customer_id: int, db: AsyncSession = Depends(get_db), cur
                 "X-API-Key": settings.DOGRAH_ADMIN_TOKEN,
                 "Content-Type": "application/json"
             },
-            json={"email": customer.contact_email}
+            json={"user_id": customer.dograh_user_id}
         )
         if response.status_code != 200:
             import logging
