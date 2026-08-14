@@ -225,7 +225,11 @@ async def request_tier_upgrade(org_id: int, data: TierUpgradeRequest, db: AsyncS
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
-    if customer.status != "active": raise HTTPException(400, "Customer must be active to upgrade tier")
+    
+    if customer.status not in ["active", "pending_plan_selection"]:
+        raise HTTPException(400, f"Customer must be active to upgrade tier (current status: {customer.status})")
+    
+    is_activating = (customer.status == "pending_plan_selection")
     
     sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
     sub = sub_res.scalar_one_or_none()
@@ -247,7 +251,21 @@ async def request_tier_upgrade(org_id: int, data: TierUpgradeRequest, db: AsyncS
     existing_form.pop("tier_upgrade_requested_at", None)
     
     customer.onboarding_form = dict(existing_form) 
+    
+    if is_activating:
+        customer.status = "active"
+        
     await db.commit()
+    
+    if is_activating:
+        from services.provisioning_service import run_provisioning
+        await run_provisioning(customer.id, None, db)
+        
+        await notification_service.send_email(
+            to_email=customer.contact_email,
+            subject="Your Talkar Agent is Live!",
+            body=f"Hi {customer.contact_name}, your AI agent is fully active on the {data.requested_tier} tier!"
+        )
     
     # Run best-effort synchronous provisioning to sync to Dograh
     from services.provisioning_service import run_provisioning
