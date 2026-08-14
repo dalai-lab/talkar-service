@@ -61,7 +61,7 @@ TIER_CONFIG = {
     },
     "elite": {
         "per_minute_rate_paise": 1200,   # ₹12/min
-        "concurrent_call_limit": 9999,
+        "concurrent_call_limit": 10,
         "max_call_duration_seconds": 9999,
         "llm_model": "gpt-4o",
         "tts_provider": "elevenlabs",

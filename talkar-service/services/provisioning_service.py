@@ -58,8 +58,8 @@ async def run_provisioning(customer_id: int, plan: str = None, db: AsyncSession 
         await dograh_client.upsert_org_config(customer.dograh_org_id, "TALKAR_ORG_TYPE", "customer")
 
         # Step 3: Write CONCURRENT_CALL_LIMIT and WORKFLOW_TIMEOUT_SECONDS based on tier
-        await dograh_client.upsert_org_config(customer.dograh_org_id, "CONCURRENT_CALL_LIMIT", str(tier_cfg["concurrent_call_limit"]))
-        await dograh_client.upsert_org_config(customer.dograh_org_id, "WORKFLOW_TIMEOUT_SECONDS", str(tier_cfg["max_call_duration_seconds"]))
+        await dograh_client.upsert_org_config(customer.dograh_org_id, "CONCURRENT_CALL_LIMIT", {"value": tier_cfg["concurrent_call_limit"]})
+        await dograh_client.upsert_org_config(customer.dograh_org_id, "WORKFLOW_TIMEOUT_SECONDS", {"value": tier_cfg["max_call_duration_seconds"]})
 
         # Step 4: Create wallet record in Talkar DB (balance = 0)
         existing_wallet = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))

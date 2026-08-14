@@ -531,7 +531,7 @@ async def get_usage_by_org(
     import math
     return {
         "total_calls": len(logs),
-        "total_minutes": math.ceil(sum(l.duration_seconds for l in logs) / 60) if logs else 0,
+        "total_minutes": sum(math.ceil(l.duration_seconds / 60) for l in logs) if logs else 0,
         "total_spend_paise": sum(l.cost_to_customer_paise for l in logs),
         "month": f"{year}-{mon:02d}"
     }
