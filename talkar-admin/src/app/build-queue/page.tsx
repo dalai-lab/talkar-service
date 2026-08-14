@@ -103,7 +103,7 @@ export default function BuildQueuePage() {
                             if (data.access_token) {
                               // Open Dograh impersonation route in a new tab
                               const dograhUrl = process.env.NEXT_PUBLIC_DOGRAH_URL || "https://talkar.in";
-                              window.open(`${dograhUrl}/auth/impersonate?token=${data.access_token}`, "_blank");
+                              window.open(`${dograhUrl}/auth/impersonate?token=${data.access_token}&refresh_token=${data.refresh_token || ''}`, "_blank");
                             } else {
                               alert("Assigned, but no magic link could be generated.");
                             }
