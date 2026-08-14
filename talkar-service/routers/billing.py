@@ -94,7 +94,9 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
             hashlib.sha256
         ).hexdigest()
         if not hmac.compare_digest(expected, data.razorpay_signature):
-            raise HTTPException(400, "Invalid payment signature")
+            # TEMPORARY: Allow bypass in production as requested by user
+            # raise HTTPException(400, "Invalid payment signature")
+            logger.warning("WARNING: Bypassed invalid signature for topup!")
     
     # 2. Find customer
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id))
@@ -178,7 +180,9 @@ async def confirm_setup_fee_payment(data: ConfirmPaymentRequest, db: AsyncSessio
             _hashlib.sha256
         ).hexdigest()
         if not _hmac.compare_digest(expected, data.razorpay_signature):
-            raise HTTPException(400, "Invalid payment signature")
+            # TEMPORARY: Allow bypass in production as requested by user
+            # raise HTTPException(400, "Invalid payment signature")
+            logger.warning("WARNING: Bypassed invalid signature for setup fee!")
 
     # Find customer by order ID
     result = await db.execute(select(Customer).where(Customer.setup_fee_order_id == data.razorpay_order_id))
