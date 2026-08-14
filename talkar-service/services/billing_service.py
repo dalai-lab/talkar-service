@@ -22,6 +22,14 @@ async def get_billing_wallet(db: AsyncSession, customer_id: int):
             
     result = await db.execute(select(Wallet).where(Wallet.customer_id == master_customer_id))
     wallet = result.scalar_one_or_none()
+    
+    if not wallet:
+        # Auto-create wallet if it doesn't exist (e.g. pending_deposit customers)
+        wallet = Wallet(customer_id=master_customer_id, balance_paise=0)
+        db.add(wallet)
+        await db.commit()
+        await db.refresh(wallet)
+        
     return wallet, master_customer_id
 
 async def credit_wallet(db: AsyncSession, customer_id: int, amount_paise: int, razorpay_order_id: str = None) -> Wallet:
