@@ -225,10 +225,15 @@ export default function CustomerDetailPage() {
       if (res.ok) {
         const data = await res.json();
         const token = data.access_token;
+        const refreshToken = data.refresh_token;
         // The main site lives at talkar.in. When impersonating locally, we might need to point to localhost or talkar.in.
         // The auth route is /auth/impersonate
         const TALKAR_UI_URL = process.env.NEXT_PUBLIC_TALKAR_URL || "https://talkar.in";
-        window.open(`${TALKAR_UI_URL}/auth/impersonate?token=${token}`, '_blank');
+        let url = `${TALKAR_UI_URL}/auth/impersonate?token=${token}`;
+        if (refreshToken) {
+          url += `&refresh_token=${refreshToken}`;
+        }
+        window.open(url, '_blank');
       } else {
         const err = await res.json().catch(() => ({}));
         alert(`Impersonation failed: ${err.detail || "Unknown error"}`);
