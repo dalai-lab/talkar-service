@@ -60,7 +60,7 @@ async def get_run(run_id: int):
     """Get a specific run from Dograh by ID via DB."""
     async with DograhSessionLocal() as session:
         result = await session.execute(
-            text("SELECT id, organization_id, status, duration_seconds FROM workflow_runs WHERE id = :run_id"),
+            text("SELECT id, organization_id, status, CAST(usage_info->>'call_duration_seconds' AS FLOAT) as duration_seconds FROM workflow_runs WHERE id = :run_id"),
             {"run_id": run_id}
         )
         row = result.fetchone()

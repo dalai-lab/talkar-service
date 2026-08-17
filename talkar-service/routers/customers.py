@@ -128,7 +128,7 @@ async def submit_onboarding_by_org(dograh_org_id: int, data: dict, db: AsyncSess
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found for this org")
-    if customer.status != "pending_approval":
+    if customer.status not in ("pending_approval", "info_requested"):
         return customer # D-14: Silent success if already processed
     customer.onboarding_form = data.get("form", {})
     customer.documents = data.get("documents", [])
@@ -148,7 +148,7 @@ async def submit_onboarding_by_id(customer_id: int, data: dict, db: AsyncSession
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
-    if customer.status != "pending_approval":
+    if customer.status not in ("pending_approval", "info_requested"):
         return customer # D-14: Silent success if already processed
     customer.onboarding_form = data.get("form", {})
     customer.documents = data.get("documents", [])

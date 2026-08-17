@@ -295,6 +295,9 @@ async def check_quota(data: DograhQuotaRequest, db: AsyncSession = Depends(get_d
     if not customer:
         return {"has_quota": True}  # Pass through if data integrity issue
         
+    if customer.status == "suspended":
+        return {"has_quota": False}
+
     from services.billing_service import get_billing_wallet
     wallet, master_id = await get_billing_wallet(db, customer.id)
     
@@ -565,9 +568,13 @@ async def get_usage_by_org(
     month_start = datetime(year, mon, 1)
     month_end = datetime(year + 1, 1, 1) if mon == 12 else datetime(year, mon + 1, 1)
     
+    # Unified ledger: get all customer IDs with same email to include sub-orgs
+    customers_result = await db.execute(select(Customer.id).where(Customer.contact_email == customer.contact_email))
+    customer_ids = customers_result.scalars().all()
+    
     logs_result = await db.execute(
         select(CallLog).where(
-            CallLog.customer_id == customer.id,
+            CallLog.customer_id.in_(customer_ids),
             CallLog.processed_at >= month_start,
             CallLog.processed_at < month_end
         )
