@@ -156,6 +156,11 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
     elif customer.status == "suspended" and wallet.balance_paise >= WALLET_ACTIVATION_THRESHOLD_PAISE:
         customer.status = "active"
         await db.commit()
+        from services.provisioning_service import run_provisioning
+        try:
+            await run_provisioning(customer.id, None, db)
+        except Exception as e:
+            logger.error(f"Failed to re-provision after reactivating customer {customer.id}: {e}")
     
     return {"status": "ok", "new_balance_paise": wallet.balance_paise}
 
@@ -428,10 +433,10 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
     # SOT line 658: if balance went negative, email customer
     if wallet and wallet.balance_paise < 0:
         logger.warning(f"Customer {customer.id} wallet negative: {wallet.balance_paise} paise")
+        await notification_service.notify_customer_negative_balance(customer.id)
         
     from services import redis_client
     await redis_client.decrement_active_calls(master_id)
-        await notification_service.notify_customer_negative_balance(customer.id)
 
     return {"status": "ok", "cost_paise": cost_paise, "new_balance_paise": wallet.balance_paise if wallet else None}
 

@@ -22,10 +22,25 @@ async def check_wallet(dograh_org_id: int, db: AsyncSession = Depends(get_db)):
     if customer.status != "active":
         return {"has_balance": False, "reason": "customer_not_active"}
 
-    wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
-    wallet = wallet_res.scalar_one_or_none()
+    from services.billing_service import get_billing_wallet
+    wallet, master_id = await get_billing_wallet(db, customer.id)
+    
     if not wallet or wallet.balance_paise <= 0:
-        return {"has_balance": False, "balance_paise": wallet.balance_paise if wallet else 0}
+        return {"has_balance": False, "balance_paise": wallet.balance_paise if wallet else 0, "reason": "empty_wallet"}
+
+    # Minimum Reserve Check (Risk 1)
+    from db.models import Subscription
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+    sub = sub_res.scalar_one_or_none()
+    from config import TIER_CONFIG
+    
+    rate = sub.per_minute_rate_paise if sub else TIER_CONFIG["starter"]["per_minute_rate_paise"]
+    minimum_reserve_paise = 5 * rate
+    
+    if wallet.balance_paise < minimum_reserve_paise:
+        import logging
+        logging.getLogger(__name__).warning(f"Org {dograh_org_id} has balance {wallet.balance_paise} below minimum reserve {minimum_reserve_paise}")
+        return {"has_balance": False, "balance_paise": wallet.balance_paise, "reason": "below_minimum_reserve"}
 
     return {"has_balance": True, "balance_paise": wallet.balance_paise}
 
