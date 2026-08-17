@@ -296,6 +296,29 @@ async def request_tier_upgrade(org_id: int, data: TierUpgradeRequest, db: AsyncS
     from services.provisioning_service import run_provisioning
     await run_provisioning(customer.id, data.requested_tier, db)
     
+    # Cascade to sub-orgs (Risk 3)
+    sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
+    for sub_org in sub_orgs_res.scalars().all():
+        sub_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == sub_org.id))
+        sub_sub = sub_sub_res.scalar_one_or_none()
+        if sub_sub:
+            sub_sub.plan = data.requested_tier
+            sub_sub.per_minute_rate_paise = TIER_CONFIG[data.requested_tier]["per_minute_rate_paise"]
+            
+        sub_form = sub_org.onboarding_form or {}
+        sub_form["approved_tier"] = data.requested_tier
+        sub_org.onboarding_form = dict(sub_form)
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(sub_org, "onboarding_form")
+        
+        await db.commit()
+        if sub_org.status == "active":
+            try:
+                await run_provisioning(sub_org.id, data.requested_tier, db)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Failed to cascade provisioning to sub-org {sub_org.id}: {e}")
+    
     # Notify customer of instant upgrade/downgrade
     await notification_service.send_email(
         to_email=customer.contact_email,

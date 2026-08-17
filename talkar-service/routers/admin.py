@@ -232,6 +232,29 @@ async def update_customer(customer_id: int, data: CustomerUpdateRequest, db: Asy
                 # Don't fail the whole request — tier is saved, provisioning can be retried
                 import logging
                 logging.getLogger(__name__).error(f"Re-provisioning failed after tier upgrade: {e}")
+                
+        # Cascade to sub-orgs (Risk 3)
+        sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
+        for sub_org in sub_orgs_res.scalars().all():
+            sub_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == sub_org.id))
+            sub_sub = sub_sub_res.scalar_one_or_none()
+            if sub_sub:
+                sub_sub.plan = data.tier
+                sub_sub.per_minute_rate_paise = tier_cfg["per_minute_rate_paise"]
+                
+            sub_form = sub_org.onboarding_form or {}
+            sub_form["approved_tier"] = data.tier
+            sub_org.onboarding_form = dict(sub_form)
+            flag_modified(sub_org, "onboarding_form")
+            
+            await db.commit()
+            if sub_org.status == "active":
+                try:
+                    from services.provisioning_service import run_provisioning
+                    await run_provisioning(sub_org.id, data.tier, db)
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).error(f"Failed to cascade admin provisioning to sub-org {sub_org.id}: {e}")
     else:
         await db.commit()
 

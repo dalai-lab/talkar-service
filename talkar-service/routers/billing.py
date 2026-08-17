@@ -297,7 +297,41 @@ async def check_quota(data: DograhQuotaRequest, db: AsyncSession = Depends(get_d
     
     if not wallet or wallet.balance_paise <= 0:
         return {"has_quota": False}
+
+    # 1. Minimum Reserve Check (Risk 1)
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+    sub = sub_res.scalar_one_or_none()
+    from config import TIER_CONFIG
+    
+    rate = sub.per_minute_rate_paise if sub else TIER_CONFIG["starter"]["per_minute_rate_paise"]
+    tier_name = sub.plan if sub else "starter"
+    max_duration_secs = TIER_CONFIG[tier_name].get("max_call_duration_seconds", 900)
+    
+    # Require 5 minutes of funds to even start a call
+    minimum_reserve_paise = 5 * rate
+    if wallet.balance_paise < minimum_reserve_paise:
+        logger.warning(f"Org {data.organization_id} has balance {wallet.balance_paise} below minimum reserve {minimum_reserve_paise}")
+        return {"has_quota": False}
         
+    # 2. Billing Group Concurrency Cap (Risk 2)
+    import math
+    from services import redis_client
+    
+    max_call_cost = math.ceil(max_duration_secs / 60) * rate
+    # How many simultaneous calls can the wallet afford if they all hit max duration?
+    max_affordable_concurrent = math.floor(wallet.balance_paise / max_call_cost)
+    
+    if max_affordable_concurrent <= 0:
+        return {"has_quota": False}
+        
+    current_active = await redis_client.get_active_calls(master_id)
+    
+    if current_active >= max_affordable_concurrent:
+        logger.warning(f"Billing group {master_id} hit affordable concurrency cap ({current_active}/{max_affordable_concurrent})")
+        return {"has_quota": False}
+        
+    # Grant quota -> increment Redis
+    await redis_client.increment_active_calls(master_id, max_duration_secs)
     return {"has_quota": True}
 
 @router.post("/deduct")
@@ -394,6 +428,9 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
     # SOT line 658: if balance went negative, email customer
     if wallet and wallet.balance_paise < 0:
         logger.warning(f"Customer {customer.id} wallet negative: {wallet.balance_paise} paise")
+        
+    from services import redis_client
+    await redis_client.decrement_active_calls(master_id)
         await notification_service.notify_customer_negative_balance(customer.id)
 
     return {"status": "ok", "cost_paise": cost_paise, "new_balance_paise": wallet.balance_paise if wallet else None}

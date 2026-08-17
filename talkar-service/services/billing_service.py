@@ -176,6 +176,9 @@ async def deduct_for_run(run_id: int):
             logger.warning(f"Customer {customer.id} wallet went negative: {wallet.balance_paise}")
             await notification_service.notify_customer_negative_balance(customer.id)
             
+        from services import redis_client
+        await redis_client.decrement_active_calls(master_id)
+            
         await db.commit()
         
         # Trigger auto-recharge hook

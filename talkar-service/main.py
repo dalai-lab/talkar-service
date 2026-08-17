@@ -1,8 +1,16 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers import health, customers, wallet, billing, provisioning, admin
+from contextlib import asynccontextmanager
+from services import redis_client
 
-app = FastAPI(title="Talkar Service API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await redis_client.init_redis()
+    yield
+    await redis_client.close_redis()
+
+app = FastAPI(title="Talkar Service API", lifespan=lifespan)
 
 # Configure CORS
 app.add_middleware(
