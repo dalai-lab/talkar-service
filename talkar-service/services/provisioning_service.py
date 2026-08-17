@@ -41,16 +41,46 @@ async def run_provisioning(customer_id: int, plan: str = None, db: AsyncSession 
         tier_cfg = TIER_CONFIG.get(tier, TIER_CONFIG["starter"])
 
         # Step 1: Overwrite Dograh's auto-injected MPS config with Talkar keys
+        # Uses the OrganizationAIModelConfigurationV2 schema that Dograh expects.
         tts_provider = tier_cfg["tts_provider"]
         tts_key = settings.TALKAR_ELEVENLABS_KEY if tts_provider == "elevenlabs" else settings.TALKAR_DEEPGRAM_KEY
+        
+        # Build TTS config based on provider
+        if tts_provider == "elevenlabs":
+            tts_config = {
+                "provider": "elevenlabs",
+                "api_key": tts_key or "",
+                "model": "eleven_flash_v2_5",
+                "voice": "21m00Tcm4TlvDq8ikWAM",  # Rachel voice (default)
+            }
+        else:  # deepgram
+            tts_config = {
+                "provider": "deepgram",
+                "api_key": tts_key or "",
+                "model": "aura-2-thalia-en",
+                "voice": "aura-2-thalia-en",
+            }
+
         model_config = {
-            "llm": {
-                "provider": "openai",
-                "api_key": settings.TALKAR_OPENAI_KEY or "",
-                "model": tier_cfg["llm_model"]
+            "version": 2,
+            "mode": "byok",
+            "byok": {
+                "mode": "pipeline",
+                "pipeline": {
+                    "llm": {
+                        "provider": "openai",
+                        "api_key": settings.TALKAR_OPENAI_KEY or "",
+                        "model": tier_cfg["llm_model"],
+                    },
+                    "tts": tts_config,
+                    "stt": {
+                        "provider": "deepgram",
+                        "api_key": settings.TALKAR_DEEPGRAM_KEY or "",
+                        "model": "nova-3-general",
+                        "language": "multi",
+                    },
+                },
             },
-            "tts": {"provider": tts_provider, "api_key": tts_key or ""},
-            "stt": {"provider": "deepgram", "api_key": settings.TALKAR_DEEPGRAM_KEY or ""}
         }
         await dograh_client.upsert_org_config(customer.dograh_org_id, "MODEL_CONFIGURATION_V2", model_config)
 
