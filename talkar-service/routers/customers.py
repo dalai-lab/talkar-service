@@ -27,12 +27,17 @@ class UpdateStatusRequest(BaseModel):
 
 @router.post("/")
 async def create_customer(data: CreateCustomerRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Customer).where(Customer.contact_email == data.email).order_by(Customer.id))
-    existing = result.scalars().first()
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id).order_by(Customer.id))
+    existing_org = result.scalars().first()
+    if existing_org:
+        return existing_org
+
+    result_email = await db.execute(select(Customer).where(Customer.contact_email == data.email).order_by(Customer.id))
+    existing_email = result_email.scalars().first()
     
     billing_org_id = None
-    if existing:
-        billing_org_id = existing.billing_org_id if existing.billing_org_id else existing.id
+    if existing_email:
+        billing_org_id = existing_email.billing_org_id if existing_email.billing_org_id else existing_email.id
 
     customer = Customer(
         contact_email=data.email,
@@ -124,7 +129,7 @@ async def submit_onboarding_by_org(dograh_org_id: int, data: dict, db: AsyncSess
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found for this org")
     if customer.status != "pending_approval":
-        raise HTTPException(status_code=400, detail="Customer is not in pending_approval state")
+        return customer # D-14: Silent success if already processed
     customer.onboarding_form = data.get("form", {})
     customer.documents = data.get("documents", [])
     customer.status = "under_review"
@@ -144,7 +149,7 @@ async def submit_onboarding_by_id(customer_id: int, data: dict, db: AsyncSession
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     if customer.status != "pending_approval":
-        raise HTTPException(status_code=400, detail="Customer is not in pending_approval state")
+        return customer # D-14: Silent success if already processed
     customer.onboarding_form = data.get("form", {})
     customer.documents = data.get("documents", [])
     customer.status = "under_review"

@@ -72,7 +72,7 @@ async def get_completed_runs(hours: int = 25):
     """Get completed runs from Dograh in the last N hours via DB."""
     async with DograhSessionLocal() as session:
         result = await session.execute(
-            text("SELECT id, organization_id, status, duration_seconds, created_at FROM workflow_runs WHERE status = 'completed' AND created_at >= NOW() - make_interval(hours => :hours)"),
+            text("SELECT id, organization_id, status, CAST(usage_info->>'call_duration_seconds' AS FLOAT) as duration_seconds, created_at FROM workflow_runs WHERE status = 'completed' AND created_at >= NOW() - make_interval(hours => :hours)"),
             {"hours": hours}
         )
         rows = result.fetchall()
