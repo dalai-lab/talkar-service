@@ -40,7 +40,7 @@ async def create_topup_order(data: TopupRequest, db: AsyncSession = Depends(get_
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
-    if customer.status not in ("active", "suspended", "pending_deposit"):
+    if customer.status not in ("active", "suspended", "pending_deposit", "pending_plan_selection"):
         raise HTTPException(400, "Account not eligible for top-up")
         
     amount_paise = data.amount_rupees * 100
@@ -56,22 +56,25 @@ class UpgradeOrderRequest(BaseModel):
 @router.post("/upgrade/create-order")
 async def create_upgrade_order(data: UpgradeOrderRequest, db: AsyncSession = Depends(get_db)):
     from config import TIER_CONFIG
-    if data.requested_tier not in TIER_CONFIG:
+    tier_config = TIER_CONFIG.get(data.requested_tier)
+    if not tier_config:
         raise HTTPException(400, "Invalid tier")
         
-    min_deposits = {"pro": 10000, "elite": 25000}
-    if data.requested_tier not in min_deposits:
+    amount_paise = tier_config.get("upgrade_deposit_paise")
+    if not amount_paise:
         raise HTTPException(400, "Tier does not require an upgrade deposit")
-        
-    amount_rupees = min_deposits[data.requested_tier]
-    amount_paise = amount_rupees * 100
     
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
         
-    order = await razorpay_client.create_topup_order(amount_paise, f"upgrade_{customer.id}_{data.requested_tier}", customer.id)
+    order = await razorpay_client.create_topup_order(
+        amount_paise, 
+        f"upgrade_{customer.id}_{data.requested_tier}", 
+        customer.id, 
+        extra_notes={"requested_tier": data.requested_tier}
+    )
     return {"razorpay_order_id": order["id"], "amount_paise": amount_paise, "currency": "INR", "requested_tier": data.requested_tier}
 
 
@@ -246,7 +249,36 @@ async def razorpay_webhook(request: Request, db: AsyncSession = Depends(get_db))
             # It's a top-up
             customer_id = notes.get("customer_id")
             if customer_id:
-                await billing_service.credit_wallet(db, int(customer_id), amount_paise, order_id)
+                customer_id = int(customer_id)
+                await billing_service.credit_wallet(db, customer_id, amount_paise, order_id)
+                
+                requested_tier = notes.get("requested_tier")
+                if requested_tier:
+                    from config import TIER_CONFIG
+                    if requested_tier in TIER_CONFIG:
+                        # Fetch customer to update form
+                        cust_result = await db.execute(select(Customer).where(Customer.id == customer_id))
+                        upg_customer = cust_result.scalar_one_or_none()
+                        if upg_customer:
+                            sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer_id))
+                            sub = sub_res.scalar_one_or_none()
+                            if sub:
+                                sub.plan = requested_tier
+                                sub.per_minute_rate_paise = TIER_CONFIG[requested_tier]["per_minute_rate_paise"]
+                                
+                            existing_form = upg_customer.onboarding_form or {}
+                            existing_form["approved_tier"] = requested_tier
+                            existing_form.pop("tier_upgrade_requested", None)
+                            existing_form.pop("tier_upgrade_requested_at", None)
+                            upg_customer.onboarding_form = dict(existing_form)
+                            await db.commit()
+                            
+                            # Provision synchronously
+                            from services.provisioning_service import run_provisioning
+                            try:
+                                await run_provisioning(customer_id, requested_tier, db)
+                            except Exception as e:
+                                logger.error(f"Provisioning failed after webhook upgrade for {customer_id}: {e}")
 
     return {"status": "ok"}
 
@@ -350,7 +382,7 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
 
     # Log wallet transaction
     txn = WalletTransaction(
-        customer_id=customer.id,
+        customer_id=master_id,
         type="call_deduction",
         amount_paise=-cost_paise,
         description=f"Call deduction for run {data.workflow_run_id}",

@@ -18,6 +18,7 @@ class AdminLoginRequest(BaseModel):
 class ApproveApplicationRequest(BaseModel):
     integration_fee_paise: int = 0
     integration_description: str = ""
+    approved_tier: str = "starter"
 
 class RejectApplicationRequest(BaseModel):
     reason: str
@@ -92,7 +93,7 @@ async def approve_application(customer_id: int, data: ApproveApplicationRequest,
         customer.status = "agent_building"
         await db.commit()
         from services.provisioning_service import run_provisioning
-        await run_provisioning(customer.id, None, db)
+        await run_provisioning(customer.id, data.approved_tier, db)
         await notification_service.send_email(
             to_email=customer.contact_email,
             subject="Your Talkar Application is Approved!",
@@ -141,6 +142,8 @@ async def request_info(customer_id: int, data: RequestInfoRequest, db: AsyncSess
         subject="Additional Information Required for Your Talkar Application",
         body=data.message
     )
+    customer.status = "info_requested"
+    await db.commit()
     return {"status": "info_requested"}
 
 # --- CUSTOMERS ---
@@ -413,7 +416,7 @@ async def update_support_request(req_id: int, data: SupportRequestUpdate, db: As
 
 @router.get("/build-queue")
 async def get_build_queue(db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
-    result = await db.execute(select(Customer).where(Customer.status == "agent_building").order_by(Customer.created_at.asc()))
+    result = await db.execute(select(Customer).where(Customer.status.in_(["agent_building", "pending_deposit", "pending_plan_selection"])).order_by(Customer.created_at.asc()))
     return result.scalars().all()
 
 @router.patch("/build-queue/{customer_id}/assign")
@@ -540,6 +543,14 @@ async def add_team_member(data: AdminCreateRequest, db: AsyncSession = Depends(g
 
 @router.delete("/team/{admin_id}")
 async def remove_team_member(admin_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    if admin_id == current_admin.id:
+        raise HTTPException(400, "Cannot delete your own admin account")
+        
+    count_result = await db.execute(select(func.count(TalkarAdmin.id)))
+    admin_count = count_result.scalar_one()
+    if admin_count <= 1:
+        raise HTTPException(400, "Cannot delete the last admin account")
+
     result = await db.execute(select(TalkarAdmin).where(TalkarAdmin.id == admin_id))
     admin = result.scalar_one_or_none()
     if admin:

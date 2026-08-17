@@ -9,7 +9,7 @@ class Customer(Base):
     company_name = Column(Text, nullable=False)
     industry = Column(Text)
     contact_name = Column(Text, nullable=False)
-    contact_email = Column(Text, nullable=False)
+    contact_email = Column(Text, nullable=False, unique=True)
     contact_phone = Column(Text)
     status = Column(Text, nullable=False, default="pending_approval", index=True)
     onboarding_form = Column(JSON)
@@ -25,7 +25,7 @@ class Subscription(Base):
     __tablename__ = "subscriptions"
 
     id = Column(Integer, primary_key=True, index=True)
-    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False, unique=True)
     plan = Column(Text, nullable=False)
     status = Column(Text, nullable=False, default="active")
     per_minute_rate_paise = Column(BigInteger, nullable=False)
@@ -58,6 +58,7 @@ class Wallet(Base):
     razorpay_customer_id = Column(Text)
     razorpay_payment_method_id = Column(Text)
     low_balance_alerted_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 class WalletTransaction(Base):
@@ -74,7 +75,8 @@ class WalletTransaction(Base):
 
     __table_args__ = (
         Index("idx_wallet_transactions_customer", "customer_id", "created_at"),
-        Index("idx_wallet_transactions_razorpay", "razorpay_order_id", postgresql_where=razorpay_order_id.isnot(None)),
+        Index("idx_wallet_transactions_razorpay", "razorpay_order_id", unique=True, postgresql_where=razorpay_order_id.isnot(None)),
+        Index("idx_wallet_transactions_dograh_run_id", "dograh_run_id", unique=True, postgresql_where=dograh_run_id.isnot(None)),
     )
 
 class PhoneNumber(Base):

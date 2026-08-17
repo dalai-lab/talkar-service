@@ -131,7 +131,7 @@ async def submit_onboarding_by_org(dograh_org_id: int, data: dict, db: AsyncSess
     await db.commit()
     await db.refresh(customer)
     await notification_service.send_email(
-        to_email="admin@talkar.ai",
+        to_email=settings.ADMIN_EMAIL,
         subject=f"New Application: {customer.company_name}",
         body=f"{customer.company_name} ({customer.contact_email}) submitted their onboarding form. Review at admin.talkar.ai/applications"
     )
@@ -151,7 +151,7 @@ async def submit_onboarding_by_id(customer_id: int, data: dict, db: AsyncSession
     await db.commit()
     await db.refresh(customer)
     await notification_service.send_email(
-        to_email="admin@talkar.ai",
+        to_email=settings.ADMIN_EMAIL,
         subject=f"New Application: {customer.company_name}",
         body=f"{customer.company_name} ({customer.contact_email}) submitted their onboarding form. Review at admin.talkar.ai/applications"
     )
@@ -258,9 +258,6 @@ async def request_tier_upgrade(org_id: int, data: TierUpgradeRequest, db: AsyncS
     await db.commit()
     
     if is_activating:
-        from services.provisioning_service import run_provisioning
-        await run_provisioning(customer.id, None, db)
-        
         await notification_service.send_email(
             to_email=customer.contact_email,
             subject="Your Talkar Agent is Live!",

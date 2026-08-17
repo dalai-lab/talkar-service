@@ -67,13 +67,15 @@ TIER_CONFIG = {
         "llm_model": "gpt-4o",
         "tts_provider": "elevenlabs",
         "free_phone_numbers": 2,
+        "upgrade_deposit_paise": 1000000,
     },
     "elite": {
         "per_minute_rate_paise": 1200,   # ₹12/min
-        "concurrent_call_limit": 10,
+        "concurrent_call_limit": 50,
         "max_call_duration_seconds": 9999,
         "llm_model": "gpt-4o",
         "tts_provider": "elevenlabs",
         "free_phone_numbers": 5,
+        "upgrade_deposit_paise": 2500000,
     },
 }

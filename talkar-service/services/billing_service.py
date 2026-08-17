@@ -37,6 +37,8 @@ async def credit_wallet(db: AsyncSession, customer_id: int, amount_paise: int, r
     wallet, master_id = await get_billing_wallet(db, customer_id)
     if not wallet:
         raise ValueError(f"Wallet not found for customer {customer_id}")
+    if amount_paise <= 0:
+        raise ValueError("Amount to credit must be greater than zero")
 
     # 1. Atomic update of wallet balance
     result = await db.execute(
@@ -65,6 +67,12 @@ async def check_and_trigger_auto_recharge(db: AsyncSession, customer_id: int):
     wallet, master_id = await get_billing_wallet(db, customer_id)
     
     if not wallet or not wallet.auto_recharge_enabled:
+        return
+
+    # Check if the master customer is active before charging
+    result = await db.execute(select(Customer).where(Customer.id == master_id))
+    master = result.scalar_one_or_none()
+    if not master or master.status != "active":
         return
 
     if wallet.balance_paise < wallet.auto_recharge_threshold_paise:

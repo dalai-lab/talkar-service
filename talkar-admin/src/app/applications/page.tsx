@@ -14,6 +14,7 @@ import {
   DialogTitle,
   DialogFooter
 } from "@/components/ui/dialog";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 
 
 export default function ApplicationsPage() {
@@ -27,6 +28,7 @@ export default function ApplicationsPage() {
   const [rejectReason, setRejectReason] = useState("");
   const [integrationFee, setIntegrationFee] = useState("0");
   const [integrationDescription, setIntegrationDescription] = useState("");
+  const [approvedTier, setApprovedTier] = useState("starter");
 
   useEffect(() => {
     fetchApplications();
@@ -55,7 +57,8 @@ export default function ApplicationsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           integration_fee_paise: feePaise || 0,
-          integration_description: feePaise > 0 ? integrationDescription : ""
+          integration_description: feePaise > 0 ? integrationDescription : "",
+          approved_tier: approvedTier
         })
       });
       if (res.ok) {
@@ -196,6 +199,17 @@ export default function ApplicationsPage() {
                 placeholder="0 for no fee"
               />
               <p className="text-xs text-muted-foreground">₹0 = agent build is always free. Customer selects their own tier after wallet deposit.</p>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Approved Tier</label>
+              <Select value={approvedTier} onValueChange={(v) => v && setApprovedTier(v)}>
+                <SelectTrigger><SelectValue placeholder="Select tier" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="starter">Starter</SelectItem>
+                  <SelectItem value="pro">Pro</SelectItem>
+                  <SelectItem value="elite">Elite</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
             {parseInt(integrationFee) > 0 && (
               <div className="space-y-2">

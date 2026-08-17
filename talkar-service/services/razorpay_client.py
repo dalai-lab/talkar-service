@@ -21,14 +21,17 @@ async def create_setup_fee_order(amount_paise: int, receipt: str, customer_id: i
         "notes": {"customer_id": customer_id, "plan": plan}
     })
 
-async def create_topup_order(amount_paise: int, receipt: str, customer_id: int) -> dict:
+async def create_topup_order(amount_paise: int, receipt: str, customer_id: int, extra_notes: dict = None) -> dict:
     if not client: return {"id": f"mock_topup_{receipt}", "amount": amount_paise, "currency": "INR"}
+    notes = {"customer_id": customer_id}
+    if extra_notes:
+        notes.update(extra_notes)
     return await asyncio.to_thread(client.order.create, {
         "amount": amount_paise,
         "currency": "INR",
         "receipt": receipt,
         "payment_capture": 1,
-        "notes": {"customer_id": customer_id}
+        "notes": notes
     })
 
 async def create_subscription(plan_id: str, amount_paise: int, customer_razorpay_id: str) -> dict:

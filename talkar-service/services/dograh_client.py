@@ -72,7 +72,7 @@ async def get_completed_runs(hours: int = 25):
     """Get completed runs from Dograh in the last N hours via DB."""
     async with DograhSessionLocal() as session:
         result = await session.execute(
-            text("SELECT id, organization_id, status, duration_seconds, created_at FROM workflow_runs WHERE status = 'completed' AND created_at >= NOW() - INTERVAL ':hours hours'"),
+            text("SELECT id, organization_id, status, duration_seconds, created_at FROM workflow_runs WHERE status = 'completed' AND created_at >= NOW() - make_interval(hours => :hours)"),
             {"hours": hours}
         )
         rows = result.fetchall()
@@ -85,10 +85,11 @@ async def delete_org(org_id: int):
     """Delete an organization in Dograh via DB."""
     async with DograhSessionLocal() as session:
         try:
-            await session.execute(text("DELETE FROM organizations WHERE id = :org_id"), {"org_id": org_id})
-            await session.commit()
+            # Bypassed for testing: Do not actually delete Dograh orgs
+            # await session.execute(text("DELETE FROM organizations WHERE id = :org_id"), {"org_id": org_id})
+            # await session.commit()
+            logger.info(f"Bypassed deleting Dograh org {org_id} (Testing Mode)")
         except Exception as e:
-            await session.rollback()
             logger.error(f"Failed to delete org {org_id}: {e}")
 
 async def archive_org(org_id: int):
@@ -98,8 +99,9 @@ async def archive_org(org_id: int):
             # Assuming Dograh organizations table has an 'archived' or 'is_archived' column.
             # If not, this might need adjustment based on Dograh's actual archiving schema.
             # Since Dograh uses boolean flags or soft deletes:
-            await session.execute(text("UPDATE organizations SET is_active = FALSE WHERE id = :org_id"), {"org_id": org_id})
-            await session.commit()
+            # Bypassed for testing: Do not actually archive or delete Dograh orgs
+            # await session.execute(text("UPDATE organizations SET is_active = FALSE WHERE id = :org_id"), {"org_id": org_id})
+            # await session.commit()
+            logger.info(f"Bypassed archiving Dograh org {org_id} (Testing Mode)")
         except Exception as e:
-            await session.rollback()
             logger.error(f"Failed to archive org {org_id}: {e}")

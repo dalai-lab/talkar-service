@@ -270,7 +270,7 @@ export default function CustomerDetailPage() {
           </Button>
           <Button variant="outline" onClick={() => setIsCreditOpen(true)}>Grant Manual Credit</Button>
           <Button variant="outline" onClick={() => setIsDeductOpen(true)}>Deduct Balance</Button>
-          <Button variant="outline" onClick={() => setIsPlanOpen(true)} disabled={!['active', 'suspended'].includes(customer.status)}>Change Tier</Button>
+          <Button variant="outline" onClick={() => setIsPlanOpen(true)}>Change Tier</Button>
           <Button variant="outline" onClick={handleRetryProvisioning}>Retry Provisioning</Button>
           <Button variant="destructive" onClick={handleSuspend}>Suspend Account</Button>
         </div>
@@ -363,7 +363,7 @@ export default function CustomerDetailPage() {
                     <Label className="text-xs font-semibold whitespace-nowrap">Per-Minute Rate (paise)</Label>
                     <Input 
                       type="number" 
-                      placeholder={currentPlan === 'starter' ? '1200' : currentPlan === 'pro' ? '1800' : '2500'}
+                      placeholder={currentPlan === 'starter' ? '2500' : currentPlan === 'pro' ? '1800' : '1200'}
                       defaultValue={ag.per_minute_rate_paise ?? ""}
                       className="w-28 text-right font-mono"
                       onBlur={(e) => handleUpdateRate(ag.id, e.target.value)}
@@ -482,9 +482,9 @@ export default function CustomerDetailPage() {
               <Select value={newPlan} onValueChange={(v) => v && setNewPlan(v)}>
                 <SelectTrigger><SelectValue placeholder="Select tier" /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="starter">Starter — ₹12/min · 2 concurrent calls · Deepgram</SelectItem>
+                  <SelectItem value="starter">Starter — ₹25/min · 2 concurrent calls · Deepgram</SelectItem>
                   <SelectItem value="pro">Pro — ₹18/min · 10 concurrent calls · ElevenLabs</SelectItem>
-                  <SelectItem value="elite">Elite — ₹25/min · Unlimited calls · ElevenLabs</SelectItem>
+                  <SelectItem value="elite">Elite — ₹12/min · Unlimited calls · ElevenLabs</SelectItem>
                 </SelectContent>
               </Select>
             </div>

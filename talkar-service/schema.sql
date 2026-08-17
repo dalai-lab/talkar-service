@@ -11,6 +11,7 @@ CREATE TABLE customers (
   status                TEXT NOT NULL DEFAULT 'pending_approval',
   onboarding_form       JSONB,
   documents             JSONB,
+  billing_org_id        INTEGER REFERENCES customers(id),
   dograh_org_id         INTEGER,
   dograh_user_id        INTEGER,
   setup_fee_order_id    TEXT,
@@ -23,7 +24,7 @@ CREATE INDEX idx_customers_dograh_org_id ON customers(dograh_org_id);
 
 CREATE TABLE subscriptions (
   id                        SERIAL PRIMARY KEY,
-  customer_id               INTEGER NOT NULL REFERENCES customers(id),
+  customer_id               INTEGER NOT NULL UNIQUE REFERENCES customers(id),
   plan                      TEXT NOT NULL,
   status                    TEXT NOT NULL DEFAULT 'active',
   per_minute_rate_paise     BIGINT NOT NULL,
@@ -54,6 +55,7 @@ CREATE TABLE wallets (
   razorpay_customer_id          TEXT,
   razorpay_payment_method_id    TEXT,
   low_balance_alerted_at        TIMESTAMPTZ,
+  created_at                    TIMESTAMPTZ DEFAULT now(),
   updated_at                    TIMESTAMPTZ DEFAULT now()
 );
 
@@ -124,3 +126,20 @@ CREATE TABLE talkar_admins (
   role                  TEXT NOT NULL DEFAULT 'admin',
   created_at            TIMESTAMPTZ DEFAULT now()
 );
+
+CREATE TABLE support_requests (
+    id SERIAL PRIMARY KEY,
+    customer_id INTEGER NOT NULL REFERENCES customers(id),
+    type TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    description TEXT NOT NULL,
+    agent_id INTEGER REFERENCES agents(id),
+    status TEXT NOT NULL DEFAULT 'open',
+    admin_note TEXT,
+    resolved_by TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    resolved_at TIMESTAMPTZ
+);
+CREATE INDEX idx_support_requests_customer ON support_requests(customer_id);
+CREATE INDEX idx_support_requests_status ON support_requests(status);
+

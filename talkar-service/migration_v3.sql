@@ -1,7 +1,7 @@
 -- Talkar V3 Database Migration
 -- Feature 4: Per-agent billing rate + unique constraint for billing bridge
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS per_minute_rate_paise BIGINT;
-CREATE UNIQUE INDEX IF NOT EXISTS uq_agents_dograh_org_id ON agents(dograh_org_id) WHERE dograh_org_id IS NOT NULL;
+-- CREATE UNIQUE INDEX IF NOT EXISTS uq_agents_dograh_org_id ON agents(dograh_org_id) WHERE dograh_org_id IS NOT NULL; -- Removed: Talkar needs to support multiple workflows (agents) per org.
 CREATE INDEX IF NOT EXISTS idx_agents_dograh_org_id ON agents(dograh_org_id);
 
 -- Feature 3: Support requests table

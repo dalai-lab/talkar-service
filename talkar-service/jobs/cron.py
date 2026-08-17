@@ -84,7 +84,7 @@ async def check_suspensions(ctx):
         suspend_query = text("""
             WITH MasterSuspensions AS (
                 SELECT w.customer_id FROM wallets w
-                WHERE w.balance_paise = 0
+                WHERE w.balance_paise <= 0
                   AND NOT EXISTS (
                     SELECT 1 FROM wallet_transactions wt 
                     WHERE wt.customer_id = w.customer_id 

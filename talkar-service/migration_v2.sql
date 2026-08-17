@@ -14,7 +14,7 @@ CREATE TABLE phone_number_requests (
 );
 
 -- 2. Backfill subscriptions before altering columns
-UPDATE subscriptions SET per_minute_rate_paise = 1200 WHERE plan = 'starter';
+UPDATE subscriptions SET per_minute_rate_paise = 2500 WHERE plan = 'starter';
 UPDATE subscriptions SET per_minute_rate_paise = 1800 WHERE plan = 'pro';
 
 -- 3. Drop dead columns from subscriptions
