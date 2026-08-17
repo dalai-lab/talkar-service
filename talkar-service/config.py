@@ -1,8 +1,17 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import model_validator
 
 class Settings(BaseSettings):
     TALKAR_DB_URL: str = "postgresql+asyncpg://user:password@localhost/talkar_db"
-    DOGRAH_DB_URL: str = "postgresql+asyncpg://user:password@localhost/dograh_db"
+    DOGRAH_DB_URL: str | None = None
+    POSTGRES_PASSWORD: str = "postgres"
+    
+    @model_validator(mode='after')
+    def set_dograh_db_url(self) -> 'Settings':
+        if not self.DOGRAH_DB_URL:
+            # Construct it using the provided POSTGRES_PASSWORD
+            self.DOGRAH_DB_URL = f"postgresql+asyncpg://postgres:{self.POSTGRES_PASSWORD}@postgres:5432/postgres"
+        return self
     
     # Razorpay Keys
     RAZORPAY_KEY_ID: str = ""
