@@ -40,12 +40,12 @@ async def upsert_org_config(org_id: int, key: str, value: Any):
             
             if existing_id:
                 await session.execute(
-                    text("UPDATE organization_configurations SET value = :value::jsonb, updated_at = now() WHERE id = :id"),
+                    text("UPDATE organization_configurations SET value = CAST(:value AS jsonb), updated_at = now() WHERE id = :id"),
                     {"value": value_json, "id": existing_id}
                 )
             else:
                 await session.execute(
-                    text("INSERT INTO organization_configurations (organization_id, key, value, created_at, updated_at) VALUES (:org_id, :key, :value::jsonb, now(), now())"),
+                    text("INSERT INTO organization_configurations (organization_id, key, value, created_at, updated_at) VALUES (:org_id, :key, CAST(:value AS jsonb), now(), now())"),
                     {"org_id": org_id, "key": key, "value": value_json}
                 )
             
