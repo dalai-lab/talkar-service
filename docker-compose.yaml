@@ -40,6 +40,9 @@ services:
       # Override DB/Redis URLs to use the container hostnames
       TALKAR_DB_URL: "postgresql+asyncpg://talkar:${TALKAR_DB_PASSWORD:-talkarsecret}@db:5432/talkar_db"
       REDIS_URL: "redis://redis:6379"
+      DOGRAH_DB_URL: "postgresql+asyncpg://postgres:postgres@host.docker.internal:5432/postgres"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8002:8001"
     depends_on:
@@ -59,6 +62,9 @@ services:
     environment:
       TALKAR_DB_URL: "postgresql+asyncpg://talkar:${TALKAR_DB_PASSWORD:-talkarsecret}@db:5432/talkar_db"
       REDIS_URL: "redis://redis:6379"
+      DOGRAH_DB_URL: "postgresql+asyncpg://postgres:postgres@host.docker.internal:5432/postgres"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
