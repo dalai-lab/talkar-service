@@ -40,7 +40,7 @@ services:
       # Override DB/Redis URLs to use the container hostnames
       TALKAR_DB_URL: "postgresql+asyncpg://talkar:${TALKAR_DB_PASSWORD:-talkarsecret}@db:5432/talkar_db"
       REDIS_URL: "redis://redis:6379"
-      DOGRAH_DB_URL: "${DOGRAH_DB_URL}"
+      DOGRAH_DB_URL: "postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/postgres"
     ports:
       - "8002:8001"
     depends_on:
@@ -50,6 +50,7 @@ services:
         condition: service_healthy
     networks:
       - talkar-network
+      - voice-agent_app-network
 
   worker:
     build:
@@ -60,7 +61,7 @@ services:
     environment:
       TALKAR_DB_URL: "postgresql+asyncpg://talkar:${TALKAR_DB_PASSWORD:-talkarsecret}@db:5432/talkar_db"
       REDIS_URL: "redis://redis:6379"
-      DOGRAH_DB_URL: "${DOGRAH_DB_URL}"
+      DOGRAH_DB_URL: "postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/postgres"
     depends_on:
       db:
         condition: service_healthy
@@ -68,6 +69,7 @@ services:
         condition: service_healthy
     networks:
       - talkar-network
+      - voice-agent_app-network
 
   admin:
     build:
@@ -88,3 +90,5 @@ volumes:
 networks:
   talkar-network:
     driver: bridge
+  voice-agent_app-network:
+    external: true
