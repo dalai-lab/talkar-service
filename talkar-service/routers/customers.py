@@ -51,6 +51,29 @@ async def create_customer(data: CreateCustomerRequest, db: AsyncSession = Depend
     db.add(customer)
     await db.commit()
     await db.refresh(customer)
+    
+    # Auto-provision sub-orgs if master is active
+    if billing_org_id:
+        try:
+            # Check if master is active and has a plan
+            master_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == billing_org_id))
+            master_sub = master_sub_res.scalar_one_or_none()
+            if master_sub and existing_email.status == "active":
+                # Master is active. Auto-approve sub-org and provision with master's tier.
+                customer.status = "active"
+                existing_form = customer.onboarding_form or {}
+                existing_form["approved_tier"] = master_sub.plan
+                customer.onboarding_form = existing_form
+                await db.commit()
+                
+                from services.provisioning_service import run_provisioning
+                # Fire and forget / best effort. If it fails, they stay active but admin can retry.
+                # Actually, run_provisioning requires db session or None. Since we have db, let's just pass db.
+                await run_provisioning(customer.id, master_sub.plan, db)
+                logger.info(f"Auto-provisioned sub-org {customer.id} with tier {master_sub.plan} from master {billing_org_id}")
+        except Exception as e:
+            logger.error(f"Failed to auto-provision sub-org {customer.id}: {e}")
+            
     return customer
 
 @router.get("/")

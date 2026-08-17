@@ -284,18 +284,12 @@ async def razorpay_webhook(request: Request, db: AsyncSession = Depends(get_db))
 
 @router.post("/check-quota")
 async def check_quota(data: DograhQuotaRequest, db: AsyncSession = Depends(get_db)):
-    from db.models import Agent
-    agent_result = await db.execute(select(Agent).where(Agent.dograh_org_id == data.organization_id))
-    agent = agent_result.scalar_one_or_none()
-    if not agent:
-        return {"has_quota": True}  # Unknown org — pass through
-        
-    result = await db.execute(select(Customer).where(Customer.id == agent.customer_id))
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.organization_id))
     customer = result.scalar_one_or_none()
     if not customer:
-        return {"has_quota": True}  # Pass through if data integrity issue
+        return {"has_quota": True}  # Unknown org — pass through
         
-    if customer.status == "suspended":
+    if customer.status != "active":
         return {"has_quota": False}
 
     from services.billing_service import get_billing_wallet
@@ -311,19 +305,17 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
     import math
     from sqlalchemy.sql import func
     from services.billing_service import check_and_trigger_auto_recharge
-    from db.models import CallLog, Agent
-
-    agent_result = await db.execute(select(Agent).where(Agent.dograh_org_id == data.organization_id))
-    agent = agent_result.scalar_one_or_none()
-    if not agent:
-        logger.warning(f"No agent found for org {data.organization_id} — run {data.workflow_run_id} not billed")
-        return {"status": "ignored", "reason": "no agent found for org"}
-
-    result = await db.execute(select(Customer).where(Customer.id == agent.customer_id))
+    from db.models import CallLog
+    
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.organization_id))
     customer = result.scalar_one_or_none()
     if not customer:
-        logger.critical(f"Agent {agent.id} has no parent customer!")
-        return {"status": "error", "reason": "data integrity: agent without customer"}
+        logger.warning(f"No customer found for org {data.organization_id} — run {data.workflow_run_id} not billed")
+        return {"status": "ignored", "reason": "no customer found for org"}
+        
+    if customer.status != "active":
+        logger.warning(f"Customer {customer.id} is not active (status: {customer.status}) — run {data.workflow_run_id} not billed")
+        return {"status": "ignored", "reason": "customer not active"}
 
     # --- Idempotency: never double-charge the same run ---
     existing = await db.execute(
@@ -336,14 +328,16 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
     sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
     sub = sub_res.scalar_one_or_none()
     from config import TIER_CONFIG
-    rate = agent.per_minute_rate_paise or (sub.per_minute_rate_paise if sub else TIER_CONFIG["starter"]["per_minute_rate_paise"])
+    if not sub:
+        logger.warning(f"No subscription found for customer {customer.id}, defaulting to starter rate")
+    rate = sub.per_minute_rate_paise if sub else TIER_CONFIG["starter"]["per_minute_rate_paise"]
 
     # --- SOT edge case: zero-duration call (pipeline crash, abnormal termination) ---
     # SOT line 278: log it with cost=0, do not retry, alert admin
     if data.duration_seconds <= 0:
         call_log = CallLog(
             customer_id=customer.id,
-            agent_id=agent.id,
+            agent_id=None,
             dograh_run_id=data.workflow_run_id,
             duration_seconds=0,
             cost_to_customer_paise=0,
@@ -362,7 +356,7 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
     # Insert call log (processed_at set now = wallet deducted)
     call_log = CallLog(
         customer_id=customer.id,
-        agent_id=agent.id,
+        agent_id=None,
         dograh_run_id=data.workflow_run_id,
         duration_seconds=data.duration_seconds,
         cost_to_customer_paise=cost_paise,
