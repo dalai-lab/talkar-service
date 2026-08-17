@@ -347,7 +347,7 @@ async def retry_provisioning(customer_id: int, db: AsyncSession = Depends(get_db
     result = await db.execute(select(Customer).where(Customer.id == customer_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
-    if customer.status not in ("approved", "agent_building"):
+    if customer.status not in ("approved", "agent_building", "active", "suspended", "pending_plan_selection"):
         raise HTTPException(400, "Customer is not in a provisionable state")
     from services.provisioning_service import run_provisioning
     try:
