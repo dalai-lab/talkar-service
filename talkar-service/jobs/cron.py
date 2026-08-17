@@ -88,6 +88,7 @@ async def check_suspensions(ctx):
                   AND NOT EXISTS (
                     SELECT 1 FROM wallet_transactions wt 
                     WHERE wt.customer_id = w.customer_id 
+                    AND wt.amount_paise > 0
                     AND wt.created_at >= now() - interval '14 days'
                   )
             )

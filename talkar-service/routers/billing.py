@@ -142,6 +142,28 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
                 await run_provisioning(customer.id, data.requested_tier, db)
             except Exception as e:
                 logger.error(f"Provisioning failed after topup for customer {customer.id}: {e}")
+                
+            # Cascade to sub-orgs
+            sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
+            from sqlalchemy.orm.attributes import flag_modified
+            for sub_org in sub_orgs_res.scalars().all():
+                sub_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == sub_org.id))
+                sub_sub = sub_sub_res.scalar_one_or_none()
+                if sub_sub:
+                    sub_sub.plan = data.requested_tier
+                    sub_sub.per_minute_rate_paise = TIER_CONFIG[data.requested_tier]["per_minute_rate_paise"]
+                    
+                sub_form = sub_org.onboarding_form or {}
+                sub_form["approved_tier"] = data.requested_tier
+                sub_org.onboarding_form = dict(sub_form)
+                flag_modified(sub_org, "onboarding_form")
+                
+                await db.commit()
+                if sub_org.status == "active":
+                    try:
+                        await run_provisioning(sub_org.id, data.requested_tier, db)
+                    except Exception as e:
+                        logger.error(f"Failed to cascade provisioning to sub-org {sub_org.id}: {e}")
     
     # 6. Auto-reactivate if suspended or pending_deposit
     if customer.status == "pending_deposit":
@@ -284,6 +306,28 @@ async def razorpay_webhook(request: Request, db: AsyncSession = Depends(get_db))
                                 await run_provisioning(customer_id, requested_tier, db)
                             except Exception as e:
                                 logger.error(f"Provisioning failed after webhook upgrade for {customer_id}: {e}")
+                                
+                            # Cascade to sub-orgs
+                            sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == upg_customer.id))
+                            from sqlalchemy.orm.attributes import flag_modified
+                            for sub_org in sub_orgs_res.scalars().all():
+                                sub_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == sub_org.id))
+                                sub_sub = sub_sub_res.scalar_one_or_none()
+                                if sub_sub:
+                                    sub_sub.plan = requested_tier
+                                    sub_sub.per_minute_rate_paise = TIER_CONFIG[requested_tier]["per_minute_rate_paise"]
+                                    
+                                sub_form = sub_org.onboarding_form or {}
+                                sub_form["approved_tier"] = requested_tier
+                                sub_org.onboarding_form = dict(sub_form)
+                                flag_modified(sub_org, "onboarding_form")
+                                
+                                await db.commit()
+                                if sub_org.status == "active":
+                                    try:
+                                        await run_provisioning(sub_org.id, requested_tier, db)
+                                    except Exception as e:
+                                        logger.error(f"Failed to cascade provisioning to sub-org {sub_org.id}: {e}")
 
     return {"status": "ok"}
 
@@ -297,10 +341,12 @@ async def check_quota(data: DograhQuotaRequest, db: AsyncSession = Depends(get_d
     if customer.status != "active":
         return {"has_quota": False}
 
-    from services.billing_service import get_billing_wallet
+    from services.billing_service import get_billing_wallet, check_and_trigger_auto_recharge
     wallet, master_id = await get_billing_wallet(db, customer.id)
     
     if not wallet or wallet.balance_paise <= 0:
+        if wallet:
+            await check_and_trigger_auto_recharge(db, master_id)
         return {"has_quota": False}
 
     # 1. Minimum Reserve Check (Risk 1)
@@ -316,6 +362,7 @@ async def check_quota(data: DograhQuotaRequest, db: AsyncSession = Depends(get_d
     minimum_reserve_paise = 5 * rate
     if wallet.balance_paise < minimum_reserve_paise:
         logger.warning(f"Org {data.organization_id} has balance {wallet.balance_paise} below minimum reserve {minimum_reserve_paise}")
+        await check_and_trigger_auto_recharge(db, master_id)
         return {"has_quota": False}
         
     # 2. Billing Group Concurrency Cap (Risk 2)
