@@ -9,7 +9,7 @@ class Customer(Base):
     company_name = Column(Text, nullable=False)
     industry = Column(Text)
     contact_name = Column(Text, nullable=False)
-    contact_email = Column(Text, nullable=False, unique=True)
+    contact_email = Column(Text, nullable=False)
     contact_phone = Column(Text)
     status = Column(Text, nullable=False, default="pending_approval", index=True)
     onboarding_form = Column(JSON)
@@ -20,6 +20,10 @@ class Customer(Base):
     setup_fee_order_id = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        Index("uq_customers_email_org", "contact_email", "dograh_org_id", unique=True),
+    )
 
 class Subscription(Base):
     __tablename__ = "subscriptions"

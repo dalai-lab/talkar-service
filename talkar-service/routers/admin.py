@@ -481,10 +481,40 @@ async def mark_ready(customer_id: int, db: AsyncSession = Depends(get_db), curre
     if not customer: raise HTTPException(404, "Customer not found")
     if customer.status != "agent_building": raise HTTPException(400, "Customer is not in agent_building state")
     
-    wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer_id))
-    wallet = wallet_res.scalar_one_or_none()
+    from services.billing_service import get_billing_wallet
+    wallet, _ = await get_billing_wallet(db, customer.id)
     
-    if wallet and wallet.balance_paise >= WALLET_ACTIVATION_THRESHOLD_PAISE:
+    is_funded = wallet and wallet.balance_paise >= WALLET_ACTIVATION_THRESHOLD_PAISE
+
+    if customer.billing_org_id:
+        # Sub-org fast path
+        if is_funded:
+            customer.status = "active"
+            await db.commit()
+            
+            # Sub-orgs inherit the tier, so just run provisioning
+            from services.provisioning_service import run_provisioning
+            await run_provisioning(customer.id, None, db=None)
+            
+            await notification_service.send_email(
+                to_email=customer.contact_email,
+                subject="Your New AI Agent is Live!",
+                body=f"Hi {customer.contact_name}, your new Talkar AI agent is fully active!"
+            )
+            return {"status": "active"}
+        else:
+            # Fall back to pending_deposit if master wallet is drained
+            customer.status = "pending_deposit"
+            await db.commit()
+            await notification_service.send_email(
+                to_email=customer.contact_email,
+                subject="Your New AI Agent is Ready! Top up required",
+                body=f"Hi {customer.contact_name}, your new Talkar AI agent is built! Your master wallet balance is low. Please add credits to activate it."
+            )
+            return {"status": "pending_deposit"}
+
+    # Normal master flow
+    if is_funded:
         customer.status = "pending_plan_selection"
         await db.commit()
         await notification_service.send_email(

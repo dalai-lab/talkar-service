@@ -136,7 +136,9 @@ async def get_customer_status(
         "status": customer.status, 
         "customer_id": customer.id,
         "dograh_org_id": customer.dograh_org_id,
-        "razorpay_key_id": settings.RAZORPAY_KEY_ID
+        "razorpay_key_id": settings.RAZORPAY_KEY_ID,
+        "is_sub_org": bool(customer.billing_org_id),
+        "has_onboarding_form": bool(customer.onboarding_form)
     }
     if customer.status == "rejected" and customer.onboarding_form:
         resp["rejection_reason"] = customer.onboarding_form.get("rejection_reason")
@@ -164,7 +166,7 @@ async def submit_onboarding_by_org(dograh_org_id: int, data: dict, db: AsyncSess
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found for this org")
-    if customer.status not in ("pending_approval", "info_requested"):
+    if customer.status not in ("pending_approval", "info_requested", "agent_building"):
         return customer # D-14: Silent success if already processed
     customer.onboarding_form = data.get("form", {})
     customer.documents = data.get("documents", [])
@@ -175,6 +177,39 @@ async def submit_onboarding_by_org(dograh_org_id: int, data: dict, db: AsyncSess
         to_email=settings.ADMIN_EMAIL,
         subject=f"New Application: {customer.company_name}",
         body=f"{customer.company_name} ({customer.contact_email}) submitted their onboarding form. Review at admin.talkar.ai/applications"
+    )
+    return customer
+
+@router.post("/by-org/{dograh_org_id}/new-agent-brief")
+async def submit_new_agent_brief(dograh_org_id: int, data: dict, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found for this org")
+    
+    # Allow submitting brief as long as it's still building
+    if customer.status != "agent_building":
+        return customer 
+
+    # We preserve any existing approved_tier set by auto-provisioning
+    existing_form = customer.onboarding_form or {}
+    existing_form.update(data.get("form", {}))
+    customer.onboarding_form = existing_form
+    
+    await db.commit()
+    await db.refresh(customer)
+    
+    # Check if there is a master org to lookup the name
+    master_name = customer.company_name
+    if customer.billing_org_id:
+        master_res = await db.execute(select(Customer).where(Customer.id == customer.billing_org_id))
+        master = master_res.scalar_one_or_none()
+        if master: master_name = master.company_name
+
+    await notification_service.send_email(
+        to_email=settings.ADMIN_EMAIL,
+        subject=f"New Agent Brief Submitted: {master_name}",
+        body=f"{master_name} ({customer.contact_email}) has submitted a brief for their new agent (Org {dograh_org_id}).\n\nReview at admin.talkar.ai/applications"
     )
     return customer
 
