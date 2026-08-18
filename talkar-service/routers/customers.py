@@ -249,9 +249,10 @@ async def select_tier(org_id: int, data: SelectTierRequest, db: AsyncSession = D
     customer.status = "active"
     await db.commit()
     
-    # Re-run provisioning
+    # Re-run provisioning in its own session so any failure inside it cannot
+    # rollback the customer.status = "active" commit above.
     from services.provisioning_service import run_provisioning
-    await run_provisioning(customer.id, None, db)
+    await run_provisioning(customer.id, None, db=None)
     
     await notification_service.send_email(
         to_email=customer.contact_email,
