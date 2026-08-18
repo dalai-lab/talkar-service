@@ -59,18 +59,31 @@ async def create_customer(data: CreateCustomerRequest, db: AsyncSession = Depend
             master_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == billing_org_id))
             master_sub = master_sub_res.scalar_one_or_none()
             if master_sub and existing_email.status == "active":
-                # Master is active. Auto-approve sub-org and provision with master's tier.
-                customer.status = "active"
+                # Master is active. Set sub-org to agent_building — Talkar team
+                # needs to build the agent workflow before it goes live.
+                # Provisioning still runs to inject AI keys and concurrency config.
+                customer.status = "agent_building"
                 existing_form = customer.onboarding_form or {}
                 existing_form["approved_tier"] = master_sub.plan
                 customer.onboarding_form = existing_form
                 await db.commit()
                 
                 from services.provisioning_service import run_provisioning
-                # Fire and forget / best effort. If it fails, they stay active but admin can retry.
-                # Actually, run_provisioning requires db session or None. Since we have db, let's just pass db.
                 await run_provisioning(customer.id, master_sub.plan, db)
                 logger.info(f"Auto-provisioned sub-org {customer.id} with tier {master_sub.plan} from master {billing_org_id}")
+
+                # Notify admin so they know a new agent needs to be built
+                await notification_service.send_email(
+                    to_email=settings.ADMIN_EMAIL,
+                    subject=f"[Talkar] New Agent Requested — {customer.contact_email}",
+                    body=(
+                        f"Existing customer {customer.contact_email} has created a new organization "
+                        f"(Dograh Org ID: {customer.dograh_org_id}) and needs a new agent built.\n\n"
+                        f"Tier: {master_sub.plan}\n"
+                        f"Billing Group: Master org ID {billing_org_id}\n\n"
+                        f"Please build the agent and mark it ready in the admin build queue."
+                    )
+                )
         except Exception as e:
             logger.error(f"Failed to auto-provision sub-org {customer.id}: {e}")
             
