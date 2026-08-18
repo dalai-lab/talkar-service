@@ -207,12 +207,19 @@ async def select_tier(org_id: int, data: SelectTierRequest, db: AsyncSession = D
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
-    if customer.status != "pending_plan_selection":
-        raise HTTPException(400, "Customer is not pending plan selection")
-        
-    from config import TIER_CONFIG
+    if customer.status not in ("pending_plan_selection", "pending_deposit"):
+        raise HTTPException(400, f"Cannot select plan in current status: {customer.status}")
+
+    from config import TIER_CONFIG, WALLET_ACTIVATION_THRESHOLD_PAISE
     tier_cfg = TIER_CONFIG.get(data.tier)
     if not tier_cfg: raise HTTPException(400, "Invalid tier")
+
+    # If still in pending_deposit, verify wallet is funded before activating
+    if customer.status == "pending_deposit":
+        from services.billing_service import get_billing_wallet
+        wallet, _ = await get_billing_wallet(db, customer.id)
+        if not wallet or wallet.balance_paise < WALLET_ACTIVATION_THRESHOLD_PAISE:
+            raise HTTPException(400, f"Wallet balance is below the minimum required to activate (₹{WALLET_ACTIVATION_THRESHOLD_PAISE // 100}). Please top up first.")
     
     # Store approved_tier in onboarding_form
     existing_form = customer.onboarding_form or {}
