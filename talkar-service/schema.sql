@@ -6,7 +6,7 @@ CREATE TABLE customers (
   company_name          TEXT NOT NULL,
   industry              TEXT,
   contact_name          TEXT NOT NULL,
-  contact_email         TEXT NOT NULL UNIQUE,
+  contact_email         TEXT NOT NULL,
   contact_phone         TEXT,
   status                TEXT NOT NULL DEFAULT 'pending_approval',
   onboarding_form       JSONB,
@@ -21,6 +21,7 @@ CREATE TABLE customers (
 
 CREATE INDEX idx_customers_status ON customers(status);
 CREATE INDEX idx_customers_dograh_org_id ON customers(dograh_org_id);
+CREATE UNIQUE INDEX uq_customers_email_org ON customers(contact_email, dograh_org_id);
 
 CREATE TABLE subscriptions (
   id                        SERIAL PRIMARY KEY,
@@ -136,10 +137,8 @@ CREATE TABLE support_requests (
     agent_id INTEGER REFERENCES agents(id),
     status TEXT NOT NULL DEFAULT 'open',
     admin_note TEXT,
-    resolved_by TEXT,
+    resolved_by INTEGER REFERENCES talkar_admins(id),
     created_at TIMESTAMPTZ DEFAULT now(),
     resolved_at TIMESTAMPTZ
 );
-CREATE INDEX idx_support_requests_customer ON support_requests(customer_id);
-CREATE INDEX idx_support_requests_status ON support_requests(status);
 
