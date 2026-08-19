@@ -502,10 +502,25 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
     # SOT line 284-285: check auto-recharge, then check low balance
     await check_and_trigger_auto_recharge(db, customer.id)
 
-    # SOT line 658: if balance went negative, email customer
-    if wallet and wallet.balance_paise < 0:
+    # SOT line 658: if balance went negative, email customer AND block future calls
+    if wallet and wallet.balance_paise <= 0:
         logger.warning(f"Customer {customer.id} wallet negative: {wallet.balance_paise} paise")
         await notification_service.notify_customer_negative_balance(customer.id)
+        # Block calls in Dograh immediately so the next call can't start.
+        # We block on the master org (the one that owns the wallet).
+        master_res = await db.execute(select(Customer).where(Customer.id == master_id))
+        master_customer = master_res.scalar_one_or_none()
+        if master_customer and master_customer.dograh_org_id:
+            from services import dograh_client
+            try:
+                await dograh_client.block_org_calls(master_customer.dograh_org_id)
+                # Also block all sub-orgs billing under this master
+                sub_res = await db.execute(select(Customer).where(Customer.billing_org_id == master_id))
+                for sub in sub_res.scalars().all():
+                    if sub.dograh_org_id:
+                        await dograh_client.block_org_calls(sub.dograh_org_id)
+            except Exception as e:
+                logger.error(f"Failed to block calls after negative balance for customer {master_id}: {e}")
         
     from services import redis_client
     await redis_client.decrement_active_calls(master_id)
