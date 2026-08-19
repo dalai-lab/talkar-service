@@ -32,9 +32,21 @@ async def create_customer(data: CreateCustomerRequest, db: AsyncSession = Depend
     if existing_org:
         return existing_org
 
-    result_email = await db.execute(select(Customer).where(Customer.contact_email == data.email).order_by(Customer.id))
-    existing_email = result_email.scalars().first()
-    
+    # Only link as a sub-org if an existing record is in a real "established" state.
+    # Stale pending_approval or rejected records (e.g. from old test runs or failed
+    # applications) should NOT cause a new workspace to be treated as a sub-org.
+    ESTABLISHED_STATUSES = ["active", "agent_building", "approved", "pending_deposit",
+                            "pending_plan_selection", "under_review", "suspended"]
+    result_email = await db.execute(
+        select(Customer)
+        .where(Customer.contact_email == data.email)
+        .where(Customer.status.in_(ESTABLISHED_STATUSES))
+        # Prefer master orgs (no billing_org_id) so we link to the billing root
+        .order_by(Customer.billing_org_id.asc().nullsfirst(), Customer.id.asc())
+        .limit(1)
+    )
+    existing_email = result_email.scalar_one_or_none()
+
     billing_org_id = None
     if existing_email:
         billing_org_id = existing_email.billing_org_id if existing_email.billing_org_id else existing_email.id
