@@ -105,8 +105,86 @@ async def get_all_customers(
     return result.scalars().all()
 
 # IMPORTANT: static paths must come before /{customer_id} to avoid shadowing
+@router.get("/existing")
+async def get_existing_customer(contact_email: str, db: AsyncSession = Depends(get_db)):
+    """
+    Check if an email already has an active/approved customer record in any org.
+    Used by the frontend to detect returning customers creating a new workspace.
+    Returns the master customer_id if found, or 404.
+    """
+    result = await db.execute(
+        select(Customer)
+        .where(Customer.contact_email == contact_email)
+        .where(Customer.status.in_(["active", "agent_building", "pending_deposit", "pending_plan_selection"]))
+        # Prefer billing-master orgs (no billing_org_id)
+        .order_by(Customer.billing_org_id.asc().nullsfirst(), Customer.id.asc())
+        .limit(1)
+    )
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="No existing customer found")
+    return {
+        "customer_id": customer.id,
+        "status": customer.status,
+        "contact_name": customer.contact_name,
+        "company_name": customer.company_name,
+    }
+
+@router.post("/by-org/{dograh_org_id}/new-agent-request")
+async def create_new_agent_request(dograh_org_id: int, data: dict, db: AsyncSession = Depends(get_db)):
+    """
+    Called when a returning customer fills the brief form on a brand-new workspace
+    that has no Talkar customer record yet. Creates a sub-org customer record
+    linked to the master billing org and notifies admin.
+    """
+    master_customer_id = data.get("master_customer_id")
+    if not master_customer_id:
+        raise HTTPException(status_code=400, detail="master_customer_id is required")
+
+    # Verify master exists
+    master_res = await db.execute(select(Customer).where(Customer.id == master_customer_id))
+    master = master_res.scalar_one_or_none()
+    if not master:
+        raise HTTPException(status_code=404, detail="Master customer not found")
+
+    # Guard: don't create duplicates
+    existing_res = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
+    existing = existing_res.scalar_one_or_none()
+    if existing:
+        return existing  # Idempotent
+
+    # Determine billing master (if master is itself a sub-org, use its master)
+    billing_org_id = master.billing_org_id or master.id
+
+    new_customer = Customer(
+        company_name=master.company_name,
+        industry=master.industry,
+        contact_name=master.contact_name,
+        contact_email=master.contact_email,
+        contact_phone=master.contact_phone,
+        status="pending_approval",  # Admin must review and build
+        onboarding_form=data.get("form", {}),
+        billing_org_id=billing_org_id,
+        dograh_org_id=dograh_org_id,
+    )
+    db.add(new_customer)
+    await db.commit()
+    await db.refresh(new_customer)
+
+    await notification_service.send_email(
+        to_email=settings.ADMIN_EMAIL,
+        subject=f"New Agent Request: {master.company_name}",
+        body=(
+            f"{master.company_name} ({master.contact_email}) has requested a new agent "
+            f"for workspace org {dograh_org_id}.\n\n"
+            f"Brief:\n{data.get('form', {})}\n\n"
+            f"Review at admin.talkar.ai/applications"
+        )
+    )
+    return new_customer
 
 @router.get("/status")
+
 async def get_customer_status(
     dograh_org_id: Optional[int] = None,
     customer_id: Optional[int] = None,
