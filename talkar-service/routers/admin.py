@@ -385,6 +385,14 @@ async def suspend_customer(customer_id: int, db: AsyncSession = Depends(get_db),
     if not customer: raise HTTPException(404, "Customer not found")
     customer.status = "suspended"
     await db.commit()
+    # Block calls in Dograh immediately
+    if customer.dograh_org_id:
+        from services import dograh_client
+        try:
+            await dograh_client.block_org_calls(customer.dograh_org_id)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to block calls for org {customer.dograh_org_id}: {e}")
     return {"status": "suspended"}
 
 @router.post("/customers/{customer_id}/provision/retry")

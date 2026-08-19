@@ -56,6 +56,26 @@ async def upsert_org_config(org_id: int, key: str, value: Any):
             logger.error(f"Failed to upsert config '{key}' for org {org_id}: {e}")
             raise
 
+async def block_org_calls(org_id: int):
+    """Block all calls for a Dograh org by setting CONCURRENT_CALL_LIMIT to 0.
+    
+    Called when a customer is suspended or has zero balance. This is the actual
+    enforcement layer — without this, Dograh keeps serving calls regardless of
+    the Talkar-side status.
+    """
+    await upsert_org_config(org_id, "CONCURRENT_CALL_LIMIT", {"value": 0})
+    logger.info(f"Blocked calls for Dograh org {org_id} (CONCURRENT_CALL_LIMIT=0)")
+
+async def restore_org_calls(org_id: int, tier: str = "starter"):
+    """Restore call capacity for a Dograh org after reactivation.
+    
+    Sets CONCURRENT_CALL_LIMIT back to the tier's configured limit.
+    """
+    from config import TIER_CONFIG
+    limit = TIER_CONFIG.get(tier, TIER_CONFIG["starter"])["concurrent_call_limit"]
+    await upsert_org_config(org_id, "CONCURRENT_CALL_LIMIT", {"value": limit})
+    logger.info(f"Restored calls for Dograh org {org_id} to limit={limit} (tier={tier})")
+
 async def get_run(run_id: int):
     """Get a specific run from Dograh by ID via DB."""
     async with DograhSessionLocal() as session:

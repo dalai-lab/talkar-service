@@ -96,11 +96,17 @@ async def check_suspensions(ctx):
             WHERE status = 'active'
               AND (id IN (SELECT customer_id FROM MasterSuspensions)
                    OR billing_org_id IN (SELECT customer_id FROM MasterSuspensions))
-            RETURNING id, contact_email
+            RETURNING id, dograh_org_id, contact_email
         """)
         suspended_result = await db.execute(suspend_query)
         for row in suspended_result:
             logger.info(f"Suspended customer {row.id}")
+            # Block calls in Dograh immediately — this is the actual enforcement
+            if row.dograh_org_id:
+                try:
+                    await dograh_client.block_org_calls(row.dograh_org_id)
+                except Exception as e:
+                    logger.error(f"Failed to block calls for suspended org {row.dograh_org_id}: {e}")
             await notification_service.send_email(
                 to_email=row.contact_email,
                 subject="Account Suspended",

@@ -168,21 +168,46 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
     # 6. Auto-reactivate if suspended or pending_deposit
     if customer.status == "pending_deposit":
         if wallet.balance_paise >= WALLET_ACTIVATION_THRESHOLD_PAISE:
-            customer.status = "pending_plan_selection"
+            customer.status = "active"
             await db.commit()
+            from services.provisioning_service import run_provisioning
+            from services import dograh_client
+            try:
+                await run_provisioning(customer.id, None, db)
+            except Exception as e:
+                logger.error(f"Failed to provision after activating customer {customer.id}: {e}")
+            # Lift the call block if one was set
+            if customer.dograh_org_id:
+                try:
+                    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+                    sub = sub_res.scalar_one_or_none()
+                    tier = sub.plan if sub else "starter"
+                    await dograh_client.restore_org_calls(customer.dograh_org_id, tier)
+                except Exception as e:
+                    logger.error(f"Failed to restore calls for org {customer.dograh_org_id}: {e}")
             await notification_service.send_email(
                 to_email=customer.contact_email,
-                subject="Choose Your Talkar Plan",
-                body="Your wallet is funded! Log in to choose your plan and go live."
+                subject="Your Talkar Agent is Live!",
+                body="Your wallet is funded and your agent is now active!"
             )
     elif customer.status == "suspended" and wallet.balance_paise >= WALLET_ACTIVATION_THRESHOLD_PAISE:
         customer.status = "active"
         await db.commit()
         from services.provisioning_service import run_provisioning
+        from services import dograh_client
         try:
             await run_provisioning(customer.id, None, db)
         except Exception as e:
             logger.error(f"Failed to re-provision after reactivating customer {customer.id}: {e}")
+        # Lift the CONCURRENT_CALL_LIMIT=0 block set during suspension
+        if customer.dograh_org_id:
+            try:
+                sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+                sub = sub_res.scalar_one_or_none()
+                tier = sub.plan if sub else "starter"
+                await dograh_client.restore_org_calls(customer.dograh_org_id, tier)
+            except Exception as e:
+                logger.error(f"Failed to restore calls for org {customer.dograh_org_id}: {e}")
     
     return {"status": "ok", "new_balance_paise": wallet.balance_paise}
 
