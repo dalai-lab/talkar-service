@@ -146,36 +146,23 @@ async def save_agent_brief(dograh_org_id: int, data: dict, db: AsyncSession = De
             master_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == master.id))
             master_sub = master_sub_res.scalar_one_or_none()
             
+    customer.status = "pending_approval"
+    await db.commit()
+    await db.refresh(customer)
+
     if master_is_active and master_sub:
-        customer.status = "agent_building"
-        form_data["approved_tier"] = master_sub.plan
-        customer.onboarding_form = form_data
-        await db.commit()
-        await db.refresh(customer)
-        
-        from services.provisioning_service import run_provisioning
-        try:
-            await run_provisioning(customer.id, master_sub.plan, db)
-            logger.info(f"Auto-provisioned sub-org {customer.id} with tier {master_sub.plan} after brief submission")
-        except Exception as e:
-            logger.error(f"Failed to auto-provision sub-org {customer.id}: {e}")
-            
         await notification_service.send_email(
             to_email=settings.ADMIN_EMAIL,
-            subject=f"[Talkar] New Agent Requested — {customer.contact_email}",
+            subject=f"New Agent Brief (Returning Customer): {customer.company_name or customer.contact_email}",
             body=(
-                f"Existing customer {customer.contact_email} has submitted a new agent brief "
-                f"for Dograh Org ID: {customer.dograh_org_id}.\n\n"
-                f"Tier: {master_sub.plan}\n"
+                f"Existing active customer {customer.contact_email} (Tier: {master_sub.plan}) has submitted a new agent brief "
+                f"for their new workspace (Dograh Org ID: {customer.dograh_org_id}).\n\n"
                 f"Brief:\n{form_data}\n\n"
-                f"Please build the agent and mark it ready in the admin build queue."
+                f"Please review at admin.talkar.ai/applications.\n"
+                f"Note: Since they are a returning customer, you can set the Integration Fee to 0 to approve them instantly, or set a custom fee if this specific agent requires complex integration work."
             )
         )
     else:
-        customer.status = "pending_approval"
-        await db.commit()
-        await db.refresh(customer)
-
         await notification_service.send_email(
             to_email=settings.ADMIN_EMAIL,
             subject=f"New Agent Brief: {customer.company_name or customer.contact_email}",

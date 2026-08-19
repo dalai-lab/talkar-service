@@ -556,6 +556,16 @@ async def mark_ready(customer_id: int, db: AsyncSession = Depends(get_db), curre
     else:
         customer.status = "pending_deposit"
         await db.commit()
+        
+        # Provision the agent so AI keys are injected and it's testable/configurable
+        from services.provisioning_service import run_provisioning
+        from services import dograh_client
+        await run_provisioning(customer.id, None, db=None)
+        
+        # Immediately block calls (CONCURRENT_CALL_LIMIT=0) until they pay the deposit
+        if customer.dograh_org_id:
+            await dograh_client.block_org_calls(customer.dograh_org_id)
+            
         await notification_service.send_email(
             to_email=customer.contact_email,
             subject="Your AI Agent is Ready! (Activation Deposit Required)",

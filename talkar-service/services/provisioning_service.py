@@ -30,10 +30,18 @@ async def run_provisioning(customer_id: int, plan: str = None, db: AsyncSession 
             return
 
         # Resolve tier from DB
-        tier = customer.onboarding_form.get("approved_tier") if customer.onboarding_form else None
+        tier = None
+        if customer.billing_org_id:
+            master_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.billing_org_id))
+            master_sub = master_sub_res.scalar_one_or_none()
+            if master_sub:
+                tier = master_sub.plan
+        
         if not tier:
-            # Fallback for old rows
-            tier = customer.onboarding_form.get("approved_plan", "starter") if customer.onboarding_form else "starter"
+            tier = customer.onboarding_form.get("approved_tier") if customer.onboarding_form else None
+            if not tier:
+                # Fallback for old rows
+                tier = customer.onboarding_form.get("approved_plan", "starter") if customer.onboarding_form else "starter"
 
         logger.info(f"Starting provisioning for customer {customer_id} with tier {tier}")
         
