@@ -439,7 +439,7 @@ async def update_support_request(req_id: int, data: SupportRequestUpdate, db: As
 
 @router.get("/build-queue")
 async def get_build_queue(db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
-    result = await db.execute(select(Customer).where(Customer.status.in_(["agent_building", "pending_deposit", "pending_plan_selection"])).order_by(Customer.created_at.asc()))
+    result = await db.execute(select(Customer).where(Customer.status == "agent_building").order_by(Customer.created_at.asc()))
     return result.scalars().all()
 
 @router.patch("/build-queue/{customer_id}/assign")
