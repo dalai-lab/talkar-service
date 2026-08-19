@@ -138,9 +138,15 @@ export default function ApplicationsPage() {
                       <span className="text-xs text-muted-foreground">{app.contact_email}</span>
                     </TableCell>
                     <TableCell>
-                      <Badge variant="secondary" className="bg-amber-100 text-amber-800 hover:bg-amber-100">
-                        Under Review
-                      </Badge>
+                      {app.status === "pending_approval" ? (
+                        <Badge variant="secondary" className="bg-purple-100 text-purple-800 hover:bg-purple-100">
+                          New Agent Brief
+                        </Badge>
+                      ) : (
+                        <Badge variant="secondary" className="bg-amber-100 text-amber-800 hover:bg-amber-100">
+                          Under Review
+                        </Badge>
+                      )}
                     </TableCell>
                     <TableCell className="text-right space-x-2">
                       <Button 

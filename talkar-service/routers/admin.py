@@ -73,7 +73,7 @@ async def admin_login(data: AdminLoginRequest, db: AsyncSession = Depends(get_db
 
 @router.get("/applications")
 async def get_applications(db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
-    result = await db.execute(select(Customer).where(Customer.status == "under_review").order_by(Customer.created_at.asc()))
+    result = await db.execute(select(Customer).where(Customer.status.in_(["under_review", "pending_approval"])).order_by(Customer.created_at.asc()))
     return result.scalars().all()
 
 @router.post("/applications/{customer_id}/approve")
@@ -81,7 +81,7 @@ async def approve_application(customer_id: int, data: ApproveApplicationRequest,
     result = await db.execute(select(Customer).where(Customer.id == customer_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
-    if customer.status != "under_review": raise HTTPException(400, "Customer is not under review")
+    if customer.status not in ("under_review", "pending_approval"): raise HTTPException(400, "Customer is not under review or pending approval")
     
     # Store the integration fee in onboarding_form JSON
     existing_form = customer.onboarding_form or {}
@@ -118,6 +118,7 @@ async def reject_application(customer_id: int, data: RejectApplicationRequest, d
     result = await db.execute(select(Customer).where(Customer.id == customer_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
+    if customer.status not in ("under_review", "pending_approval"): raise HTTPException(400, "Customer is not under review or pending approval")
     
     customer.status = "rejected"
     # Store rejection reason and reapply countdown in onboarding_form
