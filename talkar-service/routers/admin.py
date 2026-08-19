@@ -73,7 +73,18 @@ async def admin_login(data: AdminLoginRequest, db: AsyncSession = Depends(get_db
 
 @router.get("/applications")
 async def get_applications(db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
-    result = await db.execute(select(Customer).where(Customer.status.in_(["under_review", "pending_approval"])).order_by(Customer.created_at.asc()))
+    result = await db.execute(
+        select(Customer)
+        .where(Customer.status.in_(["under_review", "pending_approval"]))
+        # Exclude auto-created sub-org placeholder records that have no brief form yet.
+        # These are just workspace-hook artifacts — the customer hasn't submitted their
+        # brief yet. Only show them once they have an onboarding form.
+        .where(
+            (Customer.billing_org_id == None) |  # master orgs always show  # noqa: E711
+            (Customer.onboarding_form != None)   # sub-orgs only if they have a form  # noqa: E711
+        )
+        .order_by(Customer.created_at.asc())
+    )
     return result.scalars().all()
 
 @router.post("/applications/{customer_id}/approve")
@@ -94,6 +105,13 @@ async def approve_application(customer_id: int, data: ApproveApplicationRequest,
         await db.commit()
         from services.provisioning_service import run_provisioning
         await run_provisioning(customer.id, data.approved_tier, db)
+
+        # If this is a master org, also handle any auto-created sub-org placeholders
+        # that the workspace hook made while the master was under review.
+        # Sub-orgs with no brief form are just artifacts - leave status as pending_approval
+        # but they will show the brief form to the user (not the admin queue should be clean).
+        # Sub-orgs WITH a brief form remain pending_approval for separate admin review.
+
         await notification_service.send_email(
             to_email=customer.contact_email,
             subject="Your Talkar Application is Approved!",
