@@ -69,45 +69,10 @@ async def create_customer(data: CreateCustomerRequest, db: AsyncSession = Depend
     await db.commit()
     await db.refresh(customer)
     
-    # Auto-provision sub-orgs if master is active
+    # Sub-org auto-provisioning is now deferred until they submit the brief
+    # in save_agent_brief, so we know what they actually want us to build.
     if billing_org_id:
-        try:
-            # Check if master is active and has a plan
-            master_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == billing_org_id))
-            master_sub = master_sub_res.scalar_one_or_none()
-            if master_sub and existing_email.status == "active":
-                # Master is active. Set sub-org to agent_building — Talkar team
-                # needs to build the agent workflow before it goes live.
-                # Provisioning still runs to inject AI keys and concurrency config.
-                customer.status = "agent_building"
-                existing_form = customer.onboarding_form or {}
-                existing_form["approved_tier"] = master_sub.plan
-                customer.onboarding_form = existing_form
-                await db.commit()
-                
-                from services.provisioning_service import run_provisioning
-                await run_provisioning(customer.id, master_sub.plan, db)
-                logger.info(f"Auto-provisioned sub-org {customer.id} with tier {master_sub.plan} from master {billing_org_id}")
-
-                # Notify admin so they know a new agent needs to be built
-                await notification_service.send_email(
-                    to_email=settings.ADMIN_EMAIL,
-                    subject=f"[Talkar] New Agent Requested — {customer.contact_email}",
-                    body=(
-                        f"Existing customer {customer.contact_email} has created a new organization "
-                        f"(Dograh Org ID: {customer.dograh_org_id}) and needs a new agent built.\n\n"
-                        f"Tier: {master_sub.plan}\n"
-                        f"Billing Group: Master org ID {billing_org_id}\n\n"
-                        f"Please build the agent and mark it ready in the admin build queue."
-                    )
-                )
-            else:
-                # Master exists but isn't active yet (still under_review / agent_building / etc.)
-                # Leave onboarding_form=None so the frontend detects is_sub_org=true + has_onboarding_form=false
-                # and shows the brief form automatically. No tag needed.
-                logger.info(f"Sub-org {customer.id} created for non-active master {billing_org_id} (status={existing_email.status}); awaiting brief")
-        except Exception as e:
-            logger.error(f"Failed to auto-provision sub-org {customer.id}: {e}")
+        logger.info(f"Sub-org {customer.id} created for master {billing_org_id}; awaiting brief submission")
             
     return customer
 
@@ -169,20 +134,58 @@ async def save_agent_brief(dograh_org_id: int, data: dict, db: AsyncSession = De
 
     form_data = data.get("form", {})
     customer.onboarding_form = form_data
-    customer.status = "pending_approval"
-    await db.commit()
-    await db.refresh(customer)
-
-    await notification_service.send_email(
-        to_email=settings.ADMIN_EMAIL,
-        subject=f"New Agent Brief: {customer.company_name or customer.contact_email}",
-        body=(
-            f"{customer.contact_email} has submitted a new agent brief "
-            f"for workspace org {dograh_org_id}.\n\n"
-            f"Brief:\n{form_data}\n\n"
-            f"Review at admin.talkar.ai/applications"
+    
+    # Check if this is a sub-org and the master is active
+    master_is_active = False
+    master_sub = None
+    if customer.billing_org_id:
+        master_res = await db.execute(select(Customer).where(Customer.id == customer.billing_org_id))
+        master = master_res.scalar_one_or_none()
+        if master and master.status == "active":
+            master_is_active = True
+            master_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == master.id))
+            master_sub = master_sub_res.scalar_one_or_none()
+            
+    if master_is_active and master_sub:
+        customer.status = "agent_building"
+        form_data["approved_tier"] = master_sub.plan
+        customer.onboarding_form = form_data
+        await db.commit()
+        await db.refresh(customer)
+        
+        from services.provisioning_service import run_provisioning
+        try:
+            await run_provisioning(customer.id, master_sub.plan, db)
+            logger.info(f"Auto-provisioned sub-org {customer.id} with tier {master_sub.plan} after brief submission")
+        except Exception as e:
+            logger.error(f"Failed to auto-provision sub-org {customer.id}: {e}")
+            
+        await notification_service.send_email(
+            to_email=settings.ADMIN_EMAIL,
+            subject=f"[Talkar] New Agent Requested — {customer.contact_email}",
+            body=(
+                f"Existing customer {customer.contact_email} has submitted a new agent brief "
+                f"for Dograh Org ID: {customer.dograh_org_id}.\n\n"
+                f"Tier: {master_sub.plan}\n"
+                f"Brief:\n{form_data}\n\n"
+                f"Please build the agent and mark it ready in the admin build queue."
+            )
         )
-    )
+    else:
+        customer.status = "pending_approval"
+        await db.commit()
+        await db.refresh(customer)
+
+        await notification_service.send_email(
+            to_email=settings.ADMIN_EMAIL,
+            subject=f"New Agent Brief: {customer.company_name or customer.contact_email}",
+            body=(
+                f"{customer.contact_email} has submitted a new agent brief "
+                f"for workspace org {dograh_org_id}.\n\n"
+                f"Brief:\n{form_data}\n\n"
+                f"Review at admin.talkar.ai/applications"
+            )
+        )
     return customer
 
 @router.post("/by-org/{dograh_org_id}/new-agent-request")
