@@ -208,7 +208,24 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
                 await dograh_client.restore_org_calls(customer.dograh_org_id, tier)
             except Exception as e:
                 logger.error(f"Failed to restore calls for org {customer.dograh_org_id}: {e}")
-    
+    elif customer.status == "active" and wallet.balance_paise >= WALLET_ACTIVATION_THRESHOLD_PAISE:
+        # Customer was active but hit zero balance — block_org_calls was called then.
+        # Now they've topped up: restore the concurrent call limit unconditionally.
+        from services import dograh_client
+        if customer.dograh_org_id:
+            try:
+                sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+                sub = sub_res.scalar_one_or_none()
+                tier = sub.plan if sub else "starter"
+                await dograh_client.restore_org_calls(customer.dograh_org_id, tier)
+                # Also restore sub-orgs billing under this master
+                sub_orgs_res2 = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
+                for sub_org in sub_orgs_res2.scalars().all():
+                    if sub_org.dograh_org_id:
+                        await dograh_client.restore_org_calls(sub_org.dograh_org_id, tier)
+            except Exception as e:
+                logger.error(f"Failed to restore calls after topup for active customer {customer.id}: {e}")
+
     return {"status": "ok", "new_balance_paise": wallet.balance_paise}
 
 class ConfirmPaymentRequest(BaseModel):
