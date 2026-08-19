@@ -338,6 +338,23 @@ export default function CustomerDetailPage() {
                 <Badge>{currentPlan}</Badge>
               </div>
             </div>
+            {(customer.onboarding_form?.gstCertificateUrl || customer.onboarding_form?.businessRegistrationUrl) && (
+              <div className="pt-2 border-t mt-4">
+                <Label className="text-muted-foreground text-xs mb-2 block">Submitted Documents</Label>
+                <div className="flex flex-col gap-2">
+                  {customer.onboarding_form?.gstCertificateUrl && (
+                    <a href={customer.onboarding_form.gstCertificateUrl} target="_blank" rel="noreferrer" className="text-sm text-blue-600 hover:underline flex items-center gap-1">
+                      📄 GST Certificate
+                    </a>
+                  )}
+                  {customer.onboarding_form?.businessRegistrationUrl && (
+                    <a href={customer.onboarding_form.businessRegistrationUrl} target="_blank" rel="noreferrer" className="text-sm text-blue-600 hover:underline flex items-center gap-1">
+                      📄 Business Registration
+                    </a>
+                  )}
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
