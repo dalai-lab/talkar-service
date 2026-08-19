@@ -115,8 +115,10 @@ async def get_customer_status(
 ):
     """
     Called by Dograh UI middleware to gate account access.
-    dograh_org_id, customer_id, or contact_email as query param.
-    Unknown orgs return status=active (non-Talkar users pass through).
+    dograh_org_id or customer_id as query param.
+    Unknown orgs return 404 so the UI can redirect new workspaces to /onboarding.
+    contact_email fallback only used as last resort (no org_id available) and
+    returns the customer with no dograh_org_id set (i.e. legacy single-org users).
     """
     customer = None
     if dograh_org_id:
@@ -126,11 +128,18 @@ async def get_customer_status(
         result = await db.execute(select(Customer).where(Customer.id == customer_id))
         customer = result.scalar_one_or_none()
     elif contact_email:
-        result = await db.execute(select(Customer).where(Customer.contact_email == contact_email))
+        # Legacy fallback: only match customers that haven't been linked to a dograh_org yet
+        result = await db.execute(
+            select(Customer)
+            .where(Customer.contact_email == contact_email)
+            .where(Customer.dograh_org_id == None)  # noqa: E711
+            .order_by(Customer.id.asc())
+            .limit(1)
+        )
         customer = result.scalar_one_or_none()
 
     if not customer:
-        return {"status": "active", "customer_id": None}
+        raise HTTPException(status_code=404, detail="No Talkar account found for this workspace")
 
     resp: dict = {
         "status": customer.status, 
