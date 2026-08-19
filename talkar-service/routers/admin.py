@@ -521,7 +521,7 @@ async def mark_ready(customer_id: int, db: AsyncSession = Depends(get_db), curre
             
             # Sub-orgs inherit the tier, so just run provisioning
             from services.provisioning_service import run_provisioning
-            await run_provisioning(customer.id, None, db=None)
+            await run_provisioning(customer.id, None, db)
             
             await notification_service.send_email(
                 to_email=customer.contact_email,
@@ -545,7 +545,7 @@ async def mark_ready(customer_id: int, db: AsyncSession = Depends(get_db), curre
         customer.status = "active"
         await db.commit()
         from services.provisioning_service import run_provisioning
-        await run_provisioning(customer.id, None, db=None)
+        await run_provisioning(customer.id, None, db)
         
         await notification_service.send_email(
             to_email=customer.contact_email,
@@ -560,7 +560,7 @@ async def mark_ready(customer_id: int, db: AsyncSession = Depends(get_db), curre
         # Provision the agent so AI keys are injected and it's testable/configurable
         from services.provisioning_service import run_provisioning
         from services import dograh_client
-        await run_provisioning(customer.id, None, db=None)
+        await run_provisioning(customer.id, None, db)
         
         # Immediately block calls (CONCURRENT_CALL_LIMIT=0) until they pay the deposit
         if customer.dograh_org_id:

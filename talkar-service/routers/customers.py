@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query, HTTPException, Header
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from db.session import get_db
 from db.models import Customer, Subscription
 from pydantic import BaseModel
@@ -36,6 +36,17 @@ async def create_customer(data: CreateCustomerRequest, db: AsyncSession = Depend
     existing_org = result.scalars().first()
     if existing_org:
         return existing_org
+
+    # Basic rate limiting: prevent spamming new workspace creations
+    from datetime import timedelta
+    recent_spam = await db.execute(
+        select(Customer)
+        .where(Customer.contact_email == data.email)
+        .where(Customer.created_at > func.now() - timedelta(minutes=1))
+        .limit(1)
+    )
+    if recent_spam.scalar_one_or_none():
+        raise HTTPException(429, "Too many requests. Please wait a minute before creating another workspace.")
 
     # Only link as a sub-org if an existing record is in a real "established" state.
     # Stale pending_approval or rejected records (e.g. from old test runs or failed

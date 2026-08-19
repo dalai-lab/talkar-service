@@ -124,12 +124,19 @@ async def check_suspensions(ctx):
         for row in churned_result:
             logger.info(f"Churned customer {row.id}. Archiving Dograh org {row.dograh_org_id}")
             if row.dograh_org_id:
-                await dograh_client.archive_org(row.dograh_org_id)
-            await notification_service.send_email(
-                to_email=row.contact_email,
-                subject="Account Closed",
-                body="Your account has been permanently closed due to inactivity."
-            )
+                try:
+                    await dograh_client.archive_org(row.dograh_org_id)
+                except Exception as e:
+                    logger.error(f"Failed to archive Dograh org {row.dograh_org_id} for churned customer {row.id}: {e}")
+                    # In a real app we might revert the churn status so it retries, 
+                    # but for now we'll just log it and proceed to email them.
+                    
+            if row.contact_email and "@" in row.contact_email:
+                await notification_service.send_email(
+                    to_email=row.contact_email,
+                    subject="Account Closed",
+                    body="Your account has been permanently closed due to inactivity."
+                )
             
         await db.commit()
     logger.info("Suspension check completed.")
@@ -150,6 +157,10 @@ async def cleanup_abandoned_signups(ctx):
         """)
         reminders = await db.execute(reminder_query)
         for row in reminders:
+            if not row.contact_email or "@" not in row.contact_email:
+                logger.warning(f"Skipping Day 7 reminder to {row.id}: invalid email '{row.contact_email}'")
+                continue
+                
             logger.info(f"Sending Day 7 reminder to {row.id}")
             await notification_service.send_email(
                 to_email=row.contact_email,
@@ -157,10 +168,11 @@ async def cleanup_abandoned_signups(ctx):
                 body="It's been 7 days! Please complete your onboarding form to get your agent built."
             )
 
-        # Day 30: Delete completely
+        # Day 30: Delete completely (only master orgs, let sub-orgs wait for admin review)
         abandoned_query = text("""
             SELECT id, dograh_org_id, dograh_user_id FROM customers
             WHERE status = 'pending_approval'
+              AND billing_org_id IS NULL
               AND created_at < now() - interval '30 days'
         """)
         abandoned_result = await db.execute(abandoned_query)

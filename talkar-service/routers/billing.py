@@ -40,7 +40,7 @@ async def create_topup_order(data: TopupRequest, db: AsyncSession = Depends(get_
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
-    if customer.status not in ("active", "suspended", "pending_deposit", "pending_plan_selection"):
+    if customer.status not in ("active", "suspended", "pending_deposit", "pending_plan_selection", "approved"):
         raise HTTPException(400, "Account not eligible for top-up")
         
     amount_paise = data.amount_rupees * 100
@@ -406,10 +406,13 @@ async def razorpay_webhook(request: Request, db: AsyncSession = Depends(get_db))
                             
                             # Provision synchronously
                             from services.provisioning_service import run_provisioning
+                            from services import dograh_client
                             try:
                                 await run_provisioning(customer_id, requested_tier, db)
+                                if upg_customer.dograh_org_id:
+                                    await dograh_client.restore_org_calls(upg_customer.dograh_org_id, requested_tier)
                             except Exception as e:
-                                logger.error(f"Provisioning failed after webhook upgrade for {customer_id}: {e}")
+                                logger.error(f"Provisioning/restore failed after webhook upgrade for {customer_id}: {e}")
                                 
                             # Cascade to sub-orgs
                             sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == upg_customer.id))
@@ -430,8 +433,10 @@ async def razorpay_webhook(request: Request, db: AsyncSession = Depends(get_db))
                                 if sub_org.status == "active":
                                     try:
                                         await run_provisioning(sub_org.id, requested_tier, db)
+                                        if sub_org.dograh_org_id:
+                                            await dograh_client.restore_org_calls(sub_org.dograh_org_id, requested_tier)
                                     except Exception as e:
-                                        logger.error(f"Failed to cascade provisioning to sub-org {sub_org.id}: {e}")
+                                        logger.error(f"Failed to cascade provisioning/restore to sub-org {sub_org.id}: {e}")
 
     return {"status": "ok"}
 
@@ -514,12 +519,13 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
     if existing.scalar_one_or_none():
         return {"status": "duplicate", "reason": "run already processed"}
 
-    # Get subscription for per-minute rate
-    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+    # Get subscription for per-minute rate (from master if sub-org)
+    sub_customer_id = customer.billing_org_id or customer.id
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == sub_customer_id))
     sub = sub_res.scalar_one_or_none()
     from config import TIER_CONFIG
     if not sub:
-        logger.warning(f"No subscription found for customer {customer.id}, defaulting to starter rate")
+        logger.warning(f"No subscription found for customer/master {sub_customer_id}, defaulting to starter rate")
     rate = sub.per_minute_rate_paise if sub else TIER_CONFIG["starter"]["per_minute_rate_paise"]
 
     # --- SOT edge case: zero-duration call (pipeline crash, abnormal termination) ---
