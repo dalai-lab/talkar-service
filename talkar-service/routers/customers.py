@@ -86,10 +86,9 @@ async def create_customer(data: CreateCustomerRequest, db: AsyncSession = Depend
                 )
             else:
                 # Master exists but isn't active yet (still under_review / agent_building / etc.)
-                # Tag this sub-org so the onboarding page shows the brief form, not the full form.
-                customer.onboarding_form = {"_needs_brief": True}
-                await db.commit()
-                logger.info(f"Sub-org {customer.id} created for non-active master {billing_org_id} (status={existing_email.status}); tagged for brief form")
+                # Leave onboarding_form=None so the frontend detects is_sub_org=true + has_onboarding_form=false
+                # and shows the brief form automatically. No tag needed.
+                logger.info(f"Sub-org {customer.id} created for non-active master {billing_org_id} (status={existing_email.status}); awaiting brief")
         except Exception as e:
             logger.error(f"Failed to auto-provision sub-org {customer.id}: {e}")
             
