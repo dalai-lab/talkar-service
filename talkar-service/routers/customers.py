@@ -317,8 +317,11 @@ async def submit_onboarding_by_org(dograh_org_id: int, data: dict, db: AsyncSess
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found for this org")
-    if customer.status not in ("pending_approval", "info_requested", "agent_building"):
-        return customer # D-14: Silent success if already processed
+    if customer.status not in ("pending_approval", "info_requested"):
+        # Customer is already past the submission stage — silently succeed so the
+        # frontend doesn't break, but DO NOT overwrite status or form data.
+        # Critically: do NOT allow agent_building/approved/active to be reset to under_review.
+        return customer
     customer.onboarding_form = data.get("form", {})
     customer.documents = data.get("documents", [])
     customer.status = "under_review"
