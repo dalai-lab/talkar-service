@@ -540,16 +540,13 @@ async def mark_ready(customer_id: int, db: AsyncSession = Depends(get_db), curre
             )
             return {"status": "pending_deposit"}
 
-    # Normal master flow — tier was already chosen by admin at approval time
-    # (stored in onboarding_form.approved_tier). Skip pending_plan_selection and
-    # activate directly so billing starts immediately.
-    customer.status = "active"
-    await db.commit()
-
-    from services.provisioning_service import run_provisioning
-    await run_provisioning(customer.id, None, db=None)
-
+    # Normal master flow
     if is_funded:
+        customer.status = "active"
+        await db.commit()
+        from services.provisioning_service import run_provisioning
+        await run_provisioning(customer.id, None, db=None)
+        
         await notification_service.send_email(
             to_email=customer.contact_email,
             subject="Your AI Agent is Live!",
@@ -557,13 +554,14 @@ async def mark_ready(customer_id: int, db: AsyncSession = Depends(get_db), curre
         )
         return {"status": "active"}
     else:
-        # Wallet empty but still activate — let them top up; suspension runs via nightly cron
+        customer.status = "pending_deposit"
+        await db.commit()
         await notification_service.send_email(
             to_email=customer.contact_email,
-            subject="Your AI Agent is Live! (Top up needed)",
-            body=f"Hi {customer.contact_name}, your agent is live! Your wallet balance is low — please add credits to keep it running."
+            subject="Your AI Agent is Ready! (Activation Deposit Required)",
+            body=f"Hi {customer.contact_name}, your Talkar AI agent has been built! Please log in to your dashboard and add the minimum activation balance to take your agent live."
         )
-        return {"status": "active"}
+        return {"status": "pending_deposit"}
 
 # --- WALLET / STATS ---
 
