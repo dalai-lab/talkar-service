@@ -27,7 +27,12 @@ class UpdateStatusRequest(BaseModel):
 
 @router.post("/")
 async def create_customer(data: CreateCustomerRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id).order_by(Customer.id))
+    result = await db.execute(
+        select(Customer)
+        .where(Customer.dograh_org_id == data.dograh_org_id)
+        .order_by(Customer.updated_at.desc())
+        .limit(1)
+    )
     existing_org = result.scalars().first()
     if existing_org:
         return existing_org
@@ -251,8 +256,16 @@ async def get_customer_status(
     """
     customer = None
     if dograh_org_id:
-        result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
-        customer = result.scalar_one_or_none()
+        # Use updated_at DESC + limit(1) so that if duplicate records exist for the same
+        # org (shouldn't happen but has occurred from test cleanup), we always return the
+        # most recently updated one (e.g. the just-approved one, not the stale under_review).
+        result = await db.execute(
+            select(Customer)
+            .where(Customer.dograh_org_id == dograh_org_id)
+            .order_by(Customer.updated_at.desc())
+            .limit(1)
+        )
+        customer = result.scalars().first()
     elif customer_id:
         result = await db.execute(select(Customer).where(Customer.id == customer_id))
         customer = result.scalar_one_or_none()
