@@ -115,7 +115,10 @@ async def get_existing_customer(contact_email: str, db: AsyncSession = Depends(g
     result = await db.execute(
         select(Customer)
         .where(Customer.contact_email == contact_email)
-        .where(Customer.status.in_(["active", "agent_building", "pending_deposit", "pending_plan_selection"]))
+        .where(Customer.status.in_([
+            "active", "agent_building", "pending_deposit",
+            "pending_plan_selection", "under_review", "approved", "suspended"
+        ]))
         # Prefer billing-master orgs (no billing_org_id)
         .order_by(Customer.billing_org_id.asc().nullsfirst(), Customer.id.asc())
         .limit(1)
