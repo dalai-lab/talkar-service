@@ -69,13 +69,75 @@ async def create_upgrade_order(data: UpgradeOrderRequest, db: AsyncSession = Dep
     if not customer:
         raise HTTPException(404, "Customer not found")
         
+    # Check if wallet already covers the upgrade deposit
+    from services.billing_service import get_billing_wallet
+    wallet, master_id = await get_billing_wallet(db, customer.id)
+    
+    if wallet and wallet.balance_paise >= amount_paise:
+        # User already has enough balance! Just upgrade them immediately.
+        # No Razorpay order needed.
+        sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+        sub = sub_res.scalar_one_or_none()
+        if sub:
+            sub.plan = data.requested_tier
+            sub.per_minute_rate_paise = tier_config["per_minute_rate_paise"]
+            
+        existing_form = customer.onboarding_form or {}
+        existing_form["approved_tier"] = data.requested_tier
+        existing_form.pop("tier_upgrade_requested", None)
+        existing_form.pop("tier_upgrade_requested_at", None)
+        customer.onboarding_form = dict(existing_form)
+        await db.commit()
+        
+        # Run provisioning synchronously to sync to Dograh
+        from services.provisioning_service import run_provisioning
+        try:
+            await run_provisioning(customer.id, data.requested_tier, db)
+        except Exception as e:
+            logger.error(f"Provisioning failed after direct upgrade for customer {customer.id}: {e}")
+            
+        # Cascade to sub-orgs
+        sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
+        from sqlalchemy.orm.attributes import flag_modified
+        for sub_org in sub_orgs_res.scalars().all():
+            sub_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == sub_org.id))
+            sub_sub = sub_sub_res.scalar_one_or_none()
+            if sub_sub:
+                sub_sub.plan = data.requested_tier
+                sub_sub.per_minute_rate_paise = tier_config["per_minute_rate_paise"]
+                
+            sub_form = sub_org.onboarding_form or {}
+            sub_form["approved_tier"] = data.requested_tier
+            sub_org.onboarding_form = dict(sub_form)
+            flag_modified(sub_org, "onboarding_form")
+            
+            await db.commit()
+            if sub_org.status == "active":
+                try:
+                    await run_provisioning(sub_org.id, data.requested_tier, db)
+                except Exception as e:
+                    logger.error(f"Failed to cascade provisioning to sub-org {sub_org.id}: {e}")
+
+        return {
+            "status": "upgraded_from_wallet",
+            "requested_tier": data.requested_tier,
+            "new_balance_paise": wallet.balance_paise
+        }
+
+    # Otherwise, create Razorpay order for the deposit
     order = await razorpay_client.create_topup_order(
         amount_paise, 
         f"upgrade_{customer.id}_{data.requested_tier}", 
         customer.id, 
         extra_notes={"requested_tier": data.requested_tier}
     )
-    return {"razorpay_order_id": order["id"], "amount_paise": amount_paise, "currency": "INR", "requested_tier": data.requested_tier}
+    return {
+        "status": "order_created",
+        "razorpay_order_id": order["id"], 
+        "amount_paise": amount_paise, 
+        "currency": "INR", 
+        "requested_tier": data.requested_tier
+    }
 
 
 class ConfirmTopupRequest(BaseModel):
