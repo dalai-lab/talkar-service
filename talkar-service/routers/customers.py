@@ -84,6 +84,12 @@ async def create_customer(data: CreateCustomerRequest, db: AsyncSession = Depend
                         f"Please build the agent and mark it ready in the admin build queue."
                     )
                 )
+            else:
+                # Master exists but isn't active yet (still under_review / agent_building / etc.)
+                # Tag this sub-org so the onboarding page shows the brief form, not the full form.
+                customer.onboarding_form = {"_needs_brief": True}
+                await db.commit()
+                logger.info(f"Sub-org {customer.id} created for non-active master {billing_org_id} (status={existing_email.status}); tagged for brief form")
         except Exception as e:
             logger.error(f"Failed to auto-provision sub-org {customer.id}: {e}")
             
@@ -133,7 +139,38 @@ async def get_existing_customer(contact_email: str, db: AsyncSession = Depends(g
         "company_name": customer.company_name,
     }
 
+@router.post("/by-org/{dograh_org_id}/new-agent-brief")
+async def save_agent_brief(dograh_org_id: int, data: dict, db: AsyncSession = Depends(get_db)):
+    """
+    Called when a returning customer fills the brief form on a workspace where
+    a sub-org customer record already exists (auto-created by the Dograh workspace hook)
+    but has no onboarding form yet. Updates the existing record and notifies admin.
+    """
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="No customer record found for this org. Use /new-agent-request instead.")
+
+    form_data = data.get("form", {})
+    customer.onboarding_form = form_data
+    customer.status = "pending_approval"
+    await db.commit()
+    await db.refresh(customer)
+
+    await notification_service.send_email(
+        to_email=settings.ADMIN_EMAIL,
+        subject=f"New Agent Brief: {customer.company_name or customer.contact_email}",
+        body=(
+            f"{customer.contact_email} has submitted a new agent brief "
+            f"for workspace org {dograh_org_id}.\n\n"
+            f"Brief:\n{form_data}\n\n"
+            f"Review at admin.talkar.ai/applications"
+        )
+    )
+    return customer
+
 @router.post("/by-org/{dograh_org_id}/new-agent-request")
+
 async def create_new_agent_request(dograh_org_id: int, data: dict, db: AsyncSession = Depends(get_db)):
     """
     Called when a returning customer fills the brief form on a brand-new workspace
