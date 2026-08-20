@@ -37,15 +37,16 @@ async def create_topup_order(data: TopupRequest, db: AsyncSession = Depends(get_
     if not customer:
         raise HTTPException(404, "Customer not found")
 
-    if customer.status in ("pending_deposit", "pending_plan_selection"):
-        from config import TIER_CONFIG
-        tier_name = (customer.onboarding_form or {}).get("approved_tier", "starter")
-        tier_cfg = TIER_CONFIG.get(tier_name, TIER_CONFIG["starter"])
-        plan_min_rupees = tier_cfg.get("activation_deposit_paise", 600000) // 100
-        if data.amount_rupees < plan_min_rupees:
-            raise HTTPException(400, f"Minimum deposit to activate {tier_name} plan is ₹{plan_min_rupees}. You cannot add less than this.")
-    elif data.amount_rupees < 500:
-        raise HTTPException(400, "Minimum top-up is ₹500")
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+    sub = sub_res.scalar_one_or_none()
+    
+    from config import TIER_CONFIG
+    tier_name = sub.plan if sub else (customer.onboarding_form or {}).get("approved_tier", "starter")
+    tier_cfg = TIER_CONFIG.get(tier_name, TIER_CONFIG["starter"])
+    plan_min_rupees = tier_cfg.get("activation_deposit_paise", 600000) // 100
+    
+    if data.amount_rupees < plan_min_rupees:
+        raise HTTPException(400, f"Minimum recharge for the {tier_name} plan is ₹{plan_min_rupees}. You cannot add less than this.")
 
     if customer.status not in ("active", "suspended", "pending_deposit", "pending_plan_selection", "approved"):
         raise HTTPException(400, "Account not eligible for top-up")

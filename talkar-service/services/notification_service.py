@@ -17,11 +17,43 @@ async def send_email(to_email: str, subject: str, body: str):
         return
 
     def _send():
+        formatted_body = body.replace('\n', '<br>')
+        html_body = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f4f4f5; margin: 0; padding: 0; }}
+                .container {{ max-width: 600px; margin: 40px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); border: 1px solid #e4e4e7; }}
+                .header {{ background-color: #09090b; padding: 28px 32px; text-align: center; border-bottom: 1px solid #27272a; }}
+                .header img {{ height: 32px; display: block; margin: 0 auto; }}
+                .content {{ padding: 40px 32px; color: #3f3f46; font-size: 15px; line-height: 1.6; }}
+                .footer {{ background-color: #fafafa; padding: 24px 32px; text-align: center; font-size: 12px; color: #71717a; border-top: 1px solid #e4e4e7; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <!-- Brand image injected for all notifications -->
+                    <img src="https://talkar.in/logo-white.png" alt="Talkar" />
+                </div>
+                <div class="content">
+                    {formatted_body}
+                </div>
+                <div class="footer">
+                    &copy; 2026 Talkar AI. All rights reserved.
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
-        msg["From"] = settings.FROM_EMAIL
+        msg["From"] = f"Talkar <{settings.FROM_EMAIL}>"
         msg["To"] = to_email
         msg.attach(MIMEText(body, "plain"))
+        msg.attach(MIMEText(html_body, "html"))
 
         with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
             server.ehlo()
@@ -129,16 +161,16 @@ async def notify_customer_low_balance(customer_id: int, balance_paise: int):
     )
 
 
-async def notify_customer_negative_balance(customer_id: int):
+async def notify_customer_service_paused(customer_id: int):
     info = await _get_customer_email(customer_id)
     if not info:
-        logger.warning(f"Emailing customer {customer_id}: balance is negative, calls paused.")
+        logger.warning(f"Emailing customer {customer_id}: balance below threshold, calls paused.")
         return
     email, name = info
     await send_email(
         to_email=email,
-        subject="Talkar — Service Paused: Negative Balance",
-        body=f"Hi {name},\n\nYour Talkar wallet balance is negative. Your calls have been paused. Please top up your wallet immediately to resume service.\n\nThe Talkar Team"
+        subject="Talkar — Service Paused: Low Balance",
+        body=f"Hi {name},\n\nYour Talkar wallet balance has dropped below the minimum operating threshold (₹500). Your calls have been paused.\n\nPlease top up your wallet immediately to resume service.\n\nThe Talkar Team"
     )
 
 

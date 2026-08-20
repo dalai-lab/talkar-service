@@ -47,8 +47,8 @@ async def check_low_balances(ctx):
             SELECT w.customer_id, w.balance_paise, w.low_balance_alerted_at, c.contact_email
             FROM wallets w JOIN customers c ON c.id = w.customer_id
             WHERE c.status = 'active'
-              AND w.balance_paise < 50000
-              AND w.balance_paise > 0
+              AND w.balance_paise < 150000
+              AND w.balance_paise >= 50000
               AND (w.low_balance_alerted_at IS NULL
                    OR w.low_balance_alerted_at < now() - interval '24 hours')
         """)
