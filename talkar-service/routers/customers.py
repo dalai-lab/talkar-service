@@ -157,7 +157,7 @@ async def save_agent_brief(dograh_org_id: int, data: dict, db: AsyncSession = De
             master_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == master.id))
             master_sub = master_sub_res.scalar_one_or_none()
             
-    customer.status = "pending_approval"
+    customer.status = "under_review"
     await db.commit()
     await db.refresh(customer)
 
@@ -219,7 +219,7 @@ async def create_new_agent_request(dograh_org_id: int, data: dict, db: AsyncSess
         contact_name=master.contact_name,
         contact_email=master.contact_email,
         contact_phone=master.contact_phone,
-        status="pending_approval",  # Admin must review and build
+        status="under_review",  # Admin must review and build
         onboarding_form=data.get("form", {}),
         billing_org_id=billing_org_id,
         dograh_org_id=dograh_org_id,
