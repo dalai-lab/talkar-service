@@ -9,9 +9,48 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription, DialogTrigger } from "@/components/ui/dialog";
 
+const DocumentViewer = ({ title, dataUrl }: { title: string, dataUrl: string }) => {
+  const isPdf = dataUrl.startsWith("data:application/pdf");
+  const isImage = dataUrl.startsWith("data:image/");
+  
+  const getExtension = () => {
+    if (isPdf) return "pdf";
+    if (isImage) {
+      const mime = dataUrl.split(";")[0].split(":")[1];
+      return mime.split("/")[1] || "png";
+    }
+    return "bin";
+  };
 
+  return (
+    <div className="flex items-center gap-4">
+      <Dialog>
+        <DialogTrigger render={<Button variant="link" className="p-0 h-auto text-sm text-blue-600" />}>
+          📄 {title} (View)
+        </DialogTrigger>
+        <DialogContent className="max-w-4xl w-full h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>{title}</DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto bg-zinc-100/50 rounded-md border flex items-center justify-center p-4">
+            {isPdf ? (
+              <iframe src={dataUrl} className="w-full h-full border-0 rounded-md bg-white" title={title} />
+            ) : isImage ? (
+              <img src={dataUrl} alt={title} className="max-w-full max-h-full object-contain rounded-md shadow-sm" />
+            ) : (
+              <p className="text-muted-foreground text-sm">Preview not available for this file type.</p>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+      <a href={dataUrl} download={`${title.replace(/\s+/g, '_').toLowerCase()}.${getExtension()}`} className="text-xs text-zinc-500 hover:text-zinc-800 underline underline-offset-2">
+        Download
+      </a>
+    </div>
+  );
+};
 export default function CustomerDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -343,14 +382,10 @@ export default function CustomerDetailPage() {
                 <Label className="text-muted-foreground text-xs mb-2 block">Submitted Documents</Label>
                 <div className="flex flex-col gap-2">
                   {customer.onboarding_form?.gstCertificateUrl && (
-                    <a href={customer.onboarding_form.gstCertificateUrl} target="_blank" rel="noreferrer" className="text-sm text-blue-600 hover:underline flex items-center gap-1">
-                      📄 GST Certificate
-                    </a>
+                    <DocumentViewer title="GST Certificate" dataUrl={customer.onboarding_form.gstCertificateUrl} />
                   )}
                   {customer.onboarding_form?.businessRegistrationUrl && (
-                    <a href={customer.onboarding_form.businessRegistrationUrl} target="_blank" rel="noreferrer" className="text-sm text-blue-600 hover:underline flex items-center gap-1">
-                      📄 Business Registration
-                    </a>
+                    <DocumentViewer title="Business Registration" dataUrl={customer.onboarding_form.businessRegistrationUrl} />
                   )}
                 </div>
               </div>
