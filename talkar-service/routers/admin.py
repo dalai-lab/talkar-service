@@ -511,6 +511,8 @@ async def mark_ready(customer_id: int, db: AsyncSession = Depends(get_db), curre
     from services.billing_service import get_billing_wallet
     wallet, _ = await get_billing_wallet(db, customer.id)
     
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+    sub = sub_res.scalar_one_or_none()
     tier_name = sub.plan if sub else "starter"
     from config import TIER_CONFIG
     activation_min = TIER_CONFIG.get(tier_name, TIER_CONFIG["starter"]).get("activation_deposit_paise", 600000)
