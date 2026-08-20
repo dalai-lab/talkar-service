@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 import logging
-from services import notification_service
+from services import notification_service, dograh_client
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -292,6 +292,16 @@ async def get_customer_status(
         "is_sub_org": bool(customer.billing_org_id),
         "has_onboarding_form": bool(customer.onboarding_form)
     }
+    
+    # Try fetching the current voice ID if they are active
+    if customer.status in ("active", "agent_building"):
+        try:
+            cfg = await dograh_client.get_org_config(customer.dograh_org_id, "MODEL_CONFIGURATION_V2")
+            if cfg and "byok" in cfg and "pipeline" in cfg["byok"] and "tts" in cfg["byok"]["pipeline"]:
+                resp["voice_id"] = cfg["byok"]["pipeline"]["tts"].get("voice")
+        except Exception:
+            pass
+
     if customer.status == "rejected" and customer.onboarding_form:
         resp["rejection_reason"] = customer.onboarding_form.get("rejection_reason")
         resp["reapply_countdown"] = f"{customer.onboarding_form.get('reapply_countdown_days', 30)}d 0h"
@@ -619,7 +629,48 @@ async def get_support_requests(dograh_org_id: int = Query(...), x_talkar_email: 
     if not x_talkar_email or x_talkar_email != customer.contact_email:
         raise HTTPException(403, "Not authorized for this organization")
     
-    from db.models import SupportRequest
     reqs = await db.execute(select(SupportRequest).where(SupportRequest.customer_id == customer.id).order_by(SupportRequest.created_at.desc()))
     return reqs.scalars().all()
+
+
+class UpdateVoiceRequest(BaseModel):
+    voice_id: str
+    provider: str
+
+@router.patch("/by-org/{org_id}/voice")
+async def update_customer_voice(org_id: int, data: UpdateVoiceRequest, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
+    customer = result.scalar_one_or_none()
+    if not customer: raise HTTPException(404, "Customer not found")
+    
+    if customer.status not in ("active", "agent_building"):
+        raise HTTPException(400, "Customer must be active to change voice")
+
+    # Fetch subscription to check tier limits
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+    sub = sub_res.scalar_one_or_none()
+    tier = sub.plan if sub else "starter"
+
+    from config import TIER_CONFIG
+    tier_cfg = TIER_CONFIG.get(tier, TIER_CONFIG["starter"])
+    allowed_provider = tier_cfg["tts_provider"]
+
+    if data.provider != allowed_provider:
+        raise HTTPException(403, f"Your current tier ({tier}) only supports {allowed_provider} voices. Please upgrade to use {data.provider}.")
+
+    # Fetch current model config from Dograh
+    cfg = await dograh_client.get_org_config(org_id, "MODEL_CONFIGURATION_V2")
+    if not cfg:
+        raise HTTPException(500, "Failed to fetch active agent configuration.")
+        
+    try:
+        cfg["byok"]["pipeline"]["tts"]["voice"] = data.voice_id
+        cfg["byok"]["pipeline"]["tts"]["provider"] = data.provider
+    except KeyError:
+        raise HTTPException(500, "Agent configuration is malformed.")
+
+    await dograh_client.upsert_org_config(org_id, "MODEL_CONFIGURATION_V2", cfg)
+    
+    return {"status": "success", "voice_id": data.voice_id, "provider": data.provider}
+
 

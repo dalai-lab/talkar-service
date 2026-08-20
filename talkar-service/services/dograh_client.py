@@ -56,6 +56,20 @@ async def upsert_org_config(org_id: int, key: str, value: Any):
             logger.error(f"Failed to upsert config '{key}' for org {org_id}: {e}")
             raise
 
+async def get_org_config(org_id: int, key: str) -> Any:
+    """Gets an organization config from Dograh via direct DB access"""
+    async with DograhSessionLocal() as session:
+        try:
+            result = await session.execute(
+                text("SELECT value FROM organization_configurations WHERE organization_id = :org_id AND key = :key"),
+                {"org_id": org_id, "key": key}
+            )
+            val = result.scalar_one_or_none()
+            return val
+        except Exception as e:
+            logger.error(f"Failed to get config '{key}' for org {org_id}: {e}")
+            raise
+
 async def block_org_calls(org_id: int):
     """Block all calls for a Dograh org by setting CONCURRENT_CALL_LIMIT to 0.
     
