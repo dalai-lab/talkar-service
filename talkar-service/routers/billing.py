@@ -122,6 +122,9 @@ async def create_upgrade_order(data: UpgradeOrderRequest, db: AsyncSession = Dep
                     await run_provisioning(sub_org.id, data.requested_tier, db)
                 except Exception as e:
                     logger.error(f"Failed to cascade provisioning to sub-org {sub_org.id}: {e}")
+                    
+        from services.notification_service import notify_customer_tier_upgraded
+        await notify_customer_tier_upgraded(customer.id, data.requested_tier)
 
         return {
             "status": "upgraded_from_wallet",
@@ -282,6 +285,9 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
                         await dograh_client.restore_org_calls(sub_org.dograh_org_id, tier)
             except Exception as e:
                 logger.error(f"Failed to restore calls after topup for active customer {customer.id}: {e}")
+
+    from services.notification_service import notify_customer_topup_successful
+    await notify_customer_topup_successful(customer.id, data.amount_paise, wallet.balance_paise)
 
     return {"status": "ok", "new_balance_paise": wallet.balance_paise}
 

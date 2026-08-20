@@ -173,7 +173,27 @@ async def notify_customer_service_paused(customer_id: int):
         body=f"Hi {name},\n\nYour Talkar wallet balance has dropped below the minimum operating threshold (₹500). Your calls have been paused.\n\nPlease top up your wallet immediately to resume service.\n\nThe Talkar Team"
     )
 
+async def notify_customer_topup_successful(customer_id: int, amount_paise: int, new_balance_paise: int):
+    info = await _get_customer_email(customer_id)
+    if not info: return
+    email, name = info
+    amount_rs = amount_paise / 100
+    balance_rs = new_balance_paise / 100
+    await send_email(
+        to_email=email,
+        subject="Talkar — Payment Received",
+        body=f"Hi {name},\n\nWe successfully processed your payment of ₹{amount_rs:,.2f}.\n\nYour new wallet balance is ₹{balance_rs:,.2f}.\n\nThank you for using Talkar!\n\nThe Talkar Team"
+    )
 
+async def notify_customer_tier_upgraded(customer_id: int, new_tier: str):
+    info = await _get_customer_email(customer_id)
+    if not info: return
+    email, name = info
+    await send_email(
+        to_email=email,
+        subject=f"Talkar — Upgraded to {new_tier.capitalize()}",
+        body=f"Hi {name},\n\nYour account has been successfully upgraded to the {new_tier.capitalize()} plan! Your new capacities and call rates have been applied to your agents.\n\nThe Talkar Team"
+    )
 async def notify_customer_rejected(customer_id: int, reason: str):
     info = await _get_customer_email(customer_id)
     if not info:
