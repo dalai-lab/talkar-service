@@ -293,14 +293,27 @@ async def get_customer_status(
         "has_onboarding_form": bool(customer.onboarding_form)
     }
     
-    # Try fetching the current voice ID if they are active
-    if customer.status in ("active", "agent_building"):
+    # Check provisioning state: MODEL_CONFIGURATION_V2 must exist in Dograh for the agent
+    # to be usable. This is written by run_provisioning() — it happens at agent_building time
+    # for the fee=0 fast path, or at mark_ready time otherwise.
+    # Customers can be in 'active' or 'agent_building' but still have no config if provisioning
+    # failed silently. is_provisioned tells the frontend whether voice selection is meaningful.
+    is_provisioned = False
+    if customer.dograh_org_id and customer.status in ("active", "agent_building", "pending_deposit", "suspended"):
         try:
             cfg = await dograh_client.get_org_config(customer.dograh_org_id, "MODEL_CONFIGURATION_V2")
             if cfg and "byok" in cfg and "pipeline" in cfg["byok"] and "tts" in cfg["byok"]["pipeline"]:
+                is_provisioned = True
                 resp["voice_id"] = cfg["byok"]["pipeline"]["tts"].get("voice")
         except Exception:
             pass
+    resp["is_provisioned"] = is_provisioned
+
+    # Resolve the customer's active plan — sub-orgs inherit from billing master
+    billing_customer_id = customer.billing_org_id if customer.billing_org_id else customer.id
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == billing_customer_id))
+    sub = sub_res.scalar_one_or_none()
+    resp["plan"] = sub.plan if sub else None
 
     if customer.status == "rejected" and customer.onboarding_form:
         resp["rejection_reason"] = customer.onboarding_form.get("rejection_reason")
@@ -313,6 +326,7 @@ async def get_customer_status(
         wallet = wallet_res.scalar_one_or_none()
         resp["balance_paise"] = wallet.balance_paise if wallet else 0
     return resp
+
 
 @router.get("/by-org/{dograh_org_id}")
 async def get_customer_by_org(dograh_org_id: int, db: AsyncSession = Depends(get_db)):
@@ -661,13 +675,20 @@ async def update_customer_voice(org_id: int, data: UpdateVoiceRequest, db: Async
     # Fetch current model config from Dograh
     cfg = await dograh_client.get_org_config(org_id, "MODEL_CONFIGURATION_V2")
     if not cfg:
-        raise HTTPException(500, "Failed to fetch active agent configuration.")
-        
-    try:
-        cfg["byok"]["pipeline"]["tts"]["voice"] = data.voice_id
-        cfg["byok"]["pipeline"]["tts"]["provider"] = data.provider
-    except KeyError:
-        raise HTTPException(500, "Agent configuration is malformed.")
+        # Provisioning hasn't run yet (or failed). This is not a server error — it's
+        # a business state issue. Return 409 so the client can show a sensible message.
+        raise HTTPException(
+            409,
+            "Your agent hasn't been provisioned yet. Voice selection will be available once your agent goes live."
+        )
+    
+    tts_cfg = cfg.get("byok", {}).get("pipeline", {}).get("tts")
+    if not tts_cfg:
+        raise HTTPException(409, "Agent voice configuration is missing. Please contact support.")
+
+    tts_cfg["voice"] = data.voice_id
+    tts_cfg["provider"] = data.provider
+    cfg["byok"]["pipeline"]["tts"] = tts_cfg
 
     await dograh_client.upsert_org_config(org_id, "MODEL_CONFIGURATION_V2", cfg)
     
