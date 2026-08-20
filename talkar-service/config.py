@@ -49,25 +49,26 @@ class Settings(BaseSettings):
 settings = Settings()
 
 # V2 Config Additions
-WALLET_ACTIVATION_THRESHOLD_PAISE = 200000  # ₹2,000
+CALL_BLOCK_THRESHOLD_PAISE = 50000  # ₹500
 
 TIER_CONFIG = {
     "starter": {
-        "per_minute_rate_paise": 2500,   # ₹25/min
+        "per_minute_rate_paise": 600,    # ₹6/min
         "concurrent_call_limit": 2,
         "max_call_duration_seconds": 900,
         "llm_model": "gpt-4o-mini",
         "tts_provider": "deepgram",
         "free_phone_numbers": 1,
+        "activation_deposit_paise": 600000,  # ₹6,000 min to activate
     },
     "pro": {
-        "per_minute_rate_paise": 1800,   # ₹18/min
+        "per_minute_rate_paise": 400,    # ₹4/min
         "concurrent_call_limit": 10,
         "max_call_duration_seconds": 1800,
         "llm_model": "gpt-4o",
         "tts_provider": "elevenlabs",
         "free_phone_numbers": 2,
-        "upgrade_deposit_paise": 1000000,
+        "activation_deposit_paise": 800000,  # ₹8,000 min to activate
     },
     "elite": {
         "per_minute_rate_paise": 1200,   # ₹12/min
@@ -76,6 +77,7 @@ TIER_CONFIG = {
         "llm_model": "gpt-4o",
         "tts_provider": "elevenlabs",
         "free_phone_numbers": 5,
-        "upgrade_deposit_paise": 2500000,
+        "activation_deposit_paise": 2500000,
+        "disabled": True,
     },
 }

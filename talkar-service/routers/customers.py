@@ -431,49 +431,60 @@ class SelectTierRequest(BaseModel):
 
 @router.post("/by-org/{org_id}/select-tier")
 async def select_tier(org_id: int, data: SelectTierRequest, db: AsyncSession = Depends(get_db)):
+    from config import TIER_CONFIG, CALL_BLOCK_THRESHOLD_PAISE
+    
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
+
+    tier_cfg = TIER_CONFIG.get(data.tier)
+    if not tier_cfg: raise HTTPException(400, "Invalid tier")
+    if tier_cfg.get("disabled"): raise HTTPException(400, f"The {data.tier} plan is not currently available.")
+
     if customer.status not in ("pending_plan_selection", "pending_deposit"):
         raise HTTPException(400, f"Cannot select plan in current status: {customer.status}")
 
-    from config import TIER_CONFIG, WALLET_ACTIVATION_THRESHOLD_PAISE
-    tier_cfg = TIER_CONFIG.get(data.tier)
-    if not tier_cfg: raise HTTPException(400, "Invalid tier")
+    activation_min = tier_cfg.get("activation_deposit_paise", 600000)
 
-    # If still in pending_deposit, verify wallet is funded before activating
-    if customer.status == "pending_deposit":
-        from services.billing_service import get_billing_wallet
-        wallet, _ = await get_billing_wallet(db, customer.id)
-        if not wallet or wallet.balance_paise < WALLET_ACTIVATION_THRESHOLD_PAISE:
-            raise HTTPException(400, f"Wallet balance is below the minimum required to activate (₹{WALLET_ACTIVATION_THRESHOLD_PAISE // 100}). Please top up first.")
-    
-    # Store approved_tier in onboarding_form
+    # Store selected tier (even if switching plans during pending_deposit)
     existing_form = customer.onboarding_form or {}
     existing_form["approved_tier"] = data.tier
     customer.onboarding_form = dict(existing_form)
-    
-    # Update Subscription
-    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
-    sub = sub_res.scalar_one_or_none()
-    if sub:
-        sub.plan = data.tier
-        sub.per_minute_rate_paise = tier_cfg["per_minute_rate_paise"]
-        
-    customer.status = "active"
-    await db.commit()
-    
-    # Re-run provisioning in its own session so any failure inside it cannot
-    # rollback the customer.status = "active" commit above.
-    from services.provisioning_service import run_provisioning
-    await run_provisioning(customer.id, None, db=None)
-    
-    await notification_service.send_email(
-        to_email=customer.contact_email,
-        subject="Your Talkar Agent is Live!",
-        body=f"Hi {customer.contact_name}, your AI agent is fully active on the {data.tier} tier!"
-    )
-    return {"status": "active"}
+
+    # Check wallet right now
+    from services.billing_service import get_billing_wallet
+    wallet, _ = await get_billing_wallet(db, customer.id)
+    current_balance = wallet.balance_paise if wallet else 0
+
+    if current_balance >= activation_min:
+        # Wallet already funded — activate immediately (handles pre-funded wallets)
+        sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+        sub = sub_res.scalar_one_or_none()
+        if sub:
+            sub.plan = data.tier
+            sub.per_minute_rate_paise = tier_cfg["per_minute_rate_paise"]
+        customer.status = "active"
+        await db.commit()
+        from services.provisioning_service import run_provisioning
+        await run_provisioning(customer.id, None, db=None)
+        await notification_service.send_email(
+            to_email=customer.contact_email,
+            subject="Your Talkar Agent is Live!",
+            body=f"Hi {customer.contact_name}, your AI agent is fully active on the {data.tier} tier!"
+        )
+        return {"status": "active"}
+    else:
+        # Not funded enough — move to pending_deposit, redirect to wallet
+        customer.status = "pending_deposit"
+        await db.commit()
+        shortfall = (activation_min - current_balance) // 100
+        return {
+            "status": "pending_deposit",
+            "redirect": f"/wallet?activation=true&plan={data.tier}",
+            "activation_deposit_rupees": activation_min // 100,
+            "shortfall_rupees": shortfall,
+            "message": f"Add ₹{shortfall} more to activate your {data.tier} plan."
+        }
 
 class TierUpgradeRequest(BaseModel):
     requested_tier: str

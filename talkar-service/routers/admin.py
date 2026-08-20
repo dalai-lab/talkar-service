@@ -7,7 +7,7 @@ from services import razorpay_client, notification_service
 from services.admin_auth import get_current_admin, create_admin_access_token
 from pydantic import BaseModel
 from typing import Optional
-from config import WALLET_ACTIVATION_THRESHOLD_PAISE
+from config import CALL_BLOCK_THRESHOLD_PAISE
 
 router = APIRouter()
 
@@ -511,7 +511,10 @@ async def mark_ready(customer_id: int, db: AsyncSession = Depends(get_db), curre
     from services.billing_service import get_billing_wallet
     wallet, _ = await get_billing_wallet(db, customer.id)
     
-    is_funded = wallet and wallet.balance_paise >= WALLET_ACTIVATION_THRESHOLD_PAISE
+    tier_name = sub.plan if sub else "starter"
+    from config import TIER_CONFIG
+    activation_min = TIER_CONFIG.get(tier_name, TIER_CONFIG["starter"]).get("activation_deposit_paise", 600000)
+    is_funded = wallet and wallet.balance_paise >= activation_min
 
     if customer.billing_org_id:
         # Sub-org fast path

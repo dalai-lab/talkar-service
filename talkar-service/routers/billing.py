@@ -11,7 +11,7 @@ import json
 import logging
 import hmac
 import hashlib
-from config import settings, WALLET_ACTIVATION_THRESHOLD_PAISE
+from config import settings, CALL_BLOCK_THRESHOLD_PAISE
 
 logger = logging.getLogger(__name__)
 
@@ -32,14 +32,21 @@ class DograhDeductRequest(BaseModel):
 
 @router.post("/topup/create-order")
 async def create_topup_order(data: TopupRequest, db: AsyncSession = Depends(get_db)):
-    if data.amount_rupees < 500:
-        raise HTTPException(400, "Minimum top-up is ₹500")
-        
-    # Look up customer by org_id
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
+
+    if customer.status in ("pending_deposit", "pending_plan_selection"):
+        from config import TIER_CONFIG
+        tier_name = (customer.onboarding_form or {}).get("approved_tier", "starter")
+        tier_cfg = TIER_CONFIG.get(tier_name, TIER_CONFIG["starter"])
+        plan_min_rupees = tier_cfg.get("activation_deposit_paise", 600000) // 100
+        if data.amount_rupees < plan_min_rupees:
+            raise HTTPException(400, f"Minimum deposit to activate {tier_name} plan is ₹{plan_min_rupees}. You cannot add less than this.")
+    elif data.amount_rupees < 500:
+        raise HTTPException(400, "Minimum top-up is ₹500")
+
     if customer.status not in ("active", "suspended", "pending_deposit", "pending_plan_selection", "approved"):
         raise HTTPException(400, "Account not eligible for top-up")
         
@@ -59,23 +66,22 @@ async def create_upgrade_order(data: UpgradeOrderRequest, db: AsyncSession = Dep
     tier_config = TIER_CONFIG.get(data.requested_tier)
     if not tier_config:
         raise HTTPException(400, "Invalid tier")
+    if tier_config.get("disabled"):
+        raise HTTPException(400, f"The {data.requested_tier} plan is not currently available.")
         
-    amount_paise = tier_config.get("upgrade_deposit_paise")
-    if not amount_paise:
-        raise HTTPException(400, "Tier does not require an upgrade deposit")
+    activation_min = tier_config.get("activation_deposit_paise")
+    if not activation_min:
+        raise HTTPException(400, "Tier does not require an activation deposit")
     
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
         
-    # Check if wallet already covers the upgrade deposit
     from services.billing_service import get_billing_wallet
     wallet, master_id = await get_billing_wallet(db, customer.id)
     
-    if wallet and wallet.balance_paise >= amount_paise:
-        # User already has enough balance! Just upgrade them immediately.
-        # No Razorpay order needed.
+    if wallet and wallet.balance_paise >= activation_min:
         sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
         sub = sub_res.scalar_one_or_none()
         if sub:
@@ -89,14 +95,12 @@ async def create_upgrade_order(data: UpgradeOrderRequest, db: AsyncSession = Dep
         customer.onboarding_form = dict(existing_form)
         await db.commit()
         
-        # Run provisioning synchronously to sync to Dograh
         from services.provisioning_service import run_provisioning
         try:
             await run_provisioning(customer.id, data.requested_tier, db)
         except Exception as e:
             logger.error(f"Provisioning failed after direct upgrade for customer {customer.id}: {e}")
             
-        # Cascade to sub-orgs
         sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
         from sqlalchemy.orm.attributes import flag_modified
         for sub_org in sub_orgs_res.scalars().all():
@@ -123,21 +127,11 @@ async def create_upgrade_order(data: UpgradeOrderRequest, db: AsyncSession = Dep
             "requested_tier": data.requested_tier,
             "new_balance_paise": wallet.balance_paise
         }
+    else:
+        # Not enough balance, tell them to top up
+        shortfall = (activation_min - (wallet.balance_paise if wallet else 0)) // 100
+        raise HTTPException(400, f"You need ₹{activation_min // 100} in your wallet to upgrade to {data.requested_tier}. Please add ₹{shortfall} more.")
 
-    # Otherwise, create Razorpay order for the deposit
-    order = await razorpay_client.create_topup_order(
-        amount_paise, 
-        f"upgrade_{customer.id}_{data.requested_tier}", 
-        customer.id, 
-        extra_notes={"requested_tier": data.requested_tier}
-    )
-    return {
-        "status": "order_created",
-        "razorpay_order_id": order["id"], 
-        "amount_paise": amount_paise, 
-        "currency": "INR", 
-        "requested_tier": data.requested_tier
-    }
 
 
 class ConfirmTopupRequest(BaseModel):
@@ -228,8 +222,14 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
                         logger.error(f"Failed to cascade provisioning to sub-org {sub_org.id}: {e}")
     
     # 6. Auto-reactivate if suspended or pending_deposit
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+    sub = sub_res.scalar_one_or_none()
+    tier_name = sub.plan if sub else (customer.onboarding_form or {}).get("approved_tier", "starter")
+    from config import TIER_CONFIG
+    activation_threshold = TIER_CONFIG.get(tier_name, TIER_CONFIG["starter"]).get("activation_deposit_paise", 600000)
+
     if customer.status == "pending_deposit":
-        if wallet.balance_paise >= WALLET_ACTIVATION_THRESHOLD_PAISE:
+        if wallet.balance_paise >= activation_threshold:
             customer.status = "active"
             await db.commit()
             from services.provisioning_service import run_provisioning
@@ -241,8 +241,6 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
             # Lift the call block if one was set
             if customer.dograh_org_id:
                 try:
-                    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
-                    sub = sub_res.scalar_one_or_none()
                     tier = sub.plan if sub else "starter"
                     await dograh_client.restore_org_calls(customer.dograh_org_id, tier)
                 except Exception as e:
@@ -252,7 +250,7 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
                 subject="Your Talkar Agent is Live!",
                 body="Your wallet is funded and your agent is now active!"
             )
-    elif customer.status == "suspended" and wallet.balance_paise >= WALLET_ACTIVATION_THRESHOLD_PAISE:
+    elif customer.status == "suspended" and wallet.balance_paise >= activation_threshold:
         customer.status = "active"
         await db.commit()
         from services.provisioning_service import run_provisioning
@@ -264,20 +262,16 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
         # Lift the CONCURRENT_CALL_LIMIT=0 block set during suspension
         if customer.dograh_org_id:
             try:
-                sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
-                sub = sub_res.scalar_one_or_none()
                 tier = sub.plan if sub else "starter"
                 await dograh_client.restore_org_calls(customer.dograh_org_id, tier)
             except Exception as e:
                 logger.error(f"Failed to restore calls for org {customer.dograh_org_id}: {e}")
-    elif customer.status == "active" and wallet.balance_paise >= WALLET_ACTIVATION_THRESHOLD_PAISE:
-        # Customer was active but hit zero balance — block_org_calls was called then.
-        # Now they've topped up: restore the concurrent call limit unconditionally.
+    elif customer.status == "active" and wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE:
+        # Customer was active but hit block threshold — block_org_calls was called then.
+        # Now they've topped up above block threshold: restore the concurrent call limit.
         from services import dograh_client
         if customer.dograh_org_id:
             try:
-                sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
-                sub = sub_res.scalar_one_or_none()
                 tier = sub.plan if sub else "starter"
                 await dograh_client.restore_org_calls(customer.dograh_org_id, tier)
                 # Also restore sub-orgs billing under this master
@@ -453,7 +447,7 @@ async def check_quota(data: DograhQuotaRequest, db: AsyncSession = Depends(get_d
     from services.billing_service import get_billing_wallet, check_and_trigger_auto_recharge
     wallet, master_id = await get_billing_wallet(db, customer.id)
     
-    if not wallet or wallet.balance_paise <= 0:
+    if not wallet or wallet.balance_paise <= CALL_BLOCK_THRESHOLD_PAISE:
         if wallet:
             await check_and_trigger_auto_recharge(db, master_id)
         return {"has_quota": False}
@@ -588,7 +582,7 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
     await check_and_trigger_auto_recharge(db, customer.id)
 
     # SOT line 658: if balance went negative, email customer AND block future calls
-    if wallet and wallet.balance_paise <= 0:
+    if wallet and wallet.balance_paise <= CALL_BLOCK_THRESHOLD_PAISE:
         logger.warning(f"Customer {customer.id} wallet negative: {wallet.balance_paise} paise")
         await notification_service.notify_customer_negative_balance(customer.id)
         # Block calls in Dograh immediately so the next call can't start.
