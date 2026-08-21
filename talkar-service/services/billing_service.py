@@ -108,7 +108,7 @@ async def deduct_for_run(run_id: int):
             return
             
         org_id = run["organization_id"]
-        duration = run.get("duration_seconds", 0)
+        duration = run.get("duration_seconds") or 0.0
         
         result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
         customer = result.scalar_one_or_none()
@@ -133,11 +133,16 @@ async def deduct_for_run(run_id: int):
             logger.info(f"Run {run_id} already processed, skipping reconciliation")
             return
 
-        # Calculate cost
-        minutes = math.ceil(duration / 60.0)
-        from config import TIER_CONFIG
-        rate = subscription.per_minute_rate_paise if subscription else TIER_CONFIG["starter"]["per_minute_rate_paise"]
-        cost_paise = minutes * rate
+        # Calculate cost (with minimum billable guard)
+        MIN_BILLABLE_SECONDS = 10
+        if duration < MIN_BILLABLE_SECONDS:
+            logger.info(f"Run {run_id} too short ({duration}s) — logging as ₹0 cost")
+            cost_paise = 0
+        else:
+            minutes = math.ceil(duration / 60.0)
+            from config import TIER_CONFIG
+            rate = subscription.per_minute_rate_paise if subscription else TIER_CONFIG["starter"]["per_minute_rate_paise"]
+            cost_paise = minutes * rate
         
         # Insert call log
         call_log = CallLog(
@@ -153,28 +158,29 @@ async def deduct_for_run(run_id: int):
         
         wallet, master_id = await get_billing_wallet(db, customer.id)
         
-        # Deduct wallet
-        result = await db.execute(
-            update(Wallet)
-            .where(Wallet.customer_id == master_id)
-            .values(balance_paise=Wallet.balance_paise - cost_paise)
-            .returning(Wallet)
-        )
-        wallet = result.scalar_one_or_none()
-        
-        # Record transaction
-        transaction = WalletTransaction(
-            customer_id=customer.id,
-            type="call_deduction",  # Must match SOT schema: 'top_up' | 'call_deduction' | 'refund' | 'grant'
-            amount_paise=-cost_paise,
-            description=f"Call deduction for run {run_id}",
-            dograh_run_id=run_id
-        )
-        db.add(transaction)
-        
-        if wallet and wallet.balance_paise < 0:
-            logger.warning(f"Customer {customer.id} wallet went negative: {wallet.balance_paise}")
-            await notification_service.notify_customer_negative_balance(customer.id)
+        if cost_paise > 0:
+            # Deduct wallet
+            result = await db.execute(
+                update(Wallet)
+                .where(Wallet.customer_id == master_id)
+                .values(balance_paise=Wallet.balance_paise - cost_paise)
+                .returning(Wallet)
+            )
+            wallet = result.scalar_one_or_none()
+            
+            # Record transaction
+            transaction = WalletTransaction(
+                customer_id=customer.id,
+                type="call_deduction",  # Must match SOT schema: 'top_up' | 'call_deduction' | 'refund' | 'grant'
+                amount_paise=-cost_paise,
+                description=f"Call deduction for run {run_id}",
+                dograh_run_id=run_id
+            )
+            db.add(transaction)
+            
+            if wallet and wallet.balance_paise < 0:
+                logger.warning(f"Customer {customer.id} wallet went negative: {wallet.balance_paise}")
+                await notification_service.notify_customer_negative_balance(customer.id)
             
         from services import redis_client
         await redis_client.decrement_active_calls(master_id)
@@ -182,4 +188,5 @@ async def deduct_for_run(run_id: int):
         await db.commit()
         
         # Trigger auto-recharge hook
-        await check_and_trigger_auto_recharge(db, customer.id)
+        if cost_paise > 0:
+            await check_and_trigger_auto_recharge(db, customer.id)
