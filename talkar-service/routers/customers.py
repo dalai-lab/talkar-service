@@ -169,7 +169,7 @@ async def save_agent_brief(dograh_org_id: int, data: dict, db: AsyncSession = De
                 f"Existing active customer {customer.contact_email} (Tier: {master_sub.plan}) has submitted a new agent brief "
                 f"for their new workspace (Dograh Org ID: {customer.dograh_org_id}).\n\n"
                 f"Brief:\n{form_data}\n\n"
-                f"Please review at admin.talkar.ai/applications.\n"
+                f"Please review at talkar.in/admin.\n"
                 f"Note: Since they are a returning customer, you can set the Integration Fee to 0 to approve them instantly, or set a custom fee if this specific agent requires complex integration work."
             )
         )
@@ -181,7 +181,7 @@ async def save_agent_brief(dograh_org_id: int, data: dict, db: AsyncSession = De
                 f"{customer.contact_email} has submitted a new agent brief "
                 f"for workspace org {dograh_org_id}.\n\n"
                 f"Brief:\n{form_data}\n\n"
-                f"Review at admin.talkar.ai/applications"
+                f"Review at talkar.in/admin"
             )
         )
     return customer
@@ -235,7 +235,7 @@ async def create_new_agent_request(dograh_org_id: int, data: dict, db: AsyncSess
             f"{master.company_name} ({master.contact_email}) has requested a new agent "
             f"for workspace org {dograh_org_id}.\n\n"
             f"Brief:\n{data.get('form', {})}\n\n"
-            f"Review at admin.talkar.ai/applications"
+            f"Review at talkar.in/admin"
         )
     )
     return new_customer
@@ -355,7 +355,7 @@ async def submit_onboarding_by_org(dograh_org_id: int, data: dict, db: AsyncSess
     await notification_service.send_email(
         to_email=settings.ADMIN_EMAIL,
         subject=f"New Application: {customer.company_name}",
-        body=f"{customer.company_name} ({customer.contact_email}) submitted their onboarding form. Review at admin.talkar.ai/applications"
+        body=f"{customer.company_name} ({customer.contact_email}) submitted their onboarding form. Review at talkar.in/admin"
     )
     return customer
 
@@ -388,7 +388,7 @@ async def submit_new_agent_brief(dograh_org_id: int, data: dict, db: AsyncSessio
     await notification_service.send_email(
         to_email=settings.ADMIN_EMAIL,
         subject=f"New Agent Brief Submitted: {master_name}",
-        body=f"{master_name} ({customer.contact_email}) has submitted a brief for their new agent (Org {dograh_org_id}).\n\nReview at admin.talkar.ai/applications"
+        body=f"{master_name} ({customer.contact_email}) has submitted a brief for their new agent (Org {dograh_org_id}).\n\nReview at talkar.in/admin"
     )
     return customer
 
@@ -408,7 +408,7 @@ async def submit_onboarding_by_id(customer_id: int, data: dict, db: AsyncSession
     await notification_service.send_email(
         to_email=settings.ADMIN_EMAIL,
         subject=f"New Application: {customer.company_name}",
-        body=f"{customer.company_name} ({customer.contact_email}) submitted their onboarding form. Review at admin.talkar.ai/applications"
+        body=f"{customer.company_name} ({customer.contact_email}) submitted their onboarding form. Review at talkar.in/admin"
     )
     return customer
 # Parameterized paths after static ones

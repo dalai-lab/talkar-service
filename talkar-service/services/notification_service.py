@@ -192,7 +192,7 @@ async def notify_customer_tier_upgraded(customer_id: int, new_tier: str):
     await send_email(
         to_email=email,
         subject=f"Talkar — Upgraded to {new_tier.capitalize()}",
-        body=f"Hi {name},\n\nYour account has been successfully upgraded to the {new_tier.capitalize()} plan! Your new capacities and call rates have been applied to your agents.\n\nThe Talkar Team"
+        body=f"Hi {name},\n\nYour account has been successfully upgraded to the {new_tier.capitalize()} tier! Your new capacities and call rates have been applied to your agents.\n\nThe Talkar Team"
     )
 async def notify_customer_rejected(customer_id: int, reason: str):
     info = await _get_customer_email(customer_id)
