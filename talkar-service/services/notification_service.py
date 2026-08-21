@@ -130,13 +130,7 @@ async def send_email(to_email: str, subject: str, body: str):
                     <table border="0" cellpadding="0" cellspacing="0" width="100%">
                         <tr>
                             <td align="center">
-                                <svg width="150" height="32" viewBox="0 0 150 32" xmlns="http://www.w3.org/2000/svg" style="display: block;">
-                                    <rect x="0" y="2" width="28" height="28" rx="8" fill="#fe6905" />
-                                    <rect x="7" y="12" width="2.5" height="8" rx="1.25" fill="#ffffff" />
-                                    <rect x="12.75" y="8" width="2.5" height="16" rx="1.25" fill="#ffffff" />
-                                    <rect x="18.5" y="12" width="2.5" height="8" rx="1.25" fill="#ffffff" />
-                                    <text x="38" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="19" font-weight="900" fill="#ffffff" letter-spacing="-0.04em">TALKAR</text>
-                                </svg>
+                                <img src="https://talkar.in/logo-white.png" alt="Talkar" width="150" style="display: block; max-width: 150px; height: auto;" />
                             </td>
                         </tr>
                     </table>
