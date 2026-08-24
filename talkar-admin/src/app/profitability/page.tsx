@@ -298,7 +298,7 @@ export default function ProfitabilityPage() {
         <h3 className="text-lg font-semibold mb-3">Per-Customer Breakdown</h3>
         {loading ? (
           <div className="text-center py-12 text-muted-foreground">Loading...</div>
-        ) : !data || data.customers.length === 0 ? (
+        ) : !data || !data.customers || data.customers.length === 0 ? (
           <div className="text-center py-12 text-muted-foreground border rounded-lg bg-slate-50">
             No call data for this period.
           </div>
