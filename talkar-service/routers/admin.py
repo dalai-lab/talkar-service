@@ -955,7 +955,7 @@ async def get_profitability(
     )
     if since:
         topup_q = topup_q.where(WalletTransaction.created_at >= since)
-    topup_paise = (await db.execute(topup_q)).scalar() or 0
+    topup_paise = float((await db.execute(topup_q)).scalar() or 0)
     total_topups_inr = topup_paise / 100.0
 
     # --- Build customer rows ---
