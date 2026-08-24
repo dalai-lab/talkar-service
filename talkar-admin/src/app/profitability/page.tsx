@@ -17,6 +17,8 @@ import {
 interface CustomerRow {
   customer_id: number;
   company_name: string;
+  contact_email: string | null;
+  status: string | null;
   calls: number;
   total_minutes: number;
   revenue_inr: number;
@@ -109,8 +111,16 @@ function CustomerRowCard({ c }: { c: CustomerRow }) {
       >
         <div className="flex-1 min-w-0">
           <div className="font-medium text-sm truncate">{c.company_name}</div>
+          {c.contact_email && (
+            <div className="text-xs text-muted-foreground truncate">{c.contact_email}</div>
+          )}
           <div className="text-xs text-muted-foreground mt-0.5">
             {c.calls} calls · {c.total_minutes.toFixed(1)} min
+            {c.status && c.status !== "active" && (
+              <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700">
+                {c.status}
+              </span>
+            )}
           </div>
         </div>
         <div className="text-right shrink-0">

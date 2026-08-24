@@ -900,8 +900,8 @@ async def get_profitability(
     subs_res = await db.execute(select(Subscription))
     subs = {s.customer_id: s for s in subs_res.scalars().all()}
 
-    # --- Fetch customers ---
-    cust_res = await db.execute(select(Customer).where(Customer.status == "active"))
+    # --- Fetch customers (all statuses — call logs may exist for pending/suspended too) ---
+    cust_res = await db.execute(select(Customer))
     customers = {c.id: c for c in cust_res.scalars().all()}
 
     # --- Aggregate per customer ---
@@ -967,6 +967,8 @@ async def get_profitability(
         customer_rows.append({
             "customer_id": cid,
             "company_name": c.company_name if c else f"Customer #{cid}",
+            "contact_email": c.contact_email if c else None,
+            "status": c.status if c else None,
             "calls": data["calls"],
             "total_minutes": round(data["total_minutes"], 1),
             "revenue_inr": round(data["revenue_inr"], 2),
