@@ -616,11 +616,6 @@ async def get_calls_stats(db: AsyncSession = Depends(get_db), current_admin: Tal
     # Stub call stats per customer
     return []
 
-@router.get("/profitability")
-async def get_profitability(db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
-    # Stub profitability calculation
-    return {"revenue": 0, "cost": 0, "margin": 0}
-
 # --- TEAM ---
 
 @router.get("/team")
