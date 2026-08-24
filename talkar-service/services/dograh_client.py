@@ -94,7 +94,12 @@ async def get_run(run_id: int):
     """Get a specific run from Dograh by ID via DB."""
     async with DograhSessionLocal() as session:
         result = await session.execute(
-            text("SELECT id, organization_id, status, CAST(usage_info->>'call_duration_seconds' AS FLOAT) as duration_seconds FROM workflow_runs WHERE id = :run_id"),
+            text("""
+                SELECT wfr.id, w.organization_id, wfr.status, CAST(wfr.usage_info->>'call_duration_seconds' AS FLOAT) as duration_seconds 
+                FROM workflow_runs wfr
+                JOIN workflows w ON w.id = wfr.workflow_id
+                WHERE wfr.id = :run_id
+            """),
             {"run_id": run_id}
         )
         row = result.fetchone()
@@ -106,7 +111,12 @@ async def get_completed_runs(hours: int = 25):
     """Get completed runs from Dograh in the last N hours via DB."""
     async with DograhSessionLocal() as session:
         result = await session.execute(
-            text("SELECT id, organization_id, status, CAST(usage_info->>'call_duration_seconds' AS FLOAT) as duration_seconds, created_at FROM workflow_runs WHERE status = 'completed' AND created_at >= NOW() - make_interval(hours => :hours)"),
+            text("""
+                SELECT wfr.id, w.organization_id, wfr.status, CAST(wfr.usage_info->>'call_duration_seconds' AS FLOAT) as duration_seconds, wfr.created_at 
+                FROM workflow_runs wfr
+                JOIN workflows w ON w.id = wfr.workflow_id
+                WHERE wfr.status = 'completed' AND wfr.created_at >= NOW() - make_interval(hours => :hours)
+            """),
             {"hours": hours}
         )
         rows = result.fetchall()
