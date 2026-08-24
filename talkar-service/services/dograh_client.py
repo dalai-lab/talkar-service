@@ -95,7 +95,7 @@ async def get_run(run_id: int):
     async with DograhSessionLocal() as session:
         result = await session.execute(
             text("""
-                SELECT wfr.id, w.organization_id, wfr.status, CAST(wfr.usage_info->>'call_duration_seconds' AS FLOAT) as duration_seconds 
+                SELECT wfr.id, w.organization_id, wfr.state, CAST(wfr.usage_info->>'call_duration_seconds' AS FLOAT) as duration_seconds 
                 FROM workflow_runs wfr
                 JOIN workflows w ON w.id = wfr.workflow_id
                 WHERE wfr.id = :run_id
@@ -104,7 +104,7 @@ async def get_run(run_id: int):
         )
         row = result.fetchone()
         if row:
-            return {"id": row.id, "organization_id": row.organization_id, "status": row.status, "duration_seconds": row.duration_seconds}
+            return {"id": row.id, "organization_id": row.organization_id, "status": row.state, "duration_seconds": row.duration_seconds}
         return None
 
 async def get_completed_runs(hours: int = 25):
@@ -112,16 +112,16 @@ async def get_completed_runs(hours: int = 25):
     async with DograhSessionLocal() as session:
         result = await session.execute(
             text("""
-                SELECT wfr.id, w.organization_id, wfr.status, CAST(wfr.usage_info->>'call_duration_seconds' AS FLOAT) as duration_seconds, wfr.created_at 
+                SELECT wfr.id, w.organization_id, wfr.state, CAST(wfr.usage_info->>'call_duration_seconds' AS FLOAT) as duration_seconds, wfr.created_at 
                 FROM workflow_runs wfr
                 JOIN workflows w ON w.id = wfr.workflow_id
-                WHERE wfr.status = 'completed' AND wfr.created_at >= NOW() - make_interval(hours => :hours)
+                WHERE wfr.state = 'completed' AND wfr.created_at >= NOW() - make_interval(hours => :hours)
             """),
             {"hours": hours}
         )
         rows = result.fetchall()
         return [
-            {"id": r.id, "organization_id": r.organization_id, "status": r.status, "duration_seconds": r.duration_seconds, "created_at": r.created_at.isoformat()}
+            {"id": r.id, "organization_id": r.organization_id, "status": r.state, "duration_seconds": r.duration_seconds, "created_at": r.created_at.isoformat()}
             for r in rows
         ]
 
