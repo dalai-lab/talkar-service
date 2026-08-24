@@ -41,6 +41,7 @@ class CustomerUpdateRequest(BaseModel):
     status: Optional[str] = None
     tier: Optional[str] = None
 
+
 # --- AUTH ---
 
 @router.post("/login")
@@ -724,3 +725,301 @@ async def deny_phone_number_request(request_id: int, data: DenyPhoneNumberReques
     req.resolved_at = func.now()
     await db.commit()
     return {"status": "denied"}
+
+
+# ---------------------------------------------------------------------------
+# PROFITABILITY DASHBOARD
+# ---------------------------------------------------------------------------
+# Cost constants — update these when provider rates change
+USD_TO_INR = 95.7
+
+# Plivo telephony: flat ₹0.60/min outbound India
+PLIVO_COST_PER_MIN_INR = 0.60
+
+# Deepgram STT: Nova-3 Mono PAYG $0.0048/min
+DEEPGRAM_STT_RATE_USD_PER_MIN = 0.0048
+
+# Deepgram Aura TTS: ~$0.015 per 1000 chars
+DEEPGRAM_TTS_RATE_USD_PER_1K_CHARS = 0.015
+
+# ElevenLabs TTS: ~$0.18 per 1000 chars (creator tier)
+ELEVENLABS_TTS_RATE_USD_PER_1K_CHARS = 0.18
+
+# AI speaking ratio — fraction of call time AI is synthesizing voice
+TTS_SPEAKING_RATIO = 0.47   # ~47%, derived from real transcript analysis
+# Average chars per minute of speech (from transcript counting)
+TTS_AVG_CHARS_PER_MIN = 900
+
+# OpenAI pricing (USD per 1M tokens)
+OPENAI_RATES = {
+    "gpt-4o-mini": {"input": 0.15, "cached": 0.075, "output": 0.60},
+    "gpt-4o":      {"input": 2.50, "cached": 1.25,  "output": 10.00},
+}
+OPENAI_DEFAULT_RATES = OPENAI_RATES["gpt-4o-mini"]
+
+
+def _estimate_call_cost_inr(
+    duration_seconds: int,
+    usage_info: dict | None,
+    tts_provider: str = "deepgram",
+    llm_model: str = "gpt-4o-mini",
+) -> dict:
+    """
+    Estimate the real AI+telephony cost for a single call in INR.
+    Returns a dict with per-service breakdown and a total.
+    """
+    minutes = duration_seconds / 60.0
+    ui = usage_info or {}
+
+    # --- 1. Plivo telephony ---
+    plivo_inr = PLIVO_COST_PER_MIN_INR * minutes
+
+    # --- 2. STT (Deepgram) ---
+    stt_seconds = 0.0
+    llm_data = ui.get("llm", {})
+    stt_data = ui.get("stt", {})
+    tts_data = ui.get("tts", {})
+
+    for val in stt_data.values():
+        if isinstance(val, (int, float)):
+            stt_seconds += float(val)
+        elif isinstance(val, dict):
+            stt_seconds += float(val.get("audio_seconds", 0))
+
+    stt_minutes = stt_seconds / 60.0 if stt_seconds else minutes  # fallback to call duration
+    stt_inr = DEEPGRAM_STT_RATE_USD_PER_MIN * stt_minutes * USD_TO_INR
+
+    # --- 3. TTS ---
+    tts_chars = 0
+    for val in tts_data.values():
+        if isinstance(val, (int, float)):
+            tts_chars += int(val)
+        elif isinstance(val, dict):
+            tts_chars += int(val.get("characters", 0))
+
+    if tts_chars == 0:
+        # Estimate from call duration + speaking ratio
+        tts_chars = int(minutes * TTS_SPEAKING_RATIO * TTS_AVG_CHARS_PER_MIN)
+
+    if "elevenlabs" in tts_provider.lower():
+        tts_rate = ELEVENLABS_TTS_RATE_USD_PER_1K_CHARS
+    else:
+        tts_rate = DEEPGRAM_TTS_RATE_USD_PER_1K_CHARS
+
+    tts_inr = (tts_chars / 1000.0) * tts_rate * USD_TO_INR
+
+    # --- 4. LLM (OpenAI) ---
+    rates = OPENAI_RATES.get(llm_model, OPENAI_DEFAULT_RATES)
+    prompt_tokens = 0
+    completion_tokens = 0
+    cached_tokens = 0
+
+    for key, val in llm_data.items():
+        if key.startswith("QAAnalysis"):
+            continue
+        if isinstance(val, dict):
+            prompt_tokens += val.get("prompt_tokens", 0)
+            completion_tokens += val.get("completion_tokens", 0)
+            cached_tokens += val.get("cache_read_input_tokens", 0)
+
+    non_cached = max(prompt_tokens - cached_tokens, 0)
+    llm_usd = (
+        (non_cached / 1_000_000) * rates["input"]
+        + (cached_tokens / 1_000_000) * rates["cached"]
+        + (completion_tokens / 1_000_000) * rates["output"]
+    )
+    llm_inr = llm_usd * USD_TO_INR
+
+    total_inr = plivo_inr + stt_inr + tts_inr + llm_inr
+
+    return {
+        "plivo_inr": round(plivo_inr, 4),
+        "stt_inr": round(stt_inr, 4),
+        "tts_inr": round(tts_inr, 4),
+        "llm_inr": round(llm_inr, 4),
+        "total_cost_inr": round(total_inr, 4),
+        "tts_chars": tts_chars,
+        "stt_seconds": round(stt_seconds, 1),
+        "llm_prompt_tokens": prompt_tokens,
+        "llm_completion_tokens": completion_tokens,
+        "llm_cached_tokens": cached_tokens,
+    }
+
+
+@router.get("/profitability")
+async def get_profitability(
+    period: str = "month",   # "today" | "week" | "month" | "all"
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin),
+):
+    """
+    Returns platform-wide and per-customer profitability breakdown.
+    Revenue = what we billed clients (cost_to_customer_paise in call_logs).
+    Cost = estimated AI + telephony cost calculated from usage_info.
+    Profit = Revenue - Cost.
+    """
+    import math
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import text
+
+    # --- Date filter ---
+    now = datetime.now(timezone.utc)
+    if period == "today":
+        since = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif period == "week":
+        since = now - timedelta(days=7)
+    elif period == "month":
+        since = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    else:
+        since = None
+
+    # --- Fetch call logs + dograh usage_info via join ---
+    # We join call_logs with the dograh DB's workflow_runs to get usage_info
+    # Since both share the same postgres instance, we can use dograh schema directly.
+    # Fallback: if dograh DB is separate, usage_info will be None.
+    try:
+        from db.dograh_session import get_dograh_engine  # type: ignore
+        from sqlalchemy.ext.asyncio import AsyncSession as _AS
+        from config import settings
+
+        dograh_engine_url = settings.DOGRAH_DB_URL
+
+        from sqlalchemy.ext.asyncio import create_async_engine
+        dograh_engine = create_async_engine(dograh_engine_url, pool_pre_ping=True)
+        async with _AS(dograh_engine) as ddb:
+            run_id_list_q = select(CallLog.dograh_run_id, CallLog.customer_id,
+                                   CallLog.duration_seconds, CallLog.cost_to_customer_paise,
+                                   CallLog.called_at)
+            if since:
+                run_id_list_q = run_id_list_q.where(CallLog.called_at >= since)
+            call_rows = (await db.execute(run_id_list_q)).all()
+
+            # Fetch usage_info from dograh in one shot
+            if call_rows:
+                run_ids = [r.dograh_run_id for r in call_rows]
+                usage_rows = await ddb.execute(
+                    text("SELECT id, usage_info FROM workflow_runs WHERE id = ANY(:ids)"),
+                    {"ids": run_ids},
+                )
+                usage_map = {r.id: r.usage_info for r in usage_rows}
+            else:
+                usage_map = {}
+    except Exception:
+        # Dograh DB not reachable — proceed without usage_info
+        run_id_list_q = select(CallLog.dograh_run_id, CallLog.customer_id,
+                               CallLog.duration_seconds, CallLog.cost_to_customer_paise,
+                               CallLog.called_at)
+        if since:
+            run_id_list_q = run_id_list_q.where(CallLog.called_at >= since)
+        call_rows = (await db.execute(run_id_list_q)).all()
+        usage_map = {}
+
+    # --- Fetch subscriptions for tts_provider / llm_model per customer ---
+    subs_res = await db.execute(select(Subscription))
+    subs = {s.customer_id: s for s in subs_res.scalars().all()}
+
+    # --- Fetch customers ---
+    cust_res = await db.execute(select(Customer).where(Customer.status == "active"))
+    customers = {c.id: c for c in cust_res.scalars().all()}
+
+    # --- Aggregate per customer ---
+    from collections import defaultdict
+    per_customer: dict = defaultdict(lambda: {
+        "calls": 0,
+        "total_minutes": 0.0,
+        "revenue_inr": 0.0,
+        "cost_inr": 0.0,
+        "plivo_inr": 0.0,
+        "stt_inr": 0.0,
+        "tts_inr": 0.0,
+        "llm_inr": 0.0,
+    })
+
+    total_revenue_inr = 0.0
+    total_cost_inr = 0.0
+
+    for row in call_rows:
+        cid = row.customer_id
+        sub = subs.get(cid)
+        tts_provider = "deepgram"
+        llm_model = "gpt-4o-mini"
+        if sub:
+            from config import TIER_CONFIG
+            tier_cfg = TIER_CONFIG.get(sub.plan, {})
+            tts_provider = tier_cfg.get("tts_provider", "deepgram")
+            llm_model = tier_cfg.get("llm_model", "gpt-4o-mini")
+
+        usage_info = usage_map.get(row.dograh_run_id)
+        cost_breakdown = _estimate_call_cost_inr(
+            row.duration_seconds, usage_info, tts_provider, llm_model
+        )
+        revenue_inr = row.cost_to_customer_paise / 100.0
+
+        per_customer[cid]["calls"] += 1
+        per_customer[cid]["total_minutes"] += row.duration_seconds / 60.0
+        per_customer[cid]["revenue_inr"] += revenue_inr
+        per_customer[cid]["cost_inr"] += cost_breakdown["total_cost_inr"]
+        per_customer[cid]["plivo_inr"] += cost_breakdown["plivo_inr"]
+        per_customer[cid]["stt_inr"] += cost_breakdown["stt_inr"]
+        per_customer[cid]["tts_inr"] += cost_breakdown["tts_inr"]
+        per_customer[cid]["llm_inr"] += cost_breakdown["llm_inr"]
+
+        total_revenue_inr += revenue_inr
+        total_cost_inr += cost_breakdown["total_cost_inr"]
+
+    # --- Fetch topups for the period ---
+    topup_q = select(func.sum(WalletTransaction.amount_paise)).where(
+        WalletTransaction.type == "topup"
+    )
+    if since:
+        topup_q = topup_q.where(WalletTransaction.created_at >= since)
+    topup_paise = (await db.execute(topup_q)).scalar() or 0
+    total_topups_inr = topup_paise / 100.0
+
+    # --- Build customer rows ---
+    customer_rows = []
+    for cid, data in sorted(per_customer.items(), key=lambda x: -x[1]["revenue_inr"]):
+        c = customers.get(cid)
+        profit = data["revenue_inr"] - data["cost_inr"]
+        margin_pct = (profit / data["revenue_inr"] * 100) if data["revenue_inr"] > 0 else 0
+        customer_rows.append({
+            "customer_id": cid,
+            "company_name": c.company_name if c else f"Customer #{cid}",
+            "calls": data["calls"],
+            "total_minutes": round(data["total_minutes"], 1),
+            "revenue_inr": round(data["revenue_inr"], 2),
+            "cost_inr": round(data["cost_inr"], 2),
+            "profit_inr": round(profit, 2),
+            "margin_pct": round(margin_pct, 1),
+            "breakdown": {
+                "plivo_inr": round(data["plivo_inr"], 2),
+                "stt_inr": round(data["stt_inr"], 2),
+                "tts_inr": round(data["tts_inr"], 2),
+                "llm_inr": round(data["llm_inr"], 2),
+            },
+        })
+
+    gross_profit = total_revenue_inr - total_cost_inr
+    gross_margin = (gross_profit / total_revenue_inr * 100) if total_revenue_inr > 0 else 0
+
+    return {
+        "period": period,
+        "summary": {
+            "total_calls": len(call_rows),
+            "total_topups_inr": round(total_topups_inr, 2),
+            "total_revenue_inr": round(total_revenue_inr, 2),
+            "total_cost_inr": round(total_cost_inr, 2),
+            "gross_profit_inr": round(gross_profit, 2),
+            "gross_margin_pct": round(gross_margin, 1),
+        },
+        "customers": customer_rows,
+        "cost_assumptions": {
+            "usd_to_inr": USD_TO_INR,
+            "plivo_per_min_inr": PLIVO_COST_PER_MIN_INR,
+            "deepgram_stt_usd_per_min": DEEPGRAM_STT_RATE_USD_PER_MIN,
+            "deepgram_tts_usd_per_1k_chars": DEEPGRAM_TTS_RATE_USD_PER_1K_CHARS,
+            "elevenlabs_tts_usd_per_1k_chars": ELEVENLABS_TTS_RATE_USD_PER_1K_CHARS,
+            "tts_speaking_ratio": TTS_SPEAKING_RATIO,
+            "openai_rates": OPENAI_RATES,
+        },
+    }
