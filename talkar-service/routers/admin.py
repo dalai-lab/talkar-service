@@ -951,7 +951,7 @@ async def get_profitability(
 
     # --- Fetch topups for the period ---
     topup_q = select(func.sum(WalletTransaction.amount_paise)).where(
-        WalletTransaction.type == "topup"
+        WalletTransaction.type == "top_up"
     )
     if since:
         topup_q = topup_q.where(WalletTransaction.created_at >= since)
