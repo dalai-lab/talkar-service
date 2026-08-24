@@ -868,46 +868,33 @@ async def get_profitability(
     else:
         since = None
 
-    # --- Fetch call logs + dograh usage_info via join ---
-    # We join call_logs with the dograh DB's workflow_runs to get usage_info
-    # Since both share the same postgres instance, we can use dograh schema directly.
-    # Fallback: if dograh DB is separate, usage_info will be None.
-    try:
-        from db.dograh_session import get_dograh_engine  # type: ignore
-        from sqlalchemy.ext.asyncio import AsyncSession as _AS
-        from config import settings
+    from services.dograh_client import DograhSessionLocal
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
 
-        dograh_engine_url = settings.DOGRAH_DB_URL
+    # --- Fetch call logs ---
+    run_id_list_q = select(CallLog.dograh_run_id, CallLog.customer_id,
+                           CallLog.duration_seconds, CallLog.cost_to_customer_paise,
+                           CallLog.called_at)
+    if since:
+        run_id_list_q = run_id_list_q.where(CallLog.called_at >= since)
+    call_rows = (await db.execute(run_id_list_q)).all()
 
-        from sqlalchemy.ext.asyncio import create_async_engine
-        dograh_engine = create_async_engine(dograh_engine_url, pool_pre_ping=True)
-        async with _AS(dograh_engine) as ddb:
-            run_id_list_q = select(CallLog.dograh_run_id, CallLog.customer_id,
-                                   CallLog.duration_seconds, CallLog.cost_to_customer_paise,
-                                   CallLog.called_at)
-            if since:
-                run_id_list_q = run_id_list_q.where(CallLog.called_at >= since)
-            call_rows = (await db.execute(run_id_list_q)).all()
+    # --- Fetch usage_info from Dograh DB ---
+    usage_map = {}
+    if call_rows:
+        try:
+            run_ids = [r.dograh_run_id for r in call_rows if r.dograh_run_id]
+            if run_ids:
+                async with DograhSessionLocal() as ddb:
+                    usage_rows = (await ddb.execute(
+                        text("SELECT id, usage_info FROM workflow_runs WHERE id = ANY(:ids)"),
+                        {"ids": run_ids},
+                    )).all()
+                    usage_map = {r.id: r.usage_info for r in usage_rows}
+        except Exception as e:
+            _log.warning(f"Could not fetch usage_info from Dograh DB: {e}")
 
-            # Fetch usage_info from dograh in one shot
-            if call_rows:
-                run_ids = [r.dograh_run_id for r in call_rows]
-                usage_rows = await ddb.execute(
-                    text("SELECT id, usage_info FROM workflow_runs WHERE id = ANY(:ids)"),
-                    {"ids": run_ids},
-                )
-                usage_map = {r.id: r.usage_info for r in usage_rows}
-            else:
-                usage_map = {}
-    except Exception:
-        # Dograh DB not reachable — proceed without usage_info
-        run_id_list_q = select(CallLog.dograh_run_id, CallLog.customer_id,
-                               CallLog.duration_seconds, CallLog.cost_to_customer_paise,
-                               CallLog.called_at)
-        if since:
-            run_id_list_q = run_id_list_q.where(CallLog.called_at >= since)
-        call_rows = (await db.execute(run_id_list_q)).all()
-        usage_map = {}
 
     # --- Fetch subscriptions for tts_provider / llm_model per customer ---
     subs_res = await db.execute(select(Subscription))
