@@ -14,6 +14,23 @@ import {
 } from "lucide-react";
 
 // ── types ──────────────────────────────────────────────────────────────────────
+interface PlanBucket {
+  plan: string;
+  tts_provider: string;
+  calls: number;
+  total_minutes: number;
+  revenue_inr: number;
+  cost_inr: number;
+  profit_inr: number;
+  margin_pct: number;
+  breakdown: {
+    plivo_inr: number;
+    stt_inr: number;
+    tts_inr: number;
+    llm_inr: number;
+  };
+}
+
 interface CustomerRow {
   customer_id: number;
   company_name: string;
@@ -32,6 +49,7 @@ interface CustomerRow {
     tts_inr: number;
     llm_inr: number;
   };
+  plan_breakdown: PlanBucket[];
 }
 
 interface Summary {
@@ -101,19 +119,72 @@ function CostBar({ breakdown, total }: { breakdown: CustomerRow["breakdown"]; to
   );
 }
 
-// ── CustomerRow ────────────────────────────────────────────────────────────────
-function CustomerRowCard({ c }: { c: CustomerRow }) {
-  const [open, setOpen] = useState(false);
-  const isGrowth = c.plan === "growth";
-  const isPro = c.plan === "pro" || c.plan === "elite";
-  const sttLabel = isGrowth ? "🎤 STT (Smallest AI)" : "🎤 STT (Deepgram)";
-  const ttsLabel = isGrowth ? "🔊 TTS (Smallest AI)" : isPro ? "🔊 TTS (ElevenLabs)" : "🔊 TTS (Deepgram)";
+function PlanBucketRow({ b }: { b: PlanBucket }) {
+  const sttLabel = b.tts_provider.includes("smallest") ? "🎤 STT (Smallest AI)" : "🎤 STT (Deepgram)";
+  const ttsLabel = b.tts_provider.includes("smallest") ? "🔊 TTS (Smallest AI)" : b.tts_provider.includes("elevenlabs") ? "🔊 TTS (ElevenLabs)" : "🔊 TTS (Deepgram)";
   const planColors: Record<string, string> = {
     starter: "bg-slate-100 text-slate-700",
     growth: "bg-emerald-100 text-emerald-800",
     pro: "bg-orange-100 text-orange-800",
     elite: "bg-purple-100 text-purple-800",
   };
+  return (
+    <div className="border border-dashed rounded-lg overflow-hidden">
+      <div className="flex items-center gap-4 px-4 py-2.5 bg-slate-50">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider ${planColors[b.plan] ?? "bg-slate-100 text-slate-700"}`}>
+              {b.plan}
+            </span>
+            <span className="text-xs text-muted-foreground">{b.calls} calls · {b.total_minutes.toFixed(1)} min</span>
+          </div>
+        </div>
+        <div className="text-right shrink-0">
+          <div className="text-sm font-semibold text-green-700">{inr(b.revenue_inr)}</div>
+          <div className="text-[10px] text-muted-foreground">billed</div>
+        </div>
+        <div className="text-right shrink-0">
+          <div className="text-sm font-semibold text-red-600">{inr(b.cost_inr)}</div>
+          <div className="text-[10px] text-muted-foreground">cost</div>
+        </div>
+        <div className="text-right shrink-0">
+          <div className={`text-sm font-bold ${b.profit_inr >= 0 ? "text-green-700" : "text-red-600"}`}>{inr(b.profit_inr)}</div>
+          <div className="text-[10px] text-muted-foreground">profit</div>
+        </div>
+        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${marginBg(b.margin_pct)}`}>{pct(b.margin_pct)}</span>
+      </div>
+      <div className="px-4 py-2 bg-white border-t">
+        <CostBar breakdown={b.breakdown} total={b.cost_inr} />
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
+          {[
+            { label: "📞 Plivo", value: b.breakdown.plivo_inr },
+            { label: sttLabel, value: b.breakdown.stt_inr },
+            { label: ttsLabel, value: b.breakdown.tts_inr },
+            { label: "🤖 LLM", value: b.breakdown.llm_inr },
+          ].map((item) => (
+            <div key={item.label} className="bg-slate-50 border rounded p-2 text-center">
+              <div className="text-[10px] text-muted-foreground">{item.label}</div>
+              <div className="font-semibold text-xs mt-0.5">{inr(item.value)}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── CustomerRow ────────────────────────────────────────────────────────────────
+function CustomerRowCard({ c }: { c: CustomerRow }) {
+  const [open, setOpen] = useState(false);
+  const isGrowth = c.plan === "growth";
+  const isPro = c.plan === "pro" || c.plan === "elite";
+  const planColors: Record<string, string> = {
+    starter: "bg-slate-100 text-slate-700",
+    growth: "bg-emerald-100 text-emerald-800",
+    pro: "bg-orange-100 text-orange-800",
+    elite: "bg-purple-100 text-purple-800",
+  };
+  const hasMultiplePlans = c.plan_breakdown && c.plan_breakdown.length > 1;
   return (
     <div className="border rounded-lg overflow-hidden">
       <button
@@ -123,9 +194,15 @@ function CustomerRowCard({ c }: { c: CustomerRow }) {
         <div className="flex-1 min-w-0">
           <div className="font-medium text-sm truncate flex items-center gap-2">
             {c.company_name}
-            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider ${planColors[c.plan] ?? "bg-slate-100 text-slate-700"}`}>
-              {c.plan}
-            </span>
+            {hasMultiplePlans ? (
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider bg-blue-100 text-blue-800">
+                mixed plans
+              </span>
+            ) : (
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider ${planColors[c.plan] ?? "bg-slate-100 text-slate-700"}`}>
+                {c.plan}
+              </span>
+            )}
           </div>
           {c.contact_email && (
             <div className="text-xs text-muted-foreground truncate">{c.contact_email}</div>
@@ -161,20 +238,38 @@ function CustomerRowCard({ c }: { c: CustomerRow }) {
 
       {open && (
         <div className="px-4 py-3 bg-slate-50 border-t space-y-3">
-          <CostBar breakdown={c.breakdown} total={c.cost_inr} />
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            {[
-              { label: "📞 Plivo (telephony)", value: c.breakdown.plivo_inr },
-              { label: sttLabel, value: c.breakdown.stt_inr },
-              { label: ttsLabel, value: c.breakdown.tts_inr },
-              { label: "🤖 LLM (OpenAI)", value: c.breakdown.llm_inr },
-            ].map((item) => (
-              <div key={item.label} className="bg-white border rounded p-2 text-center">
-                <div className="text-xs text-muted-foreground">{item.label}</div>
-                <div className="font-semibold text-sm mt-1">{inr(item.value)}</div>
+          {hasMultiplePlans ? (
+            <>
+              <p className="text-xs text-muted-foreground font-medium">This customer used multiple plans in this period — costs are broken down per plan:</p>
+              <div className="space-y-2">
+                {c.plan_breakdown.map((b) => (
+                  <PlanBucketRow key={`${b.plan}-${b.tts_provider}`} b={b} />
+                ))}
               </div>
-            ))}
-          </div>
+            </>
+          ) : (
+            <>
+              <CostBar breakdown={c.breakdown} total={c.cost_inr} />
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {(c.plan_breakdown?.[0] ? [
+                  { label: "📞 Plivo (telephony)", value: c.breakdown.plivo_inr },
+                  { label: c.plan_breakdown[0].tts_provider.includes("smallest") ? "🎤 STT (Smallest AI)" : "🎤 STT (Deepgram)", value: c.breakdown.stt_inr },
+                  { label: c.plan_breakdown[0].tts_provider.includes("smallest") ? "🔊 TTS (Smallest AI)" : isGrowth || isPro ? "🔊 TTS (ElevenLabs)" : "🔊 TTS (Deepgram)", value: c.breakdown.tts_inr },
+                  { label: "🤖 LLM (OpenAI)", value: c.breakdown.llm_inr },
+                ] : [
+                  { label: "📞 Plivo (telephony)", value: c.breakdown.plivo_inr },
+                  { label: "🎤 STT", value: c.breakdown.stt_inr },
+                  { label: "🔊 TTS", value: c.breakdown.tts_inr },
+                  { label: "🤖 LLM (OpenAI)", value: c.breakdown.llm_inr },
+                ]).map((item) => (
+                  <div key={item.label} className="bg-white border rounded p-2 text-center">
+                    <div className="text-xs text-muted-foreground">{item.label}</div>
+                    <div className="font-semibold text-sm mt-1">{inr(item.value)}</div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

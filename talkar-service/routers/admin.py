@@ -921,18 +921,18 @@ async def get_profitability(
     cust_res = await db.execute(select(Customer))
     customers = {c.id: c for c in cust_res.scalars().all()}
 
-    # --- Aggregate per customer ---
+    # --- Aggregate per customer AND per plan bucket ---
     from collections import defaultdict
-    per_customer: dict = defaultdict(lambda: {
-        "calls": 0,
-        "total_minutes": 0.0,
-        "revenue_inr": 0.0,
-        "cost_inr": 0.0,
-        "plivo_inr": 0.0,
-        "stt_inr": 0.0,
-        "tts_inr": 0.0,
-        "llm_inr": 0.0,
-    })
+
+    def empty_bucket():
+        return {"calls": 0, "total_minutes": 0.0, "revenue_inr": 0.0,
+                "cost_inr": 0.0, "plivo_inr": 0.0, "stt_inr": 0.0,
+                "tts_inr": 0.0, "llm_inr": 0.0}
+
+    # keyed by customer_id → totals
+    per_customer: dict = defaultdict(empty_bucket)
+    # keyed by (customer_id, plan, tts_provider) → per-plan bucket
+    per_plan: dict = defaultdict(empty_bucket)
 
     total_revenue_inr = 0.0
     total_cost_inr = 0.0
@@ -949,16 +949,19 @@ async def get_profitability(
             tts_provider = stamped_tts
             from config import TIER_CONFIG
             llm_model = TIER_CONFIG.get(stamped_plan, {}).get("llm_model", "gpt-4o-mini")
+            active_plan = stamped_plan
         else:
             # Legacy rows: fall back to current subscription
             sub = subs.get(cid)
             tts_provider = "deepgram"
             llm_model = "gpt-4o-mini"
+            active_plan = "starter"
             if sub:
                 from config import TIER_CONFIG
                 tier_cfg = TIER_CONFIG.get(sub.plan, {})
                 tts_provider = tier_cfg.get("tts_provider", "deepgram")
                 llm_model = tier_cfg.get("llm_model", "gpt-4o-mini")
+                active_plan = sub.plan
 
         usage_info = usage_map.get(row.dograh_run_id)
         cost_breakdown = _estimate_call_cost_inr(
@@ -966,14 +969,17 @@ async def get_profitability(
         )
         revenue_inr = row.cost_to_customer_paise / 100.0
 
-        per_customer[cid]["calls"] += 1
-        per_customer[cid]["total_minutes"] += row.duration_seconds / 60.0
-        per_customer[cid]["revenue_inr"] += revenue_inr
-        per_customer[cid]["cost_inr"] += cost_breakdown["total_cost_inr"]
-        per_customer[cid]["plivo_inr"] += cost_breakdown["plivo_inr"]
-        per_customer[cid]["stt_inr"] += cost_breakdown["stt_inr"]
-        per_customer[cid]["tts_inr"] += cost_breakdown["tts_inr"]
-        per_customer[cid]["llm_inr"] += cost_breakdown["llm_inr"]
+        plan_key = (cid, active_plan, tts_provider)
+
+        for bucket in [per_customer[cid], per_plan[plan_key]]:
+            bucket["calls"] += 1
+            bucket["total_minutes"] += row.duration_seconds / 60.0
+            bucket["revenue_inr"] += revenue_inr
+            bucket["cost_inr"] += cost_breakdown["total_cost_inr"]
+            bucket["plivo_inr"] += cost_breakdown["plivo_inr"]
+            bucket["stt_inr"] += cost_breakdown["stt_inr"]
+            bucket["tts_inr"] += cost_breakdown["tts_inr"]
+            bucket["llm_inr"] += cost_breakdown["llm_inr"]
 
         total_revenue_inr += revenue_inr
         total_cost_inr += cost_breakdown["total_cost_inr"]
@@ -987,12 +993,38 @@ async def get_profitability(
     topup_paise = float((await db.execute(topup_q)).scalar() or 0)
     total_topups_inr = topup_paise / 100.0
 
-    # --- Build customer rows ---
+    # --- Build customer rows with per-plan breakdown ---
     customer_rows = []
     for cid, data in sorted(per_customer.items(), key=lambda x: -x[1]["revenue_inr"]):
         c = customers.get(cid)
         profit = data["revenue_inr"] - data["cost_inr"]
         margin_pct = (profit / data["revenue_inr"] * 100) if data["revenue_inr"] > 0 else 0
+
+        # Collect all plan buckets for this customer, sorted by calls desc
+        plan_buckets = [
+            {
+                "plan": pk[1],
+                "tts_provider": pk[2],
+                "calls": pdata["calls"],
+                "total_minutes": round(pdata["total_minutes"], 1),
+                "revenue_inr": round(pdata["revenue_inr"], 2),
+                "cost_inr": round(pdata["cost_inr"], 2),
+                "profit_inr": round(pdata["revenue_inr"] - pdata["cost_inr"], 2),
+                "margin_pct": round(
+                    (pdata["revenue_inr"] - pdata["cost_inr"]) / pdata["revenue_inr"] * 100
+                    if pdata["revenue_inr"] > 0 else 0, 1
+                ),
+                "breakdown": {
+                    "plivo_inr": round(pdata["plivo_inr"], 2),
+                    "stt_inr": round(pdata["stt_inr"], 2),
+                    "tts_inr": round(pdata["tts_inr"], 2),
+                    "llm_inr": round(pdata["llm_inr"], 2),
+                },
+            }
+            for pk, pdata in per_plan.items() if pk[0] == cid
+        ]
+        plan_buckets.sort(key=lambda x: -x["calls"])
+
         customer_rows.append({
             "customer_id": cid,
             "company_name": c.company_name if c else f"Customer #{cid}",
@@ -1011,6 +1043,7 @@ async def get_profitability(
                 "tts_inr": round(data["tts_inr"], 2),
                 "llm_inr": round(data["llm_inr"], 2),
             },
+            "plan_breakdown": plan_buckets,
         })
 
     gross_profit = total_revenue_inr - total_cost_inr
