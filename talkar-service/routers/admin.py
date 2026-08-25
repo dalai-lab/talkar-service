@@ -740,9 +740,13 @@ DEEPGRAM_TTS_RATE_USD_PER_1K_CHARS = 0.015
 # ElevenLabs TTS: ~$0.18 per 1000 chars (creator tier)
 ELEVENLABS_TTS_RATE_USD_PER_1K_CHARS = 0.18
 
-# Smallest AI Waves TTS: ~$0.004 per 1000 chars (lightning-v3.1)
-# Ref: https://smallest.ai/pricing
-SMALLEST_AI_TTS_RATE_USD_PER_1K_CHARS = 0.004
+# Smallest AI Waves TTS: $0.175 per 10k chars = $0.0175 per 1k chars (Lightning v3.1)
+# Ref: https://smallest.ai/pricing (Aug 2026)
+SMALLEST_AI_TTS_RATE_USD_PER_1K_CHARS = 0.0175
+
+# Smallest AI Pulse STT: ~$0.003/min (estimated; billed per minute like Deepgram)
+# No public per-min rate confirmed; using conservative estimate until invoice data available
+SMALLEST_AI_STT_RATE_USD_PER_MIN = 0.003
 
 # AI speaking ratio — fraction of call time AI is synthesizing voice
 TTS_SPEAKING_RATIO = 0.47   # ~47%, derived from real transcript analysis
@@ -808,6 +812,13 @@ def _estimate_call_cost_inr(
         tts_rate = DEEPGRAM_TTS_RATE_USD_PER_1K_CHARS
 
     tts_inr = (tts_chars / 1000.0) * tts_rate * USD_TO_INR
+
+    # --- 3b. STT rate — differs per provider for Growth plan ---
+    # For smallest_ai tier, STT is also Smallest AI (Pulse model), not Deepgram
+    if "smallest" in tts_provider.lower():
+        stt_inr = SMALLEST_AI_STT_RATE_USD_PER_MIN * stt_minutes * USD_TO_INR
+    else:
+        stt_inr = DEEPGRAM_STT_RATE_USD_PER_MIN * stt_minutes * USD_TO_INR
 
     # --- 4. LLM (OpenAI) ---
     rates = OPENAI_RATES.get(llm_model, OPENAI_DEFAULT_RATES)
@@ -975,6 +986,7 @@ async def get_profitability(
             "company_name": c.company_name if c else f"Customer #{cid}",
             "contact_email": c.contact_email if c else None,
             "status": c.status if c else None,
+            "plan": subs.get(cid).plan if subs.get(cid) else "starter",
             "calls": data["calls"],
             "total_minutes": round(data["total_minutes"], 1),
             "revenue_inr": round(data["revenue_inr"], 2),
@@ -1010,6 +1022,7 @@ async def get_profitability(
             "deepgram_tts_usd_per_1k_chars": DEEPGRAM_TTS_RATE_USD_PER_1K_CHARS,
             "elevenlabs_tts_usd_per_1k_chars": ELEVENLABS_TTS_RATE_USD_PER_1K_CHARS,
             "smallest_ai_tts_usd_per_1k_chars": SMALLEST_AI_TTS_RATE_USD_PER_1K_CHARS,
+            "smallest_ai_stt_usd_per_min": SMALLEST_AI_STT_RATE_USD_PER_MIN,
             "tts_speaking_ratio": TTS_SPEAKING_RATIO,
             "openai_rates": OPENAI_RATES,
         },

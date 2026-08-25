@@ -19,6 +19,7 @@ interface CustomerRow {
   company_name: string;
   contact_email: string | null;
   status: string | null;
+  plan: string;
   calls: number;
   total_minutes: number;
   revenue_inr: number;
@@ -103,6 +104,16 @@ function CostBar({ breakdown, total }: { breakdown: CustomerRow["breakdown"]; to
 // ── CustomerRow ────────────────────────────────────────────────────────────────
 function CustomerRowCard({ c }: { c: CustomerRow }) {
   const [open, setOpen] = useState(false);
+  const isGrowth = c.plan === "growth";
+  const isPro = c.plan === "pro" || c.plan === "elite";
+  const sttLabel = isGrowth ? "🎤 STT (Smallest AI)" : "🎤 STT (Deepgram)";
+  const ttsLabel = isGrowth ? "🔊 TTS (Smallest AI)" : isPro ? "🔊 TTS (ElevenLabs)" : "🔊 TTS (Deepgram)";
+  const planColors: Record<string, string> = {
+    starter: "bg-slate-100 text-slate-700",
+    growth: "bg-emerald-100 text-emerald-800",
+    pro: "bg-orange-100 text-orange-800",
+    elite: "bg-purple-100 text-purple-800",
+  };
   return (
     <div className="border rounded-lg overflow-hidden">
       <button
@@ -110,7 +121,12 @@ function CustomerRowCard({ c }: { c: CustomerRow }) {
         onClick={() => setOpen((v) => !v)}
       >
         <div className="flex-1 min-w-0">
-          <div className="font-medium text-sm truncate">{c.company_name}</div>
+          <div className="font-medium text-sm truncate flex items-center gap-2">
+            {c.company_name}
+            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider ${planColors[c.plan] ?? "bg-slate-100 text-slate-700"}`}>
+              {c.plan}
+            </span>
+          </div>
           {c.contact_email && (
             <div className="text-xs text-muted-foreground truncate">{c.contact_email}</div>
           )}
@@ -149,8 +165,8 @@ function CustomerRowCard({ c }: { c: CustomerRow }) {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {[
               { label: "📞 Plivo (telephony)", value: c.breakdown.plivo_inr },
-              { label: "🎤 STT (Deepgram)", value: c.breakdown.stt_inr },
-              { label: "🔊 TTS (voice)", value: c.breakdown.tts_inr },
+              { label: sttLabel, value: c.breakdown.stt_inr },
+              { label: ttsLabel, value: c.breakdown.tts_inr },
               { label: "🤖 LLM (OpenAI)", value: c.breakdown.llm_inr },
             ].map((item) => (
               <div key={item.label} className="bg-white border rounded p-2 text-center">
@@ -332,12 +348,10 @@ export default function ProfitabilityPage() {
 
       {/* Assumptions footnote */}
       {data && (
-        <div className="text-xs text-muted-foreground border rounded p-3 bg-slate-50">
-          <strong>Cost model assumptions:</strong> Plivo ₹0.60/min · Deepgram STT $0.0048/min ·
-          Deepgram TTS $0.015/1k chars · ElevenLabs $0.18/1k chars · GPT-4o-mini $0.15/$0.60 per 1M tokens ·
-          USD/INR ₹95.7 · TTS speaking ratio 47% · 900 chars/min of AI speech.
-          <br />
-          <span className="text-amber-600">⚠ These are estimates. Actual provider bills may differ slightly.</span>
+        <div className="text-xs text-muted-foreground border rounded p-3 bg-slate-50 space-y-1">
+          <div><strong>Cost model assumptions (Starter / Pro):</strong> Plivo ₹0.60/min · Deepgram STT $0.0048/min · Deepgram TTS $0.015/1k chars · ElevenLabs TTS $0.18/1k chars · GPT-4o-mini $0.15/$0.60 per 1M tokens · USD/INR ₹95.7 · TTS speaking ratio 47% · 900 chars/min of AI speech.</div>
+          <div><strong>Growth plan:</strong> Smallest AI STT ~$0.003/min · Smallest AI TTS $0.0175/1k chars (Lightning v3.1 = $0.175/10k chars).</div>
+          <div className="text-amber-600">⚠ These are estimates. Actual provider bills may differ slightly. Verify against your Smallest AI invoice once Growth plan has real call volume.</div>
         </div>
       )}
     </div>
