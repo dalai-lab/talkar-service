@@ -892,7 +892,7 @@ async def get_profitability(
     # --- Fetch call logs ---
     run_id_list_q = select(CallLog.dograh_run_id, CallLog.customer_id,
                            CallLog.duration_seconds, CallLog.cost_to_customer_paise,
-                           CallLog.called_at)
+                           CallLog.called_at, CallLog.plan, CallLog.tts_provider)
     if since:
         run_id_list_q = run_id_list_q.where(CallLog.called_at >= since)
     call_rows = (await db.execute(run_id_list_q)).all()
@@ -939,14 +939,26 @@ async def get_profitability(
 
     for row in call_rows:
         cid = row.customer_id
-        sub = subs.get(cid)
-        tts_provider = "deepgram"
-        llm_model = "gpt-4o-mini"
-        if sub:
+
+        # Use the plan stamped on the call_log at billing time (accurate for mid-month
+        # plan switches). Fall back to current subscription if column is NULL (old rows).
+        stamped_plan = getattr(row, "plan", None)
+        stamped_tts = getattr(row, "tts_provider", None)
+
+        if stamped_plan and stamped_tts:
+            tts_provider = stamped_tts
             from config import TIER_CONFIG
-            tier_cfg = TIER_CONFIG.get(sub.plan, {})
-            tts_provider = tier_cfg.get("tts_provider", "deepgram")
-            llm_model = tier_cfg.get("llm_model", "gpt-4o-mini")
+            llm_model = TIER_CONFIG.get(stamped_plan, {}).get("llm_model", "gpt-4o-mini")
+        else:
+            # Legacy rows: fall back to current subscription
+            sub = subs.get(cid)
+            tts_provider = "deepgram"
+            llm_model = "gpt-4o-mini"
+            if sub:
+                from config import TIER_CONFIG
+                tier_cfg = TIER_CONFIG.get(sub.plan, {})
+                tts_provider = tier_cfg.get("tts_provider", "deepgram")
+                llm_model = tier_cfg.get("llm_model", "gpt-4o-mini")
 
         usage_info = usage_map.get(row.dograh_run_id)
         cost_breakdown = _estimate_call_cost_inr(

@@ -144,7 +144,11 @@ async def deduct_for_run(run_id: int):
             rate = subscription.per_minute_rate_paise if subscription else TIER_CONFIG["starter"]["per_minute_rate_paise"]
             cost_paise = minutes * rate
         
-        # Insert call log
+        # Insert call log — stamp plan+tts_provider at this moment so profitability
+        # always reflects what was active during the call, even after later plan switches.
+        from config import TIER_CONFIG
+        active_plan = subscription.plan if subscription else "starter"
+        active_tts = TIER_CONFIG.get(active_plan, {}).get("tts_provider", "deepgram")
         call_log = CallLog(
             customer_id=customer.id,
             agent_id=None,
@@ -152,7 +156,9 @@ async def deduct_for_run(run_id: int):
             duration_seconds=duration,
             cost_to_customer_paise=cost_paise,
             called_at=func.now(),
-            processed_at=func.now()
+            processed_at=func.now(),
+            plan=active_plan,
+            tts_provider=active_tts,
         )
         db.add(call_log)
         

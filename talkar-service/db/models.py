@@ -126,6 +126,9 @@ class CallLog(Base):
     dograh_run_id = Column(Integer, nullable=False, unique=True)
     called_at = Column(DateTime(timezone=True), nullable=False)
     processed_at = Column(DateTime(timezone=True))
+    # Stamped at billing time so profitability uses the plan active during the call
+    plan = Column(Text, nullable=True)           # e.g. "starter", "growth", "pro"
+    tts_provider = Column(Text, nullable=True)   # e.g. "deepgram", "smallest_ai", "elevenlabs"
 
     __table_args__ = (
         Index("idx_call_logs_processed_at", "processed_at", postgresql_where=processed_at.is_(None)),
