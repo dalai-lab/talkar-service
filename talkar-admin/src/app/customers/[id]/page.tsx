@@ -534,9 +534,10 @@ export default function CustomerDetailPage() {
               <Select value={newPlan} onValueChange={(v) => v && setNewPlan(v)}>
                 <SelectTrigger><SelectValue placeholder="Select tier" /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="starter">Starter — ₹25/min · 2 concurrent calls · Deepgram</SelectItem>
-                  <SelectItem value="pro">Pro — ₹18/min · 10 concurrent calls · ElevenLabs</SelectItem>
-                  <SelectItem value="elite">Elite — ₹12/min · Unlimited calls · ElevenLabs</SelectItem>
+                  <SelectItem value="starter">Starter — ₹6/min · 2 concurrent · Deepgram TTS</SelectItem>
+                  <SelectItem value="growth">Growth — ₹6/min · 2 concurrent · Smallest AI TTS (Indian voices)</SelectItem>
+                  <SelectItem value="pro">Pro — ₹4/min · 10 concurrent · ElevenLabs TTS</SelectItem>
+                  <SelectItem value="elite">Elite — ₹12/min · 50 concurrent · ElevenLabs TTS</SelectItem>
                 </SelectContent>
               </Select>
             </div>

@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     TALKAR_OPENAI_KEY: str = ""
     TALKAR_ELEVENLABS_KEY: str = ""
     TALKAR_DEEPGRAM_KEY: str = ""
+    TALKAR_SMALLEST_AI_KEY: str = "sk_66080d555a8b5d9b7bf2633f1d92a9a2"
 
     # Admin auth
     TALKAR_ADMIN_JWT_SECRET: str = "change-me-in-production-admin-secret"
@@ -58,6 +59,16 @@ TIER_CONFIG = {
         "max_call_duration_seconds": 900,
         "llm_model": "gpt-4o-mini",
         "tts_provider": "deepgram",
+        "free_phone_numbers": 1,
+        "activation_deposit_paise": 600000,  # ₹6,000 min to activate
+    },
+    "growth": {
+        "per_minute_rate_paise": 600,    # ₹6/min — same as starter
+        "concurrent_call_limit": 2,
+        "max_call_duration_seconds": 900,
+        "llm_model": "gpt-4o-mini",
+        "tts_provider": "smallest_ai",  # Indian-optimised low-latency TTS
+        "default_voice_id": "meera",    # Default Smallest AI voice
         "free_phone_numbers": 1,
         "activation_deposit_paise": 600000,  # ₹6,000 min to activate
     },
