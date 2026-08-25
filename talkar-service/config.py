@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     TALKAR_OPENAI_KEY: str = ""
     TALKAR_ELEVENLABS_KEY: str = ""
     TALKAR_DEEPGRAM_KEY: str = ""
-    TALKAR_SMALLEST_AI_KEY: str = "sk_66080d555a8b5d9b7bf2633f1d92a9a2"
+    TALKAR_SMALLEST_AI_KEY: str = ""
 
     # Admin auth
     TALKAR_ADMIN_JWT_SECRET: str = "change-me-in-production-admin-secret"
