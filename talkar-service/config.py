@@ -76,7 +76,7 @@ TIER_CONFIG = {
         "per_minute_rate_paise": 400,    # ₹4/min
         "concurrent_call_limit": 10,
         "max_call_duration_seconds": 1800,
-        "llm_model": "gpt-4o",
+        "llm_model": "gpt-4o-mini",
         "tts_provider": "elevenlabs",
         "free_phone_numbers": 2,
         "activation_deposit_paise": 800000,  # ₹8,000 min to activate
