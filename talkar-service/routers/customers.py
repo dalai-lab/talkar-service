@@ -680,7 +680,16 @@ async def update_customer_voice(org_id: int, data: UpdateVoiceRequest, db: Async
     tier_cfg = TIER_CONFIG.get(tier, TIER_CONFIG["starter"])
     allowed_provider = tier_cfg["tts_provider"]
 
-    if data.provider != allowed_provider:
+    # Normalise aliases before comparing — frontend may send "smallest_ai"
+    # while TIER_CONFIG and provisioning_service use "smallest".
+    PROVIDER_ALIASES: dict[str, str] = {
+        "smallest_ai": "smallest",
+        "elevenlabs": "elevenlabs",
+        "deepgram": "deepgram",
+    }
+    requested_canonical = PROVIDER_ALIASES.get(data.provider, data.provider)
+
+    if requested_canonical != allowed_provider:
         raise HTTPException(403, f"Your current tier ({tier}) only supports {allowed_provider} voices. Please upgrade to use {data.provider}.")
 
     # Fetch current model config from Dograh
@@ -697,12 +706,25 @@ async def update_customer_voice(org_id: int, data: UpdateVoiceRequest, db: Async
     if not tts_cfg:
         raise HTTPException(409, "Agent voice configuration is missing. Please contact support.")
 
+    # Normalize provider aliases so the value written to Dograh matches what
+    # provisioning_service.py uses.  The frontend VOICE_CATALOG uses "smallest_ai"
+    # but Dograh / pipecat expect the canonical string "smallest".  Sending
+    # "smallest_ai" causes Dograh to fall back to ElevenLabs — hence the bug.
+    PROVIDER_ALIASES: dict[str, str] = {
+        "smallest_ai": "smallest",
+        "elevenlabs": "elevenlabs",
+        "deepgram": "deepgram",
+    }
+    canonical_provider = PROVIDER_ALIASES.get(data.provider, data.provider)
+
     tts_cfg["voice"] = data.voice_id
-    tts_cfg["provider"] = data.provider
+    tts_cfg["provider"] = canonical_provider
+    # Preserve the existing api_key — don't blank it out
+    # tts_cfg["api_key"] is left untouched
     cfg["byok"]["pipeline"]["tts"] = tts_cfg
 
     await dograh_client.upsert_org_config(org_id, "MODEL_CONFIGURATION_V2", cfg)
     
-    return {"status": "success", "voice_id": data.voice_id, "provider": data.provider}
+    return {"status": "success", "voice_id": data.voice_id, "provider": canonical_provider}
 
 
