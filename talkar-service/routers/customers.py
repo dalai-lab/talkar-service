@@ -680,16 +680,9 @@ async def update_customer_voice(org_id: int, data: UpdateVoiceRequest, db: Async
     tier_cfg = TIER_CONFIG.get(tier, TIER_CONFIG["starter"])
     allowed_provider = tier_cfg["tts_provider"]
 
-    # Normalise aliases before comparing — frontend may send "smallest_ai"
-    # while TIER_CONFIG and provisioning_service use "smallest".
-    PROVIDER_ALIASES: dict[str, str] = {
-        "smallest_ai": "smallest",
-        "elevenlabs": "elevenlabs",
-        "deepgram": "deepgram",
-    }
-    requested_canonical = PROVIDER_ALIASES.get(data.provider, data.provider)
-
-    if requested_canonical != allowed_provider:
+    # TIER_CONFIG already uses the same provider strings as the frontend
+    # (e.g. "smallest_ai", "deepgram", "elevenlabs"), so compare directly.
+    if data.provider != allowed_provider:
         raise HTTPException(403, f"Your current tier ({tier}) only supports {allowed_provider} voices. Please upgrade to use {data.provider}.")
 
     # Fetch current model config from Dograh
@@ -706,25 +699,22 @@ async def update_customer_voice(org_id: int, data: UpdateVoiceRequest, db: Async
     if not tts_cfg:
         raise HTTPException(409, "Agent voice configuration is missing. Please contact support.")
 
-    # Normalize provider aliases so the value written to Dograh matches what
-    # provisioning_service.py uses.  The frontend VOICE_CATALOG uses "smallest_ai"
-    # but Dograh / pipecat expect the canonical string "smallest".  Sending
-    # "smallest_ai" causes Dograh to fall back to ElevenLabs — hence the bug.
-    PROVIDER_ALIASES: dict[str, str] = {
+    # Map frontend provider names → canonical provider strings that Dograh/pipecat
+    # actually recognises.  provisioning_service.py writes "smallest" (not "smallest_ai"),
+    # so we must normalise here before writing back to avoid Dograh falling back to ElevenLabs.
+    DOGRAH_PROVIDER_MAP: dict[str, str] = {
         "smallest_ai": "smallest",
         "elevenlabs": "elevenlabs",
         "deepgram": "deepgram",
     }
-    canonical_provider = PROVIDER_ALIASES.get(data.provider, data.provider)
+    dograh_provider = DOGRAH_PROVIDER_MAP.get(data.provider, data.provider)
 
     tts_cfg["voice"] = data.voice_id
-    tts_cfg["provider"] = canonical_provider
+    tts_cfg["provider"] = dograh_provider
     # Preserve the existing api_key — don't blank it out
     # tts_cfg["api_key"] is left untouched
     cfg["byok"]["pipeline"]["tts"] = tts_cfg
 
     await dograh_client.upsert_org_config(org_id, "MODEL_CONFIGURATION_V2", cfg)
     
-    return {"status": "success", "voice_id": data.voice_id, "provider": canonical_provider}
-
-
+    return {"status": "success", "voice_id": data.voice_id, "provider": dograh_provider}
