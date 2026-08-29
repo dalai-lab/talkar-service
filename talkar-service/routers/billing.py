@@ -529,6 +529,11 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
         logger.warning(f"No subscription found for customer/master {sub_customer_id}, defaulting to starter rate")
     rate = sub.per_minute_rate_paise if sub else TIER_CONFIG["starter"]["per_minute_rate_paise"]
 
+    # Stamp plan+tts_provider at billing time so profitability always reflects the
+    # plan that was active during the call, even after later plan switches.
+    active_plan = sub.plan if sub else "starter"
+    active_tts = TIER_CONFIG.get(active_plan, {}).get("tts_provider", "deepgram")
+
     # --- SOT edge case: zero-duration call (pipeline crash, abnormal termination) ---
     # SOT line 278: log it with cost=0, do not retry, alert admin
     if data.duration_seconds <= 0:
@@ -539,7 +544,9 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
             duration_seconds=0,
             cost_to_customer_paise=0,
             called_at=func.now(),
-            processed_at=func.now()
+            processed_at=func.now(),
+            plan=active_plan,
+            tts_provider=active_tts,
         )
         db.add(call_log)
         await db.commit()
@@ -558,7 +565,9 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
         duration_seconds=data.duration_seconds,
         cost_to_customer_paise=cost_paise,
         called_at=func.now(),
-        processed_at=func.now()
+        processed_at=func.now(),
+        plan=active_plan,
+        tts_provider=active_tts,
     )
     db.add(call_log)
 

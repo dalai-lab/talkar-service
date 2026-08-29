@@ -59,6 +59,7 @@ TIER_CONFIG = {
         "max_call_duration_seconds": 900,
         "llm_model": "gpt-4o-mini",
         "tts_provider": "deepgram",
+        "stt_provider": "deepgram",
         "free_phone_numbers": 1,
         "activation_deposit_paise": 600000,  # ₹6,000 min to activate
     },
@@ -68,6 +69,7 @@ TIER_CONFIG = {
         "max_call_duration_seconds": 900,
         "llm_model": "gpt-4o-mini",
         "tts_provider": "smallest_ai",  # Indian-optimised low-latency TTS
+        "stt_provider": "deepgram",     # STT stays on Deepgram
         "default_voice_id": "meera",    # Default Smallest AI voice
         "free_phone_numbers": 1,
         "activation_deposit_paise": 600000,  # ₹6,000 min to activate
@@ -78,6 +80,7 @@ TIER_CONFIG = {
         "max_call_duration_seconds": 1800,
         "llm_model": "gpt-4o-mini",
         "tts_provider": "elevenlabs",
+        "stt_provider": "deepgram",
         "free_phone_numbers": 2,
         "activation_deposit_paise": 800000,  # ₹8,000 min to activate
     },
@@ -87,6 +90,7 @@ TIER_CONFIG = {
         "max_call_duration_seconds": 1200,
         "llm_model": "gpt-4o",
         "tts_provider": "elevenlabs",
+        "stt_provider": "deepgram",
         "free_phone_numbers": 5,
         "activation_deposit_paise": 2500000,
         "disabled": True,

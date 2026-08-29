@@ -744,8 +744,8 @@ ELEVENLABS_TTS_RATE_USD_PER_1K_CHARS = 0.18
 # Ref: https://smallest.ai/pricing (Aug 2026)
 SMALLEST_AI_TTS_RATE_USD_PER_1K_CHARS = 0.0175
 
-# Smallest AI Pulse STT: ~$0.003/min (estimated; billed per minute like Deepgram)
-# No public per-min rate confirmed; using conservative estimate until invoice data available
+# Smallest AI Pulse STT: ~$0.003/min (kept for reference — no current plan uses it;
+# all plans including growth use Deepgram for STT)
 SMALLEST_AI_STT_RATE_USD_PER_MIN = 0.003
 
 # AI speaking ratio — fraction of call time AI is synthesizing voice
@@ -765,6 +765,7 @@ def _estimate_call_cost_inr(
     duration_seconds: int,
     usage_info: dict | None,
     tts_provider: str = "deepgram",
+    stt_provider: str = "deepgram",
     llm_model: str = "gpt-4o-mini",
 ) -> dict:
     """
@@ -813,9 +814,8 @@ def _estimate_call_cost_inr(
 
     tts_inr = (tts_chars / 1000.0) * tts_rate * USD_TO_INR
 
-    # --- 3b. STT rate — differs per provider for Growth plan ---
-    # For smallest_ai tier, STT is also Smallest AI (Pulse model), not Deepgram
-    if "smallest" in tts_provider.lower():
+    # --- 3b. STT rate — use the explicit stt_provider, not inferred from TTS ---
+    if "smallest" in stt_provider.lower():
         stt_inr = SMALLEST_AI_STT_RATE_USD_PER_MIN * stt_minutes * USD_TO_INR
     else:
         stt_inr = DEEPGRAM_STT_RATE_USD_PER_MIN * stt_minutes * USD_TO_INR
@@ -948,24 +948,28 @@ async def get_profitability(
         if stamped_plan and stamped_tts:
             tts_provider = stamped_tts
             from config import TIER_CONFIG
-            llm_model = TIER_CONFIG.get(stamped_plan, {}).get("llm_model", "gpt-4o-mini")
+            tier_cfg = TIER_CONFIG.get(stamped_plan, {})
+            llm_model = tier_cfg.get("llm_model", "gpt-4o-mini")
+            stt_provider = tier_cfg.get("stt_provider", "deepgram")
             active_plan = stamped_plan
         else:
             # Legacy rows: fall back to current subscription
             sub = subs.get(cid)
             tts_provider = "deepgram"
+            stt_provider = "deepgram"
             llm_model = "gpt-4o-mini"
             active_plan = "starter"
             if sub:
                 from config import TIER_CONFIG
                 tier_cfg = TIER_CONFIG.get(sub.plan, {})
                 tts_provider = tier_cfg.get("tts_provider", "deepgram")
+                stt_provider = tier_cfg.get("stt_provider", "deepgram")
                 llm_model = tier_cfg.get("llm_model", "gpt-4o-mini")
                 active_plan = sub.plan
 
         usage_info = usage_map.get(row.dograh_run_id)
         cost_breakdown = _estimate_call_cost_inr(
-            row.duration_seconds, usage_info, tts_provider, llm_model
+            row.duration_seconds, usage_info, tts_provider, stt_provider, llm_model
         )
         revenue_inr = row.cost_to_customer_paise / 100.0
 
