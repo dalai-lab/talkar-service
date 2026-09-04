@@ -448,6 +448,10 @@ async def check_quota(data: DograhQuotaRequest, db: AsyncSession = Depends(get_d
     if not customer:
         return {"has_quota": True}  # Unknown org — pass through
         
+    if customer.status == "agent_building":
+        # Test bypass: agent is being built — skip wallet check so devs can test calls freely.
+        # This is automatically revoked the moment mark_ready flips the status to active/pending_deposit.
+        return {"has_quota": True}
     if customer.status != "active":
         return {"has_quota": False}
 
