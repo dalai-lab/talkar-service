@@ -468,7 +468,36 @@ async def update_support_request(req_id: int, data: SupportRequestUpdate, db: As
 @router.get("/build-queue")
 async def get_build_queue(db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
     result = await db.execute(select(Customer).where(Customer.status == "agent_building").order_by(Customer.created_at.asc()))
-    return result.scalars().all()
+    customers = result.scalars().all()
+    customer_ids = [c.id for c in customers]
+    phone_map = {}
+    if customer_ids:
+        from db.models import PhoneNumber
+        pn_result = await db.execute(select(PhoneNumber).where(PhoneNumber.customer_id.in_(customer_ids)))
+        for pn in pn_result.scalars().all():
+            phone_map.setdefault(pn.customer_id, []).append(pn.number)
+            
+    return [
+        {
+            "id": c.id,
+            "company_name": c.company_name,
+            "industry": c.industry,
+            "contact_name": c.contact_name,
+            "contact_email": c.contact_email,
+            "contact_phone": c.contact_phone,
+            "status": c.status,
+            "onboarding_form": c.onboarding_form,
+            "documents": c.documents,
+            "billing_org_id": c.billing_org_id,
+            "dograh_org_id": c.dograh_org_id,
+            "dograh_user_id": c.dograh_user_id,
+            "setup_fee_order_id": c.setup_fee_order_id,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+            "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+            "phone_numbers": phone_map.get(c.id, []),
+        }
+        for c in customers
+    ]
 
 @router.patch("/build-queue/{customer_id}/assign")
 async def assign_build(customer_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
@@ -502,8 +531,13 @@ async def assign_build(customer_id: int, db: AsyncSession = Depends(get_db), cur
         "refresh_token": data.get("refresh_token")
     }
 
+class MarkReadyRequest(BaseModel):
+    custom_message: Optional[str] = None
+    override_agent_name: Optional[str] = None
+    override_phone_number: Optional[str] = None
+
 @router.patch("/build-queue/{customer_id}/ready")
-async def mark_ready(customer_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+async def mark_ready(customer_id: int, data: MarkReadyRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
     result = await db.execute(select(Customer).where(Customer.id == customer_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
@@ -519,6 +553,15 @@ async def mark_ready(customer_id: int, db: AsyncSession = Depends(get_db), curre
     activation_min = TIER_CONFIG.get(tier_name, TIER_CONFIG["starter"]).get("activation_deposit_paise", 600000)
     is_funded = wallet and wallet.balance_paise >= activation_min
 
+    from db.models import PhoneNumber
+    pn_res = await db.execute(select(PhoneNumber).where(PhoneNumber.customer_id == customer.id))
+    phone_numbers = pn_res.scalars().all()
+    default_phones_str = ", ".join([pn.number for pn in phone_numbers]) if phone_numbers else "No phone number assigned yet (Please check your dashboard)."
+    
+    phones_str = (data.override_phone_number or "").strip() or default_phones_str
+    agent_name = (data.override_agent_name or "").strip() or customer.company_name
+    admin_note = f"\n\nAdmin Note:\n{data.custom_message.strip()}" if data.custom_message and data.custom_message.strip() else ""
+
     if customer.billing_org_id:
         # Sub-org fast path
         if is_funded:
@@ -531,8 +574,8 @@ async def mark_ready(customer_id: int, db: AsyncSession = Depends(get_db), curre
             
             await notification_service.send_email(
                 to_email=customer.contact_email,
-                subject="Your New AI Agent is Live!",
-                body=f"Hi {customer.contact_name}, your new Talkar AI agent is fully active!"
+                subject="Your New AI Agent is Live! 🚀",
+                body=f"Hi {customer.contact_name},\n\nGreat news! Your Talkar AI agent for {agent_name} is fully built and ready to take calls.\n\nYou can test your live agent right now by calling:\n📞 {phones_str}{admin_note}\n\nLog in to your dashboard at talkar.in to view call logs and configure settings.\n\nBest,\nThe Talkar Team"
             )
             return {"status": "active"}
         else:
@@ -541,8 +584,8 @@ async def mark_ready(customer_id: int, db: AsyncSession = Depends(get_db), curre
             await db.commit()
             await notification_service.send_email(
                 to_email=customer.contact_email,
-                subject="Your New AI Agent is Ready! Top up required",
-                body=f"Hi {customer.contact_name}, your new Talkar AI agent is built! Your master wallet balance is low. Please add credits to activate it."
+                subject="Your New AI Agent is Ready! 🚀 (Top up required)",
+                body=f"Hi {customer.contact_name},\n\nGreat news! Your Talkar AI agent for {agent_name} is fully built. Your master wallet balance is low, please add credits to activate it.\n\nOnce activated, you can call:\n📞 {phones_str}{admin_note}\n\nBest,\nThe Talkar Team"
             )
             return {"status": "pending_deposit"}
 
@@ -555,8 +598,8 @@ async def mark_ready(customer_id: int, db: AsyncSession = Depends(get_db), curre
         
         await notification_service.send_email(
             to_email=customer.contact_email,
-            subject="Your AI Agent is Live!",
-            body=f"Hi {customer.contact_name}, your Talkar AI agent is fully live and ready to take calls!"
+            subject="Your AI Agent is Live! 🚀",
+            body=f"Hi {customer.contact_name},\n\nGreat news! Your Talkar AI agent for {agent_name} is fully live and ready to take calls.\n\nYou can test your live agent right now by calling:\n📞 {phones_str}{admin_note}\n\nLog in to your dashboard at talkar.in to view call logs and configure settings.\n\nBest,\nThe Talkar Team"
         )
         return {"status": "active"}
     else:
@@ -574,8 +617,8 @@ async def mark_ready(customer_id: int, db: AsyncSession = Depends(get_db), curre
             
         await notification_service.send_email(
             to_email=customer.contact_email,
-            subject="Your AI Agent is Ready! (Activation Deposit Required)",
-            body=f"Hi {customer.contact_name}, your Talkar AI agent has been built! Please log in to your dashboard and add the minimum activation balance to take your agent live."
+            subject="Your AI Agent is Ready! 🚀 (Activation Deposit Required)",
+            body=f"Hi {customer.contact_name},\n\nGreat news! Your Talkar AI agent for {agent_name} has been built! Please log in to your dashboard and add the minimum activation balance to take your agent live.\n\nOnce activated, you can call:\n📞 {phones_str}{admin_note}\n\nBest,\nThe Talkar Team"
         )
         return {"status": "pending_deposit"}
 

@@ -375,6 +375,9 @@ async def submit_new_agent_brief(dograh_org_id: int, data: dict, db: AsyncSessio
     existing_form.update(data.get("form", {}))
     customer.onboarding_form = existing_form
     
+    if "documents" in data:
+        customer.documents = data.get("documents", [])
+    
     await db.commit()
     await db.refresh(customer)
     

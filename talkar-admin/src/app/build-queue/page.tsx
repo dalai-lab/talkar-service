@@ -7,6 +7,8 @@ import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { 
   Dialog, 
   DialogContent, 
@@ -65,6 +67,14 @@ export default function BuildQueuePage() {
   const [selectedCustomer, setSelectedCustomer] = useState<any | null>(null);
   const [isBriefOpen, setIsBriefOpen] = useState(false);
   const [showRawJsonQueue, setShowRawJsonQueue] = useState(false);
+  
+  const [isReadyModalOpen, setIsReadyModalOpen] = useState(false);
+  const [readyCustomer, setReadyCustomer] = useState<any | null>(null);
+  const [customMessage, setCustomMessage] = useState("");
+  const [useCustomDetails, setUseCustomDetails] = useState(false);
+  const [customAgentName, setCustomAgentName] = useState("");
+  const [customPhoneNumber, setCustomPhoneNumber] = useState("");
+  const [submittingReady, setSubmittingReady] = useState(false);
 
   useEffect(() => {
     fetchQueue();
@@ -84,16 +94,55 @@ export default function BuildQueuePage() {
     }
   };
 
-  const handleMarkReady = async (customerId: number) => {
+  const openReadyModal = (customer: any) => {
+    setReadyCustomer(customer);
+    setCustomMessage("");
+    setUseCustomDetails(false);
+    setCustomAgentName(customer.company_name || "");
+    const defaultPhones = customer.phone_numbers && customer.phone_numbers.length > 0 
+      ? customer.phone_numbers.join(", ") 
+      : "";
+    setCustomPhoneNumber(defaultPhones);
+    setIsReadyModalOpen(true);
+  };
+
+  const submitMarkReady = async () => {
+    if (!readyCustomer) return;
+    setSubmittingReady(true);
     try {
-      const res = await adminFetch(`/admin/build-queue/${customerId}/ready`, {
-        method: "PATCH"
+      const payload: {
+        custom_message?: string | null;
+        override_agent_name?: string | null;
+        override_phone_number?: string | null;
+      } = {
+        custom_message: customMessage.trim() || null
+      };
+
+      if (useCustomDetails) {
+        if (customAgentName.trim()) {
+          payload.override_agent_name = customAgentName.trim();
+        }
+        if (customPhoneNumber.trim()) {
+          payload.override_phone_number = customPhoneNumber.trim();
+        }
+      }
+
+      const res = await adminFetch(`/admin/build-queue/${readyCustomer.id}/ready`, {
+        method: "PATCH",
+        body: JSON.stringify(payload)
       });
       if (res.ok) {
+        setIsReadyModalOpen(false);
         fetchQueue();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Failed to mark ready: ${err.detail || res.statusText}`);
       }
     } catch (e) {
       console.error(e);
+      alert("Network error occurred. Please try again.");
+    } finally {
+      setSubmittingReady(false);
     }
   };
 
@@ -177,7 +226,7 @@ export default function BuildQueuePage() {
                           alert("Network error. Could not assign.");
                         }
                       }}>Impersonate & Build</Button>
-                      <Button size="sm" onClick={() => handleMarkReady(c.id)}>Mark as Ready</Button>
+                      <Button size="sm" onClick={() => openReadyModal(c)}>Mark as Ready</Button>
                     </TableCell>
                   </TableRow>
                 ))
@@ -330,6 +379,133 @@ export default function BuildQueuePage() {
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsBriefOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Mark Ready Modal */}
+      <Dialog open={isReadyModalOpen} onOpenChange={setIsReadyModalOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Mark Agent Ready & Notify Customer</DialogTitle>
+          </DialogHeader>
+          {readyCustomer && (
+            <div className="space-y-4 py-2">
+              <p className="text-sm text-muted-foreground">
+                This will send an email notification to <span className="font-semibold text-foreground">{readyCustomer.contact_email}</span> letting them know their AI agent is built and ready for calls.
+              </p>
+
+              {/* Notification Details Preview */}
+              <div className="rounded-lg border bg-zinc-50 dark:bg-zinc-900/60 p-3.5 space-y-2.5 text-sm">
+                <div className="flex items-center justify-between text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                  <span>Notification Details Preview</span>
+                  {useCustomDetails ? (
+                    <Badge variant="secondary" className="bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 text-[10px] font-medium border-amber-200">
+                      Custom Override
+                    </Badge>
+                  ) : (
+                    <Badge variant="secondary" className="bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 text-[10px] font-medium border-emerald-200">
+                      Auto-detected Default
+                    </Badge>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 pt-1">
+                  <div>
+                    <span className="text-xs text-muted-foreground block mb-0.5">Agent Name</span>
+                    <span className="font-semibold text-foreground text-sm break-words">
+                      {useCustomDetails && customAgentName.trim()
+                        ? customAgentName.trim()
+                        : (readyCustomer.company_name || "N/A")}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-xs text-muted-foreground block mb-0.5">Assigned Phone Number</span>
+                    <span className="font-mono text-xs font-semibold text-foreground break-words block">
+                      {useCustomDetails && customPhoneNumber.trim()
+                        ? customPhoneNumber.trim()
+                        : (readyCustomer.phone_numbers && readyCustomer.phone_numbers.length > 0 
+                            ? readyCustomer.phone_numbers.join(", ") 
+                            : <span className="text-amber-600 dark:text-amber-400 font-sans font-normal text-xs">No number assigned yet</span>)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Checkbox to toggle custom override */}
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  type="checkbox"
+                  id="override-details-checkbox"
+                  checked={useCustomDetails}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setUseCustomDetails(checked);
+                    if (checked) {
+                      if (!customAgentName) setCustomAgentName(readyCustomer.company_name || "");
+                      if (!customPhoneNumber) {
+                        setCustomPhoneNumber(readyCustomer.phone_numbers?.join(", ") || "");
+                      }
+                    }
+                  }}
+                  className="h-4 w-4 rounded border-zinc-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                />
+                <Label htmlFor="override-details-checkbox" className="text-sm font-medium cursor-pointer select-none">
+                  Customize agent name & phone number
+                </Label>
+              </div>
+
+              {/* Conditional Inputs */}
+              {useCustomDetails && (
+                <div className="space-y-3 p-3.5 rounded-lg border border-blue-100 bg-blue-50/50 dark:bg-blue-950/20 dark:border-blue-900/40">
+                  <div className="space-y-1">
+                    <Label className="text-xs font-medium text-zinc-700 dark:text-zinc-300">Custom Agent Name</Label>
+                    <Input 
+                      placeholder="e.g. Sales Assistant"
+                      value={customAgentName}
+                      onChange={(e) => setCustomAgentName(e.target.value)}
+                      className="bg-white dark:bg-zinc-900"
+                    />
+                    <p className="text-[11px] text-muted-foreground">Default: {readyCustomer.company_name}</p>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs font-medium text-zinc-700 dark:text-zinc-300">Custom Phone Number</Label>
+                    <Input 
+                      placeholder="e.g. +91 80 1234 5678"
+                      value={customPhoneNumber}
+                      onChange={(e) => setCustomPhoneNumber(e.target.value)}
+                      className="bg-white dark:bg-zinc-900"
+                    />
+                    <p className="text-[11px] text-muted-foreground">
+                      Default: {readyCustomer.phone_numbers?.length ? readyCustomer.phone_numbers.join(", ") : "None assigned"}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Custom Admin Note */}
+              <div className="space-y-1.5">
+                <Label className="text-xs font-medium">Custom Admin Note (Optional)</Label>
+                <Textarea 
+                  placeholder="e.g. We tweaked your prompt and tested order lookups, it is performing smoothly!"
+                  value={customMessage}
+                  onChange={(e) => setCustomMessage(e.target.value)}
+                  rows={3}
+                  className="text-sm"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Included in the notification email under &quot;Admin Note&quot;.
+                </p>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsReadyModalOpen(false)} disabled={submittingReady}>
+              Cancel
+            </Button>
+            <Button onClick={submitMarkReady} disabled={submittingReady}>
+              {submittingReady ? "Sending Email..." : "Confirm & Send Email"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
