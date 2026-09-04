@@ -7,20 +7,66 @@ import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { 
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogFooter
+  DialogFooter,
+  DialogTrigger
 } from "@/components/ui/dialog";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 
+const DocumentViewer = ({ title, dataUrl }: { title: string, dataUrl: string }) => {
+  if (!dataUrl) return null;
+  const isPdf = dataUrl.startsWith("data:application/pdf");
+  const isImage = dataUrl.startsWith("data:image/");
+  
+  const getExtension = () => {
+    if (isPdf) return "pdf";
+    if (isImage) {
+      const mime = dataUrl.split(";")[0].split(":")[1];
+      return mime.split("/")[1] || "png";
+    }
+    return "bin";
+  };
+
+  return (
+    <div className="flex items-center gap-3 bg-muted/40 p-2 px-3 rounded-md border text-sm">
+      <Dialog>
+        <DialogTrigger render={<Button variant="link" className="p-0 h-auto text-sm text-blue-600 font-medium" />}>
+          📄 {title} (View)
+        </DialogTrigger>
+        <DialogContent className="max-w-4xl w-full h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>{title}</DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto bg-zinc-100/50 dark:bg-zinc-900/50 rounded-md border flex items-center justify-center p-4">
+            {isPdf ? (
+              <iframe src={dataUrl} className="w-full h-full border-0 rounded-md bg-white" title={title} />
+            ) : isImage ? (
+              <img src={dataUrl} alt={title} className="max-w-full max-h-full object-contain rounded-md shadow-sm" />
+            ) : (
+              <p className="text-muted-foreground text-sm">Preview not available for this file type.</p>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+      <span className="text-muted-foreground text-xs">•</span>
+      <a href={dataUrl} download={`${title.replace(/\s+/g, '_').toLowerCase()}.${getExtension()}`} className="text-xs text-zinc-500 hover:text-zinc-800 underline underline-offset-2">
+        Download
+      </a>
+    </div>
+  );
+};
 
 export default function ApplicationsPage() {
   const [apps, setApps] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedApp, setSelectedApp] = useState<any | null>(null);
+  const [isDetailOpen, setIsDetailOpen] = useState(false);
+  const [showRawJsonApp, setShowRawJsonApp] = useState(false);
   const [isApproveOpen, setIsApproveOpen] = useState(false);
   const [isRejectOpen, setIsRejectOpen] = useState(false);
   const [isRequestInfoOpen, setIsRequestInfoOpen] = useState(false);
@@ -149,6 +195,13 @@ export default function ApplicationsPage() {
                       )}
                     </TableCell>
                     <TableCell className="text-right space-x-2">
+                      <Button 
+                        variant="secondary" 
+                        size="sm"
+                        onClick={() => { setSelectedApp(app); setIsDetailOpen(true); }}
+                      >
+                        View Details
+                      </Button>
                       <Button 
                         variant="outline" 
                         size="sm"
@@ -298,6 +351,154 @@ export default function ApplicationsPage() {
             >
               Send Request
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* View Full Application Submission Modal */}
+      <Dialog open={isDetailOpen} onOpenChange={setIsDetailOpen}>
+        <DialogContent className="max-w-3xl w-full max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Application Submission Details</DialogTitle>
+          </DialogHeader>
+          {selectedApp && (
+            <div className="space-y-6 py-2 text-sm">
+              {/* Contact Info */}
+              <div className="border rounded-md p-4 space-y-3 bg-muted/20">
+                <h4 className="font-semibold text-base border-b pb-2">Contact Information</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Primary Contact</Label>
+                    <p className="font-medium">{selectedApp.contact_name || selectedApp.onboarding_form?.pocName || "N/A"}</p>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Designation / Role</Label>
+                    <p>{selectedApp.onboarding_form?.pocDesignation || "N/A"}</p>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Email Address</Label>
+                    <p>{selectedApp.contact_email || "N/A"}</p>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Phone Number</Label>
+                    <p>{selectedApp.contact_phone || selectedApp.onboarding_form?.pocPhone || "N/A"}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Business Profile */}
+              <div className="border rounded-md p-4 space-y-3 bg-muted/20">
+                <h4 className="font-semibold text-base border-b pb-2">Business & Company Profile</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Company Name</Label>
+                    <p className="font-medium">{selectedApp.company_name || selectedApp.onboarding_form?.businessName || "N/A"}</p>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Industry</Label>
+                    <p>{selectedApp.industry || selectedApp.onboarding_form?.industry || "N/A"}</p>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">GST Number</Label>
+                    <p className="font-mono">{selectedApp.onboarding_form?.gstNumber || "N/A"}</p>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Company Size</Label>
+                    <p>{selectedApp.onboarding_form?.companySize || "N/A"}</p>
+                  </div>
+                  <div className="md:col-span-2">
+                    <Label className="text-xs text-muted-foreground">Website</Label>
+                    {selectedApp.onboarding_form?.websiteUrl ? (
+                      <p>
+                        <a 
+                          href={selectedApp.onboarding_form.websiteUrl.startsWith("http") ? selectedApp.onboarding_form.websiteUrl : `https://${selectedApp.onboarding_form.websiteUrl}`} 
+                          target="_blank" 
+                          rel="noreferrer"
+                          className="text-blue-600 hover:underline"
+                        >
+                          {selectedApp.onboarding_form.websiteUrl}
+                        </a>
+                      </p>
+                    ) : (
+                      <p className="text-muted-foreground">N/A</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Voice Agent & Use Case */}
+              <div className="border rounded-md p-4 space-y-3 bg-muted/20">
+                <h4 className="font-semibold text-base border-b pb-2">Agent & Use Case Requirements</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Call Direction / Type</Label>
+                    <p className="font-medium capitalize">{selectedApp.onboarding_form?.useCaseType || "N/A"}</p>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Expected Call Volume</Label>
+                    <p>{selectedApp.onboarding_form?.callVolume || "N/A"}</p>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Target Languages</Label>
+                    <p>{selectedApp.onboarding_form?.languages || "N/A"}</p>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Integrations</Label>
+                    <p>{selectedApp.onboarding_form?.integrations || "N/A"}</p>
+                  </div>
+                  <div className="md:col-span-2">
+                    <Label className="text-xs text-muted-foreground">Use Case Description & Prompt Details</Label>
+                    <p className="mt-1 whitespace-pre-wrap bg-background p-3 rounded-md border text-xs">
+                      {selectedApp.onboarding_form?.useCaseDescription || "No detailed description provided."}
+                    </p>
+                  </div>
+                  {selectedApp.onboarding_form?.needsApiIntegration && (
+                    <div className="md:col-span-2 bg-blue-50/80 border border-blue-200 p-3 rounded-md">
+                      <Label className="text-xs font-semibold text-blue-900 block mb-1">Custom API Integration Required</Label>
+                      <p className="text-blue-800 text-xs">{selectedApp.onboarding_form.apiIntegrationDetails || "Details pending."}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Submitted Verification Documents */}
+              {(selectedApp.onboarding_form?.gstCertificateUrl || selectedApp.onboarding_form?.businessRegistrationUrl) && (
+                <div className="border rounded-md p-4 space-y-3 bg-muted/20">
+                  <h4 className="font-semibold text-base border-b pb-2">Submitted Verification Documents</h4>
+                  <div className="flex flex-wrap gap-4">
+                    {selectedApp.onboarding_form?.gstCertificateUrl && (
+                      <DocumentViewer title="GST Certificate" dataUrl={selectedApp.onboarding_form.gstCertificateUrl} />
+                    )}
+                    {selectedApp.onboarding_form?.businessRegistrationUrl && (
+                      <DocumentViewer title="Business Registration" dataUrl={selectedApp.onboarding_form.businessRegistrationUrl} />
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Raw JSON submission */}
+              {selectedApp.onboarding_form && (
+                <div className="pt-2">
+                  <Button 
+                    variant="ghost" 
+                    size="sm" 
+                    onClick={() => setShowRawJsonApp(!showRawJsonApp)}
+                    className="text-xs text-muted-foreground"
+                  >
+                    {showRawJsonApp ? "Hide Raw Submission Data (JSON)" : "Show Raw Submission Data (JSON)"}
+                  </Button>
+                  {showRawJsonApp && (
+                    <pre className="mt-2 bg-zinc-950 text-zinc-100 p-3 rounded-md text-xs font-mono overflow-auto max-h-60">
+                      {JSON.stringify(selectedApp.onboarding_form, null, 2)}
+                    </pre>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsDetailOpen(false)}>Close</Button>
+            <Button onClick={() => { setIsDetailOpen(false); setIsApproveOpen(true); }}>Review & Approve</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

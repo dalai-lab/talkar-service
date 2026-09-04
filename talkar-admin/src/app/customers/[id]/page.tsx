@@ -76,6 +76,7 @@ export default function CustomerDetailPage() {
 
   const [phoneNumbers, setPhoneNumbers] = useState<any[]>([]);
   const [agents, setAgents] = useState<any[]>([]);
+  const [showRawJson, setShowRawJson] = useState(false);
   const [phoneNumberInput, setPhoneNumberInput] = useState("");
   const [plivoIdInput, setPlivoIdInput] = useState("");
   const [isAssigningPhone, setIsAssigningPhone] = useState(false);
@@ -337,16 +338,23 @@ export default function CustomerDetailPage() {
         </div>
       )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Contact Information */}
         <Card>
-          <CardHeader><CardTitle>Contact Information</CardTitle></CardHeader>
-          <CardContent className="space-y-4">
+          <CardHeader><CardTitle className="text-base font-semibold">Contact Information</CardTitle></CardHeader>
+          <CardContent className="space-y-4 text-sm">
             <div>
-              <Label className="text-muted-foreground text-xs">Primary Contact</Label>
-              <p className="font-medium">{customer.contact_name}</p>
+              <Label className="text-muted-foreground text-xs">Primary Contact Name</Label>
+              <p className="font-medium">{customer.contact_name || customer.onboarding_form?.pocName || "N/A"}</p>
             </div>
+            {customer.onboarding_form?.pocDesignation && (
+              <div>
+                <Label className="text-muted-foreground text-xs">Designation / Role</Label>
+                <p>{customer.onboarding_form.pocDesignation}</p>
+              </div>
+            )}
             <div>
               <Label className="text-muted-foreground text-xs">Email Address</Label>
-              <p>{customer.contact_email}</p>
+              <p>{customer.contact_email || "N/A"}</p>
             </div>
             <div>
               <Label className="text-muted-foreground text-xs">Phone Number</Label>
@@ -355,32 +363,104 @@ export default function CustomerDetailPage() {
           </CardContent>
         </Card>
 
+        {/* Business & Company Profile */}
         <Card>
-          <CardHeader><CardTitle>Application Data</CardTitle></CardHeader>
-          <CardContent className="space-y-4">
+          <CardHeader><CardTitle className="text-base font-semibold">Business & Company Profile</CardTitle></CardHeader>
+          <CardContent className="space-y-4 text-sm">
+            <div>
+              <Label className="text-muted-foreground text-xs">Company / Legal Name</Label>
+              <p className="font-medium">{customer.company_name || customer.onboarding_form?.businessName || "N/A"}</p>
+            </div>
             <div>
               <Label className="text-muted-foreground text-xs">Industry</Label>
               <p>{customer.industry || customer.onboarding_form?.industry || "N/A"}</p>
             </div>
             <div>
-              <Label className="text-muted-foreground text-xs">Use Case</Label>
-              <p>{customer.onboarding_form?.useCaseType || "N/A"}</p>
-              <p className="text-sm text-muted-foreground">{customer.onboarding_form?.useCaseDescription || ""}</p>
+              <Label className="text-muted-foreground text-xs">GST Number</Label>
+              <p className="font-mono">{customer.onboarding_form?.gstNumber || "N/A"}</p>
             </div>
             <div>
-              <Label className="text-muted-foreground text-xs">Dograh Org ID</Label>
-              <p>{customer.dograh_org_id || "Unprovisioned"}</p>
+              <Label className="text-muted-foreground text-xs">Company Size</Label>
+              <p>{customer.onboarding_form?.companySize || "N/A"}</p>
             </div>
             <div>
-              <Label className="text-muted-foreground text-xs">Current Tier</Label>
-              <div className="flex gap-2 items-center mt-1">
-                <Badge>{currentPlan}</Badge>
+              <Label className="text-muted-foreground text-xs">Website</Label>
+              {customer.onboarding_form?.websiteUrl ? (
+                <p>
+                  <a 
+                    href={customer.onboarding_form.websiteUrl.startsWith("http") ? customer.onboarding_form.websiteUrl : `https://${customer.onboarding_form.websiteUrl}`}
+                    target="_blank" 
+                    rel="noreferrer" 
+                    className="text-blue-600 hover:underline"
+                  >
+                    {customer.onboarding_form.websiteUrl}
+                  </a>
+                </p>
+              ) : (
+                <p className="text-muted-foreground">N/A</p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Agent & Use Case Requirements */}
+        <Card className="md:col-span-2">
+          <CardHeader><CardTitle className="text-base font-semibold">Agent & Use Case Requirements</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            <div>
+              <Label className="text-muted-foreground text-xs">Call Type / Direction</Label>
+              <p className="font-medium capitalize">{customer.onboarding_form?.useCaseType || "N/A"}</p>
+            </div>
+            <div>
+              <Label className="text-muted-foreground text-xs">Expected Monthly Call Volume</Label>
+              <p>{customer.onboarding_form?.callVolume || "N/A"}</p>
+            </div>
+            <div>
+              <Label className="text-muted-foreground text-xs">Target Languages</Label>
+              <p>{customer.onboarding_form?.languages || "N/A"}</p>
+            </div>
+            <div>
+              <Label className="text-muted-foreground text-xs">CRM & Software Integrations</Label>
+              <p>{customer.onboarding_form?.integrations || "N/A"}</p>
+            </div>
+            <div className="md:col-span-2">
+              <Label className="text-muted-foreground text-xs">Use Case Description & Prompt Specifications</Label>
+              <p className="mt-1 whitespace-pre-wrap bg-zinc-50 dark:bg-zinc-900 p-3 rounded-md border text-zinc-800 dark:text-zinc-200">
+                {customer.onboarding_form?.useCaseDescription || "No detailed description provided."}
+              </p>
+            </div>
+            {customer.onboarding_form?.needsApiIntegration && (
+              <div className="md:col-span-2 bg-blue-50/60 dark:bg-blue-950/30 border border-blue-200 rounded-md p-3">
+                <Label className="text-blue-900 dark:text-blue-300 font-semibold text-xs block mb-1">Custom API Integration Requested</Label>
+                <p className="text-blue-800 dark:text-blue-200">{customer.onboarding_form.apiIntegrationDetails || "Requested, details pending."}</p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Documents & System Info */}
+        <Card className="md:col-span-2">
+          <CardHeader><CardTitle className="text-base font-semibold">Verification Documents & System Identifiers</CardTitle></CardHeader>
+          <CardContent className="space-y-4 text-sm">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <Label className="text-muted-foreground text-xs">Dograh Org ID</Label>
+                <p className="font-mono">{customer.dograh_org_id || "Unprovisioned"}</p>
+              </div>
+              <div>
+                <Label className="text-muted-foreground text-xs">Master Billing Org ID</Label>
+                <p className="font-mono">{customer.billing_org_id ? `#${customer.billing_org_id}` : "Self (Master)"}</p>
+              </div>
+              <div>
+                <Label className="text-muted-foreground text-xs">Current Tier</Label>
+                <div className="mt-1"><Badge>{currentPlan}</Badge></div>
               </div>
             </div>
-            {(customer.onboarding_form?.gstCertificateUrl || customer.onboarding_form?.businessRegistrationUrl) && (
-              <div className="pt-2 border-t mt-4">
-                <Label className="text-muted-foreground text-xs mb-2 block">Submitted Documents</Label>
-                <div className="flex flex-col gap-2">
+
+            {(customer.onboarding_form?.gstCertificateUrl || customer.onboarding_form?.businessRegistrationUrl) ? (
+              <div className="pt-3 border-t">
+                <Label className="text-muted-foreground text-xs mb-2 block font-semibold">Submitted Verification Documents</Label>
+                <div className="flex flex-wrap gap-4">
                   {customer.onboarding_form?.gstCertificateUrl && (
                     <DocumentViewer title="GST Certificate" dataUrl={customer.onboarding_form.gstCertificateUrl} />
                   )}
@@ -389,10 +469,38 @@ export default function CustomerDetailPage() {
                   )}
                 </div>
               </div>
+            ) : (
+              <div className="pt-3 border-t text-muted-foreground text-xs">
+                No verification documents uploaded.
+              </div>
             )}
           </CardContent>
         </Card>
       </div>
+
+      {/* Raw Form Submission Data Viewer */}
+      {customer.onboarding_form && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between py-3">
+            <CardTitle className="text-sm font-semibold">Full Form Submission Data (JSON)</CardTitle>
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={() => setShowRawJson(!showRawJson)}
+              className="text-xs"
+            >
+              {showRawJson ? "Hide Raw Data" : "Show Raw Data"}
+            </Button>
+          </CardHeader>
+          {showRawJson && (
+            <CardContent className="pt-0">
+              <pre className="bg-zinc-950 text-zinc-100 p-4 rounded-md text-xs font-mono overflow-auto max-h-96">
+                {JSON.stringify(customer.onboarding_form, null, 2)}
+              </pre>
+            </CardContent>
+          )}
+        </Card>
+      )}
 
       <Card>
         <CardHeader><CardTitle>Agents & Billing Rates</CardTitle></CardHeader>
