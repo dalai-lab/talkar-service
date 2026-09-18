@@ -171,7 +171,7 @@ async def send_email(to_email: str, subject: str, body: str):
 
 async def push_notification(customer_id: int, title: str, body: str, notification_type: str = "info"):
     """Push an in-app notification to the database."""
-    from db.models import Notification
+    from db.models import Notification, NotificationCategory
     from db.session import AsyncSessionLocal
     try:
         async with AsyncSessionLocal() as db:
@@ -468,7 +468,8 @@ async def notify_customer_support_replied(customer_id: int, subject: str, admin_
     body = f"Hi {name},\n\nThere is an update on your support ticket: '{subject}'.\n\n"
     if admin_note:
         body += f"Message from Talkar Support:\n{admin_note}\n\n"
-    body += f"Current Ticket Status: {status.upper()}\n\n"
+    formatted_status = status.replace('_', ' ').title()
+    body += f"Current Ticket Status: {formatted_status}\n\n"
     body += f"Log in to your dashboard to view more details.\n\nThe Talkar Team"
     
     await send_email_and_push(
@@ -477,7 +478,7 @@ async def notify_customer_support_replied(customer_id: int, subject: str, admin_
         subject=f"Update on Support Ticket: {subject}",
         body=body,
         notification_type="support",
-        push_body=f"Ticket '{subject}' updated. Status: {status}."
+        push_body=f"Ticket '{subject}' updated. Status: {formatted_status}."
     )
 
 async def notify_customer_suspended(customer_id: int):

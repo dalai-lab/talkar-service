@@ -1,6 +1,15 @@
 from sqlalchemy import Column, Integer, String, Text, Boolean, BigInteger, Date, DateTime, JSON, ForeignKey, Index
 from sqlalchemy.sql import func
 from db.session import Base
+import enum
+
+class NotificationCategory(str, enum.Enum):
+    INFO = "info"
+    SUCCESS = "success"
+    WARNING = "warning"
+    CRITICAL = "critical"
+    UPDATE = "update"
+    MAINTENANCE = "maintenance"
 
 class Customer(Base):
     __tablename__ = "customers"
@@ -170,7 +179,7 @@ class Notification(Base):
     customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
     title = Column(Text, nullable=False)
     body = Column(Text, nullable=False)
-    type = Column(Text, nullable=False)
+    type = Column(Text, nullable=False, default=NotificationCategory.INFO.value)
     is_read = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -180,7 +189,7 @@ class Announcement(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(Text, nullable=False)
     body = Column(Text, nullable=False)
-    type = Column(Text, nullable=False, default="general")  # 'general' | 'update' | 'maintenance' | 'critical'
+    type = Column(Text, nullable=False, default=NotificationCategory.INFO.value)
     channels = Column(JSON, default=list)  # ["in_app", "email"]
     status = Column(Text, nullable=False, default="sent")  # 'sent' | 'scheduled' | 'cancelled'
     scheduled_for = Column(DateTime(timezone=True), nullable=True)
