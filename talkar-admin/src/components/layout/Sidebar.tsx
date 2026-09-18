@@ -15,6 +15,7 @@ import {
   Phone,
   HelpCircle,
   Megaphone,
+  BookOpen,
 } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
 
@@ -29,6 +30,7 @@ const NAV_ITEMS = [
   { title: "Call Activity", href: "/call-activity", icon: Activity, badge: "Live" },
   { title: "Profitability", href: "/profitability", icon: TrendingUp, badge: null },
   { title: "Team", href: "/team", icon: Settings, badge: null },
+  { title: "Help & Guide", href: "/help", icon: BookOpen, badge: null },
 ];
 
 export function Sidebar() {
