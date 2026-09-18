@@ -523,7 +523,7 @@ async def get_support_requests(
             "description": p.use_case,
             "status": p.status,
             "admin_note": p.admin_note,
-            "resolved_by": p.resolved_by,
+            "resolved_by": getattr(p, "resolved_by", None),
             "created_at": p.requested_at.isoformat() if p.requested_at else None,
             "resolved_at": p.resolved_at.isoformat() if p.resolved_at else None,
         })
