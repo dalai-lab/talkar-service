@@ -29,7 +29,8 @@ import {
   Link2,
   Plus,
   Trash2,
-  Bell
+  Bell,
+  AlertCircle
 } from "lucide-react";
 
 const DocumentViewer = ({ title, dataUrl }: { title: string, dataUrl: string }) => {
@@ -948,6 +949,16 @@ export default function CustomerDetailPage() {
       <Card className="bg-white border border-slate-200/80 rounded-xl shadow-none">
         <CardHeader className="p-4 pb-2 border-b border-slate-100"><CardTitle className="text-xs font-semibold text-slate-900 uppercase tracking-wider flex items-center gap-2"><PhoneCall className="w-4 h-4 text-[#fe6905]" /> Assigned Phone Numbers</CardTitle></CardHeader>
         <CardContent className="p-4 space-y-4">
+          <div className="bg-amber-50/70 border border-amber-200/80 rounded-lg p-3 text-xs text-amber-900 flex items-start gap-2.5">
+            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <div className="space-y-0.5 leading-relaxed">
+              <p className="font-semibold text-[11px] text-amber-900">Important Note on Phone Numbers:</p>
+              <p className="text-[11px] text-amber-800">
+                This section is purely for <strong>noting down and recording assigned numbers</strong> for this customer. Phone numbers are <strong>not purchased or provisioned automatically</strong> by this action; they must be configured manually on your telephony carrier (e.g. Plivo / Twilio).
+              </p>
+            </div>
+          </div>
+
           <div className="bg-slate-50/70 p-3.5 rounded-lg border border-slate-200 space-y-3">
             <h4 className="font-semibold text-xs text-slate-800">Assign New Telephony Number</h4>
             <div className="flex flex-col sm:flex-row gap-3 items-end">
@@ -1208,7 +1219,7 @@ export default function CustomerDetailPage() {
             <div className="grid grid-cols-2 gap-3 items-end">
               <div>
                 <Label className="text-xs font-medium text-slate-700">Notification Type</Label>
-                <Select value={testNotifType} onValueChange={setTestNotifType}>
+                <Select value={testNotifType} onValueChange={(val) => setTestNotifType(val || "info")}>
                   <SelectTrigger className="mt-1 h-8 text-xs bg-white border-slate-200">
                     <SelectValue />
                   </SelectTrigger>
