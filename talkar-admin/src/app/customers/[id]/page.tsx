@@ -772,7 +772,7 @@ export default function CustomerDetailPage() {
             </div>
             <div className="space-y-2">
               <Label>LLM Model</Label>
-              <Select value={customPricing.llm_model || ""} onValueChange={(v) => setCustomPricing({...customPricing, llm_model: v})}>
+              <Select value={customPricing.llm_model || ""} onValueChange={(v) => setCustomPricing({...customPricing, llm_model: v || ""})}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="gpt-4o-mini">gpt-4o-mini</SelectItem>
@@ -784,7 +784,7 @@ export default function CustomerDetailPage() {
             </div>
             <div className="space-y-2">
               <Label>TTS Provider</Label>
-              <Select value={customPricing.tts_provider || ""} onValueChange={(v) => setCustomPricing({...customPricing, tts_provider: v})}>
+              <Select value={customPricing.tts_provider || ""} onValueChange={(v) => setCustomPricing({...customPricing, tts_provider: v || ""})}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="elevenlabs">ElevenLabs</SelectItem>
@@ -795,7 +795,7 @@ export default function CustomerDetailPage() {
             </div>
             <div className="space-y-2">
               <Label>STT Provider</Label>
-              <Select value={customPricing.stt_provider || ""} onValueChange={(v) => setCustomPricing({...customPricing, stt_provider: v})}>
+              <Select value={customPricing.stt_provider || ""} onValueChange={(v) => setCustomPricing({...customPricing, stt_provider: v || ""})}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="deepgram">Deepgram</SelectItem>
