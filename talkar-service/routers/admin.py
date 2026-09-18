@@ -588,7 +588,7 @@ async def update_support_request(req_id: int, data: SupportRequestUpdate, db: As
         req.status = data.status
         if data.status in ["resolved", "closed", "approved", "rejected"]:
             req.resolved_at = func.now()
-            req.resolved_by = current_admin.name
+            req.resolved_by = current_admin.id
     if data.admin_note is not None:
         req.admin_note = data.admin_note
         

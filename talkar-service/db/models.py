@@ -156,6 +156,6 @@ class SupportRequest(Base):
     agent_id = Column(Integer, ForeignKey("agents.id"), nullable=True)
     status = Column(Text, nullable=False, default="open")  # open|in_progress|resolved|closed
     admin_note = Column(Text)
-    resolved_by = Column(Text)
+    resolved_by = Column(Integer, ForeignKey("talkar_admins.id"))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     resolved_at = Column(DateTime(timezone=True))
