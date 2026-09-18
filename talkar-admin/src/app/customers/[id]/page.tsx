@@ -91,6 +91,7 @@ export default function CustomerDetailPage() {
 
   const [phoneNumbers, setPhoneNumbers] = useState<any[]>([]);
   const [agents, setAgents] = useState<any[]>([]);
+  const [subscription, setSubscription] = useState<any>(null);
   const [showRawJson, setShowRawJson] = useState(false);
   const [phoneNumberInput, setPhoneNumberInput] = useState("");
   const [plivoIdInput, setPlivoIdInput] = useState("");
@@ -111,6 +112,27 @@ export default function CustomerDetailPage() {
         const data = await res.json();
         setCustomer(data);
         setNewPlan(data.onboarding_form?.approved_tier || "");
+      }
+      // Also fetch subscription to pre-fill custom plan modal
+      const subRes = await adminFetch(`/admin/customers/${id}/subscription`);
+      if (subRes.ok) {
+        const subData = await subRes.json();
+        setSubscription(subData);
+        // Pre-fill custom plan modal with existing values if on a custom plan
+        if (subData?.plan === "custom" && subData?.custom_config) {
+          const cc = subData.custom_config;
+          setCustomPricing({
+            per_minute_rate_paise: String(subData.per_minute_rate_paise ?? "500"),
+            concurrent_call_limit: String(cc.concurrent_call_limit ?? "100"),
+            max_call_duration_seconds: String(cc.max_call_duration_seconds ?? "3600"),
+            activation_deposit_paise: String(cc.activation_deposit_paise ?? "1000000"),
+            llm_model: cc.llm_model ?? "gpt-4o",
+            tts_provider: cc.tts_provider ?? "elevenlabs",
+            stt_provider: cc.stt_provider ?? "deepgram",
+            free_phone_numbers: String(cc.free_phone_numbers ?? "5"),
+            custom_plan_label: subData.custom_plan_label ?? "Custom Enterprise",
+          });
+        }
       }
       if (phoneRes.ok) {
         const pData = await phoneRes.json();
@@ -361,7 +383,24 @@ export default function CustomerDetailPage() {
           <Button variant="outline" onClick={() => setIsCreditOpen(true)}>Grant Manual Credit</Button>
           <Button variant="outline" onClick={() => setIsDeductOpen(true)}>Deduct Balance</Button>
           <Button variant="outline" onClick={() => setIsPlanOpen(true)}>Change Tier</Button>
-          <Button variant="secondary" onClick={() => setIsCustomPlanOpen(true)}>Set Custom Plan</Button>
+          <Button variant="secondary" onClick={() => setIsCustomPlanOpen(true)}>
+            {subscription?.plan === "custom" ? "Edit Custom Plan" : "Set Custom Plan"}
+          </Button>
+          {subscription?.plan === "custom" && (
+            <Button
+              variant="destructive"
+              onClick={async () => {
+                if (!confirm("Remove custom plan and revert to their current standard tier?")) return;
+                const res = await adminFetch(`/admin/customers/${id}`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ tier: customer.onboarding_form?.approved_tier === "custom" ? "starter" : (customer.onboarding_form?.approved_tier || "starter") })
+                });
+                if (res.ok) { alert("Custom plan removed. Reverted to standard tier."); fetchCustomer(); }
+                else { const e = await res.json().catch(()=>({})); alert(`Failed: ${e.detail}`); }
+              }}
+            >Remove Custom Plan</Button>
+          )}
           <Button variant="outline" onClick={handleRetryProvisioning}>Retry Provisioning</Button>
           <Button variant="destructive" onClick={handleSuspend}>Suspend Account</Button>
         </div>
@@ -504,7 +543,18 @@ export default function CustomerDetailPage() {
               </div>
               <div>
                 <Label className="text-muted-foreground text-xs">Current Tier</Label>
-                <div className="mt-1"><Badge>{currentPlan}</Badge></div>
+                <div className="mt-1 flex items-center gap-2">
+                  <Badge>{currentPlan}</Badge>
+                  {subscription?.plan === "custom" && subscription?.custom_plan_label && (
+                    <Badge variant="outline" className="text-xs text-purple-700 border-purple-300">{subscription.custom_plan_label}</Badge>
+                  )}
+                </div>
+                {subscription?.plan === "custom" && subscription?.custom_config && (
+                  <div className="mt-2 text-xs text-muted-foreground space-y-0.5">
+                    <p>⚡ {subscription.per_minute_rate_paise} paise/min · {subscription.custom_config.concurrent_call_limit} concurrent calls</p>
+                    <p>🤖 LLM: {subscription.custom_config.llm_model} · TTS: {subscription.custom_config.tts_provider} · STT: {subscription.custom_config.stt_provider}</p>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -777,8 +827,6 @@ export default function CustomerDetailPage() {
                 <SelectContent>
                   <SelectItem value="gpt-4o-mini">gpt-4o-mini</SelectItem>
                   <SelectItem value="gpt-4o">gpt-4o</SelectItem>
-                  <SelectItem value="claude-3-5-sonnet">claude-3-5-sonnet</SelectItem>
-                  <SelectItem value="llama3-70b-8192">llama3-70b-8192</SelectItem>
                 </SelectContent>
               </Select>
             </div>

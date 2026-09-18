@@ -385,6 +385,21 @@ async def get_customer_agents(customer_id: int, db: AsyncSession = Depends(get_d
     result = await db.execute(select(Agent).where(Agent.customer_id == customer_id))
     return result.scalars().all()
 
+@router.get("/customers/{customer_id}/subscription")
+async def get_customer_subscription(customer_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    """Return the subscription record for a customer, including custom_config for the admin UI."""
+    result = await db.execute(select(Subscription).where(Subscription.customer_id == customer_id))
+    sub = result.scalar_one_or_none()
+    if not sub:
+        raise HTTPException(404, "No subscription found for this customer")
+    return {
+        "id": sub.id,
+        "plan": sub.plan,
+        "per_minute_rate_paise": sub.per_minute_rate_paise,
+        "custom_config": getattr(sub, "custom_config", None),
+        "custom_plan_label": getattr(sub, "custom_plan_label", None),
+    }
+
 @router.patch("/customers/{customer_id}/agents/{agent_id}/rate")
 async def update_agent_rate(customer_id: int, agent_id: int, data: UpdateAgentRateRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
     result = await db.execute(select(Agent).where(Agent.id == agent_id, Agent.customer_id == customer_id))
