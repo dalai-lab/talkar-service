@@ -1,4 +1,5 @@
 import logging
+import json
 from datetime import datetime, timedelta
 from sqlalchemy import select, update, text
 from sqlalchemy.sql import func
@@ -80,7 +81,7 @@ async def check_suspensions(ctx):
     """
     logger.info("Checking for overdue zero-balance accounts...")
     async with AsyncSessionLocal() as db:
-        # Suspend accounts dormant for 14+ days
+        # Suspend accounts dormant for 14+ days — fetch IDs first, then handle per-row
         suspend_query = text("""
             WITH MasterSuspensions AS (
                 SELECT w.customer_id FROM wallets w
@@ -96,22 +97,36 @@ async def check_suspensions(ctx):
             WHERE status = 'active'
               AND (id IN (SELECT customer_id FROM MasterSuspensions)
                    OR billing_org_id IN (SELECT customer_id FROM MasterSuspensions))
-            RETURNING id, dograh_org_id, contact_email
+            RETURNING id, dograh_org_id, contact_email, onboarding_form
         """)
         suspended_result = await db.execute(suspend_query)
-        for row in suspended_result:
+        suspended_rows = suspended_result.fetchall()
+
+        # Write suspension reason into onboarding_form for each suspended customer
+        for row in suspended_rows:
+            existing_form = row.onboarding_form or {}
+            existing_form["suspension_reason"] = "zero_balance"
+            existing_form["suspension_message"] = ""
+            await db.execute(
+                text("UPDATE customers SET onboarding_form = :form WHERE id = :id"),
+                {"form": json.dumps(existing_form), "id": row.id}
+            )
+
+        await db.commit()
+
+        # Block calls + notify after commit so DB state is consistent
+        for row in suspended_rows:
             logger.info(f"Suspended customer {row.id}")
-            # Block calls in Dograh immediately — this is the actual enforcement
             if row.dograh_org_id:
                 try:
                     await dograh_client.block_org_calls(row.dograh_org_id)
                 except Exception as e:
                     logger.error(f"Failed to block calls for suspended org {row.dograh_org_id}: {e}")
-            await notification_service.send_email(
-                to_email=row.contact_email,
-                subject="Account Suspended",
-                body="Your account has been suspended due to 14 days of zero balance. Please top up to reactivate."
-            )
+            # Use the reason-aware notification (sends in-app push + email)
+            try:
+                await notification_service.notify_customer_suspended(row.id, reason="zero_balance")
+            except Exception as e:
+                logger.error(f"Failed to send suspension notification to customer {row.id}: {e}")
 
         # Churn accounts suspended for 45+ days
         churn_query = text("""
@@ -128,8 +143,6 @@ async def check_suspensions(ctx):
                     await dograh_client.archive_org(row.dograh_org_id)
                 except Exception as e:
                     logger.error(f"Failed to archive Dograh org {row.dograh_org_id} for churned customer {row.id}: {e}")
-                    # In a real app we might revert the churn status so it retries, 
-                    # but for now we'll just log it and proceed to email them.
                     
             if row.contact_email and "@" in row.contact_email:
                 await notification_service.send_email(
