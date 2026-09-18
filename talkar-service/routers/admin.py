@@ -531,10 +531,27 @@ class SupportRequestUpdate(BaseModel):
     admin_note: Optional[str] = None
 
 @router.get("/support-requests")
-async def get_all_support_requests(db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+async def get_all_support_requests(
+    req_type: Optional[str] = None,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin)
+):
     from db.models import SupportRequest
-    # Need to join with Customer to get company name and email
     query = select(SupportRequest, Customer).join(Customer, SupportRequest.customer_id == Customer.id).order_by(SupportRequest.created_at.desc())
+    if req_type and req_type != "all":
+        query = query.where(SupportRequest.type == req_type)
+    if status and status != "all":
+        query = query.where(SupportRequest.status == status)
+    if search:
+        s = f"%{search.strip()}%"
+        query = query.where(
+            (Customer.company_name.ilike(s)) |
+            (Customer.contact_email.ilike(s)) |
+            (SupportRequest.subject.ilike(s)) |
+            (SupportRequest.description.ilike(s))
+        )
     result = await db.execute(query)
     
     response = []
@@ -546,7 +563,9 @@ async def get_all_support_requests(db: AsyncSession = Depends(get_db), current_a
             "description": req.description,
             "status": req.status,
             "admin_note": req.admin_note,
-            "created_at": req.created_at,
+            "resolved_by": req.resolved_by,
+            "created_at": req.created_at.isoformat() if req.created_at else None,
+            "resolved_at": req.resolved_at.isoformat() if req.resolved_at else None,
             "customer": {
                 "id": customer.id,
                 "company_name": customer.company_name,
@@ -557,6 +576,7 @@ async def get_all_support_requests(db: AsyncSession = Depends(get_db), current_a
         response.append(data)
     return response
 
+@router.patch("/support-requests/{req_id}")
 @router.patch("/support-requests/{req_id}/resolve")
 async def update_support_request(req_id: int, data: SupportRequestUpdate, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
     from db.models import SupportRequest
@@ -566,14 +586,25 @@ async def update_support_request(req_id: int, data: SupportRequestUpdate, db: As
     
     if data.status:
         req.status = data.status
-        if data.status in ["resolved", "closed"]:
+        if data.status in ["resolved", "closed", "approved", "rejected"]:
             req.resolved_at = func.now()
             req.resolved_by = current_admin.name
     if data.admin_note is not None:
         req.admin_note = data.admin_note
         
     await db.commit()
-    return {"status": "success"}
+    return {"status": "success", "id": req.id, "status_value": req.status}
+
+@router.delete("/support-requests/{req_id}")
+async def delete_support_request(req_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    from db.models import SupportRequest
+    result = await db.execute(select(SupportRequest).where(SupportRequest.id == req_id))
+    req = result.scalar_one_or_none()
+    if not req: raise HTTPException(404, "Support request not found")
+    
+    await db.delete(req)
+    await db.commit()
+    return {"status": "deleted", "id": req_id}
 
 # --- BUILD QUEUE ---
 

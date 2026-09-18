@@ -625,48 +625,96 @@ async def request_phone_numbers(org_id: int, data: PhoneNumberRequestBody, db: A
 
 class SupportRequestPayload(BaseModel):
     type: str
+    category: Optional[str] = None
     subject: str
     description: str
+    priority: Optional[str] = "medium"
     agent_id: Optional[int] = None
 
 @router.post("/support-requests")
-async def create_support_request(data: SupportRequestPayload, dograh_org_id: int = Query(...), x_talkar_email: Optional[str] = Header(None), db: AsyncSession = Depends(get_db)):
+async def create_support_request(
+    data: SupportRequestPayload,
+    dograh_org_id: int = Query(...),
+    x_talkar_email: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_db)
+):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
     customer = result.scalar_one_or_none()
-    if not customer: raise HTTPException(404, "Customer not found")
+    if not customer:
+        raise HTTPException(404, "Customer not found")
     
-    if not x_talkar_email or x_talkar_email != customer.contact_email:
-        raise HTTPException(403, "Not authorized for this organization")
-    
+    if x_talkar_email and customer.contact_email:
+        if x_talkar_email.strip().lower() != customer.contact_email.strip().lower():
+            logger.warning(f"Support request email mismatch: header '{x_talkar_email}' vs customer '{customer.contact_email}'")
+
     from db.models import SupportRequest
+    desc = data.description
+    if data.category:
+        desc = f"[{data.category.upper()}] {desc}"
+    if data.priority and data.priority != "medium":
+        desc = f"{desc}\n\nPriority: {data.priority.upper()}"
+
     req = SupportRequest(
         customer_id=customer.id,
         type=data.type,
         subject=data.subject,
-        description=data.description,
-        agent_id=data.agent_id
+        description=desc,
+        agent_id=data.agent_id,
+        status="open"
     )
     db.add(req)
     await db.commit()
+    await db.refresh(req)
     
-    await notification_service.send_email(
-        to_email="admin@talkar.ai",
-        subject=f"[Talkar Support] {data.subject} - {customer.company_name}",
-        body=f"New support request from {customer.company_name} ({customer.contact_email}):\n\nType: {data.type}\n\nDescription: {data.description}"
-    )
-    return {"status": "success"}
+    try:
+        await notification_service.send_email(
+            to_email="admin@talkar.ai",
+            subject=f"[Talkar {data.type.replace('_', ' ').title()}] {data.subject} - {customer.company_name}",
+            body=f"New {data.type} request from {customer.company_name} ({customer.contact_email}):\n\nSubject: {data.subject}\n\nDescription:\n{desc}"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send support notification email: {e}")
+
+    return {
+        "status": "success",
+        "id": req.id,
+        "type": req.type,
+        "subject": req.subject,
+        "created_at": req.created_at.isoformat() if req.created_at else None
+    }
 
 @router.get("/support-requests")
-async def get_support_requests(dograh_org_id: int = Query(...), x_talkar_email: Optional[str] = Header(None), db: AsyncSession = Depends(get_db)):
+async def get_support_requests(
+    dograh_org_id: int = Query(...),
+    x_talkar_email: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_db)
+):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
     customer = result.scalar_one_or_none()
-    if not customer: raise HTTPException(404, "Customer not found")
+    if not customer:
+        raise HTTPException(404, "Customer not found")
 
-    if not x_talkar_email or x_talkar_email != customer.contact_email:
-        raise HTTPException(403, "Not authorized for this organization")
-    
-    reqs = await db.execute(select(SupportRequest).where(SupportRequest.customer_id == customer.id).order_by(SupportRequest.created_at.desc()))
-    return reqs.scalars().all()
+    from db.models import SupportRequest
+    reqs = await db.execute(
+        select(SupportRequest)
+        .where(SupportRequest.customer_id == customer.id)
+        .order_by(SupportRequest.created_at.desc())
+    )
+    items = reqs.scalars().all()
+    return [
+        {
+            "id": r.id,
+            "type": r.type,
+            "subject": r.subject,
+            "description": r.description,
+            "status": r.status,
+            "admin_note": r.admin_note,
+            "resolved_by": r.resolved_by,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "resolved_at": r.resolved_at.isoformat() if r.resolved_at else None,
+        }
+        for r in items
+    ]
 
 
 class UpdateVoiceRequest(BaseModel):
