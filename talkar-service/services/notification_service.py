@@ -5,7 +5,10 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from config import settings
 from db.session import AsyncSessionLocal
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Any, List, Optional
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
