@@ -1,6 +1,6 @@
 "use client";
-import { adminFetch } from "@/lib/api";
 
+import { adminFetch } from "@/lib/api";
 import React, { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -10,6 +10,23 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription, DialogTrigger } from "@/components/ui/dialog";
+import { 
+  ArrowLeft, 
+  ExternalLink, 
+  FileText, 
+  Download, 
+  UserCheck, 
+  CreditCard, 
+  MinusCircle, 
+  Sliders, 
+  Settings2, 
+  AlertTriangle, 
+  RefreshCw, 
+  Ban, 
+  PhoneCall, 
+  Bot, 
+  ShieldAlert
+} from "lucide-react";
 
 const DocumentViewer = ({ title, dataUrl }: { title: string, dataUrl: string }) => {
   const isPdf = dataUrl.startsWith("data:application/pdf");
@@ -25,32 +42,38 @@ const DocumentViewer = ({ title, dataUrl }: { title: string, dataUrl: string }) 
   };
 
   return (
-    <div className="flex items-center gap-4">
+    <div className="flex items-center gap-2.5 bg-slate-50 p-2.5 px-3 rounded-lg border border-slate-200 text-xs">
       <Dialog>
-        <DialogTrigger render={<Button variant="link" className="p-0 h-auto text-sm text-blue-600" />}>
-          📄 {title} (View)
+        <DialogTrigger render={<Button variant="link" className="p-0 h-auto text-xs text-indigo-600 font-medium hover:underline flex items-center gap-1.5" />}>
+          <FileText className="w-3.5 h-3.5" /> {title} (View)
         </DialogTrigger>
-        <DialogContent className="max-w-4xl w-full h-[80vh] flex flex-col">
+        <DialogContent className="max-w-4xl w-full h-[80vh] flex flex-col bg-white border-slate-200">
           <DialogHeader>
-            <DialogTitle>{title}</DialogTitle>
+            <DialogTitle className="text-sm font-semibold">{title}</DialogTitle>
           </DialogHeader>
-          <div className="flex-1 overflow-auto bg-zinc-100/50 rounded-md border flex items-center justify-center p-4">
+          <div className="flex-1 overflow-auto bg-slate-50 rounded-lg border border-slate-200 flex items-center justify-center p-4">
             {isPdf ? (
-              <iframe src={dataUrl} className="w-full h-full border-0 rounded-md bg-white" title={title} />
+              <iframe src={dataUrl} className="w-full h-full border-0 rounded-lg bg-white" title={title} />
             ) : isImage ? (
-              <img src={dataUrl} alt={title} className="max-w-full max-h-full object-contain rounded-md shadow-sm" />
+              <img src={dataUrl} alt={title} className="max-w-full max-h-full object-contain rounded-lg shadow-sm" />
             ) : (
-              <p className="text-muted-foreground text-sm">Preview not available for this file type.</p>
+              <p className="text-slate-400 text-xs">Preview not available for this file type.</p>
             )}
           </div>
         </DialogContent>
       </Dialog>
-      <a href={dataUrl} download={`${title.replace(/\s+/g, '_').toLowerCase()}.${getExtension()}`} className="text-xs text-zinc-500 hover:text-zinc-800 underline underline-offset-2">
-        Download
+      <span className="text-slate-300">•</span>
+      <a 
+        href={dataUrl} 
+        download={`${title.replace(/\s+/g, '_').toLowerCase()}.${getExtension()}`} 
+        className="text-xs text-slate-500 hover:text-slate-900 inline-flex items-center gap-1 font-medium"
+      >
+        <Download className="w-3 h-3" /> Download
       </a>
     </div>
   );
 };
+
 export default function CustomerDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -96,6 +119,7 @@ export default function CustomerDetailPage() {
   const [phoneNumberInput, setPhoneNumberInput] = useState("");
   const [plivoIdInput, setPlivoIdInput] = useState("");
   const [isAssigningPhone, setIsAssigningPhone] = useState(false);
+  const [isImpersonating, setIsImpersonating] = useState(false);
 
   useEffect(() => {
     fetchCustomer();
@@ -113,12 +137,10 @@ export default function CustomerDetailPage() {
         setCustomer(data);
         setNewPlan(data.onboarding_form?.approved_tier || "");
       }
-      // Also fetch subscription to pre-fill custom plan modal
       const subRes = await adminFetch(`/admin/customers/${id}/subscription`);
       if (subRes.ok) {
         const subData = await subRes.json();
         setSubscription(subData);
-        // Pre-fill custom plan modal with existing values if on a custom plan
         if (subData?.plan === "custom" && subData?.custom_config) {
           const cc = subData.custom_config;
           setCustomPricing({
@@ -329,7 +351,6 @@ export default function CustomerDetailPage() {
     }
   };
 
-  const [isImpersonating, setIsImpersonating] = useState(false);
   const handleImpersonate = async () => {
     setIsImpersonating(true);
     try {
@@ -338,8 +359,6 @@ export default function CustomerDetailPage() {
         const data = await res.json();
         const token = data.access_token;
         const refreshToken = data.refresh_token;
-        // The main site lives at talkar.in. When impersonating locally, we might need to point to localhost or talkar.in.
-        // The auth route is /auth/impersonate
         const TALKAR_UI_URL = process.env.NEXT_PUBLIC_TALKAR_URL || "https://talkar.in";
         let url = `${TALKAR_UI_URL}/auth/impersonate?token=${token}`;
         if (refreshToken) {
@@ -358,62 +377,121 @@ export default function CustomerDetailPage() {
     }
   };
 
-  if (loading) return <div>Loading...</div>;
-  if (!customer) return <div>Customer not found.</div>;
+  if (loading) {
+    return (
+      <div className="py-24 text-center text-slate-400">
+        <div className="w-6 h-6 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+        <p className="text-xs">Loading customer details...</p>
+      </div>
+    );
+  }
+
+  if (!customer) {
+    return (
+      <div className="py-24 text-center text-slate-500">
+        <p className="text-sm">Customer not found.</p>
+        <Button variant="link" onClick={() => router.push('/customers')} className="mt-2 text-xs">
+          ← Return to directory
+        </Button>
+      </div>
+    );
+  }
 
   const currentPlan = customer.onboarding_form?.approved_tier || "None";
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <div>
-          <Button variant="link" className="p-0 h-auto mb-2" onClick={() => router.push('/customers')}>
-            ← Back to Directory
-          </Button>
-          <h2 className="text-3xl font-bold tracking-tight">{customer.company_name}</h2>
-          <div className="flex gap-2 mt-2">
-            <Badge variant="outline">ID: {customer.id}</Badge>
-            <Badge>{customer.status}</Badge>
+      {/* Header & Back Navigation */}
+      <div>
+        <Button 
+          variant="ghost" 
+          className="p-0 h-auto mb-3 text-xs text-slate-500 hover:text-slate-900 cursor-pointer inline-flex items-center gap-1.5"
+          onClick={() => router.push('/customers')}
+        >
+          <ArrowLeft className="w-3.5 h-3.5" /> Back to Customer Directory
+        </Button>
+
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-4 border-b border-slate-200/70">
+          <div>
+            <div className="flex items-center gap-3">
+              <h1 className="text-2xl font-bold tracking-tight text-slate-900">{customer.company_name}</h1>
+              <Badge variant="outline" className="text-xs font-mono bg-white">ID #{customer.id}</Badge>
+              <Badge className={customer.status === 'active' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-700 border-slate-200'}>
+                {customer.status}
+              </Badge>
+            </div>
+            <p className="text-xs text-slate-500 mt-1">
+              Contact: {customer.contact_name} ({customer.contact_email})
+            </p>
           </div>
-        </div>
-        <div className="space-x-2">
-          <Button variant="default" onClick={handleImpersonate} disabled={isImpersonating}>
-            {isImpersonating ? "..." : "Impersonate User"}
-          </Button>
-          <Button variant="outline" onClick={() => setIsCreditOpen(true)}>Grant Manual Credit</Button>
-          <Button variant="outline" onClick={() => setIsDeductOpen(true)}>Deduct Balance</Button>
-          <Button variant="outline" onClick={() => setIsPlanOpen(true)}>Change Tier</Button>
-          <Button variant="secondary" onClick={() => setIsCustomPlanOpen(true)}>
-            {subscription?.plan === "custom" ? "Edit Custom Plan" : "Set Custom Plan"}
-          </Button>
-          {subscription?.plan === "custom" && (
-            <Button
-              variant="destructive"
-              onClick={async () => {
-                if (!confirm("Remove custom plan and revert to their current standard tier?")) return;
-                const res = await adminFetch(`/admin/customers/${id}`, {
-                  method: "PATCH",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ tier: customer.onboarding_form?.approved_tier === "custom" ? "starter" : (customer.onboarding_form?.approved_tier || "starter") })
-                });
-                if (res.ok) { alert("Custom plan removed. Reverted to standard tier."); fetchCustomer(); }
-                else { const e = await res.json().catch(()=>({})); alert(`Failed: ${e.detail}`); }
-              }}
-            >Remove Custom Plan</Button>
-          )}
-          <Button variant="outline" onClick={handleRetryProvisioning}>Retry Provisioning</Button>
-          <Button variant="destructive" onClick={handleSuspend}>Suspend Account</Button>
+
+          {/* Action Toolbar */}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button 
+              size="sm" 
+              onClick={handleImpersonate} 
+              disabled={isImpersonating}
+              className="h-8 text-xs bg-indigo-600 hover:bg-indigo-700 text-white font-medium"
+            >
+              <UserCheck className="w-3.5 h-3.5 mr-1.5" />
+              {isImpersonating ? "Connecting..." : "Impersonate"}
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setIsCreditOpen(true)} className="h-8 text-xs border-slate-200 bg-white hover:bg-slate-50">
+              <CreditCard className="w-3.5 h-3.5 mr-1.5 text-emerald-600" /> Credit
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setIsDeductOpen(true)} className="h-8 text-xs border-slate-200 bg-white hover:bg-slate-50">
+              <MinusCircle className="w-3.5 h-3.5 mr-1.5 text-amber-600" /> Deduct
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setIsPlanOpen(true)} className="h-8 text-xs border-slate-200 bg-white hover:bg-slate-50">
+              <Sliders className="w-3.5 h-3.5 mr-1.5 text-blue-600" /> Tier
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setIsCustomPlanOpen(true)} className="h-8 text-xs border-purple-200 bg-purple-50/50 hover:bg-purple-100 text-purple-700">
+              <Settings2 className="w-3.5 h-3.5 mr-1.5" />
+              {subscription?.plan === "custom" ? "Edit Custom Plan" : "Set Custom Plan"}
+            </Button>
+            {subscription?.plan === "custom" && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs border-red-200 bg-red-50/50 hover:bg-red-100 text-red-600"
+                onClick={async () => {
+                  if (!confirm("Remove custom plan and revert to their current standard tier?")) return;
+                  const res = await adminFetch(`/admin/customers/${id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ tier: customer.onboarding_form?.approved_tier === "custom" ? "starter" : (customer.onboarding_form?.approved_tier || "starter") })
+                  });
+                  if (res.ok) { alert("Custom plan removed. Reverted to standard tier."); fetchCustomer(); }
+                  else { const e = await res.json().catch(()=>({})); alert(`Failed: ${e.detail}`); }
+                }}
+              >Remove Custom Plan</Button>
+            )}
+            <Button variant="outline" size="sm" onClick={handleRetryProvisioning} className="h-8 text-xs border-slate-200 bg-white hover:bg-slate-50">
+              <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Retry Sync
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleSuspend} className="h-8 text-xs border-red-200 text-red-600 hover:bg-red-50">
+              <Ban className="w-3.5 h-3.5 mr-1.5" /> Suspend
+            </Button>
+          </div>
         </div>
       </div>
 
+      {/* Upgrade Request Pending Alert */}
       {customer.onboarding_form?.tier_upgrade_requested && (
-        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4">
-          <p className="font-medium">⚠️ Tier Upgrade Request Pending</p>
-          <p className="text-sm text-muted-foreground mt-1">
-            Customer requested upgrade to <strong>{customer.onboarding_form.tier_upgrade_requested}</strong>.
-          </p>
-          <div className="mt-3 flex gap-2">
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <p className="font-semibold text-xs text-amber-900 flex items-center gap-1.5">
+              <AlertTriangle className="w-4 h-4 text-amber-600" />
+              Tier Upgrade Request Pending
+            </p>
+            <p className="text-xs text-amber-800 mt-1">
+              Customer requested upgrade to <strong className="uppercase font-bold">{customer.onboarding_form.tier_upgrade_requested}</strong> tier.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
             <Button 
+              size="sm"
+              className="h-7 px-3 text-xs bg-amber-600 hover:bg-amber-700 text-white font-medium"
               onClick={() => {
                 setNewPlan(customer.onboarding_form.tier_upgrade_requested);
                 setIsPlanOpen(true);
@@ -421,136 +499,138 @@ export default function CustomerDetailPage() {
             >
               Approve Upgrade
             </Button>
-            <Button variant="outline" onClick={handleDenyUpgrade}>
+            <Button variant="outline" size="sm" onClick={handleDenyUpgrade} className="h-7 px-3 text-xs border-amber-200 bg-white text-amber-800 hover:bg-amber-50">
               Deny Request
             </Button>
           </div>
         </div>
       )}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+      {/* Information Cards Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Contact Information */}
-        <Card>
-          <CardHeader><CardTitle className="text-base font-semibold">Contact Information</CardTitle></CardHeader>
-          <CardContent className="space-y-4 text-sm">
+        <Card className="bg-white border border-slate-200/80 rounded-xl shadow-none">
+          <CardHeader className="p-4 pb-2 border-b border-slate-100"><CardTitle className="text-xs font-semibold text-slate-900 uppercase tracking-wider">Contact Information</CardTitle></CardHeader>
+          <CardContent className="p-4 space-y-3 text-xs">
             <div>
-              <Label className="text-muted-foreground text-xs">Primary Contact Name</Label>
-              <p className="font-medium">{customer.contact_name || customer.onboarding_form?.pocName || "N/A"}</p>
+              <Label className="text-slate-400 text-[11px] font-medium">Primary Contact Name</Label>
+              <p className="font-semibold text-slate-900 mt-0.5">{customer.contact_name || customer.onboarding_form?.pocName || "N/A"}</p>
             </div>
             {customer.onboarding_form?.pocDesignation && (
               <div>
-                <Label className="text-muted-foreground text-xs">Designation / Role</Label>
-                <p>{customer.onboarding_form.pocDesignation}</p>
+                <Label className="text-slate-400 text-[11px] font-medium">Designation / Role</Label>
+                <p className="text-slate-800 mt-0.5">{customer.onboarding_form.pocDesignation}</p>
               </div>
             )}
             <div>
-              <Label className="text-muted-foreground text-xs">Email Address</Label>
-              <p>{customer.contact_email || "N/A"}</p>
+              <Label className="text-slate-400 text-[11px] font-medium">Email Address</Label>
+              <p className="text-slate-800 font-mono mt-0.5">{customer.contact_email || "N/A"}</p>
             </div>
             <div>
-              <Label className="text-muted-foreground text-xs">Phone Number</Label>
-              <p>{customer.contact_phone || customer.onboarding_form?.pocPhone || "N/A"}</p>
+              <Label className="text-slate-400 text-[11px] font-medium">Phone Number</Label>
+              <p className="text-slate-800 font-mono mt-0.5">{customer.contact_phone || customer.onboarding_form?.pocPhone || "N/A"}</p>
             </div>
           </CardContent>
         </Card>
 
-        {/* Business & Company Profile */}
-        <Card>
-          <CardHeader><CardTitle className="text-base font-semibold">Business & Company Profile</CardTitle></CardHeader>
-          <CardContent className="space-y-4 text-sm">
+        {/* Business Profile */}
+        <Card className="bg-white border border-slate-200/80 rounded-xl shadow-none">
+          <CardHeader className="p-4 pb-2 border-b border-slate-100"><CardTitle className="text-xs font-semibold text-slate-900 uppercase tracking-wider">Business & Company Profile</CardTitle></CardHeader>
+          <CardContent className="p-4 space-y-3 text-xs">
             <div>
-              <Label className="text-muted-foreground text-xs">Company / Legal Name</Label>
-              <p className="font-medium">{customer.company_name || customer.onboarding_form?.businessName || "N/A"}</p>
+              <Label className="text-slate-400 text-[11px] font-medium">Company / Legal Name</Label>
+              <p className="font-semibold text-slate-900 mt-0.5">{customer.company_name || customer.onboarding_form?.businessName || "N/A"}</p>
             </div>
             <div>
-              <Label className="text-muted-foreground text-xs">Industry</Label>
-              <p>{customer.industry || customer.onboarding_form?.industry || "N/A"}</p>
+              <Label className="text-slate-400 text-[11px] font-medium">Industry</Label>
+              <p className="text-slate-800 mt-0.5">{customer.industry || customer.onboarding_form?.industry || "N/A"}</p>
             </div>
             <div>
-              <Label className="text-muted-foreground text-xs">GST Number</Label>
-              <p className="font-mono">{customer.onboarding_form?.gstNumber || "N/A"}</p>
+              <Label className="text-slate-400 text-[11px] font-medium">GST Number</Label>
+              <p className="font-mono text-slate-800 mt-0.5">{customer.onboarding_form?.gstNumber || "N/A"}</p>
             </div>
             <div>
-              <Label className="text-muted-foreground text-xs">Company Size</Label>
-              <p>{customer.onboarding_form?.companySize || "N/A"}</p>
+              <Label className="text-slate-400 text-[11px] font-medium">Company Size</Label>
+              <p className="text-slate-800 mt-0.5">{customer.onboarding_form?.companySize || "N/A"}</p>
             </div>
             <div>
-              <Label className="text-muted-foreground text-xs">Website</Label>
+              <Label className="text-slate-400 text-[11px] font-medium">Website</Label>
               {customer.onboarding_form?.websiteUrl ? (
-                <p>
+                <p className="mt-0.5">
                   <a 
                     href={customer.onboarding_form.websiteUrl.startsWith("http") ? customer.onboarding_form.websiteUrl : `https://${customer.onboarding_form.websiteUrl}`}
                     target="_blank" 
                     rel="noreferrer" 
-                    className="text-blue-600 hover:underline"
+                    className="text-indigo-600 hover:underline inline-flex items-center gap-1"
                   >
-                    {customer.onboarding_form.websiteUrl}
+                    {customer.onboarding_form.websiteUrl} <ExternalLink className="w-3 h-3" />
                   </a>
                 </p>
               ) : (
-                <p className="text-muted-foreground">N/A</p>
+                <p className="text-slate-400 mt-0.5">N/A</p>
               )}
             </div>
           </CardContent>
         </Card>
 
         {/* Agent & Use Case Requirements */}
-        <Card className="md:col-span-2">
-          <CardHeader><CardTitle className="text-base font-semibold">Agent & Use Case Requirements</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+        <Card className="bg-white border border-slate-200/80 rounded-xl shadow-none md:col-span-2">
+          <CardHeader className="p-4 pb-2 border-b border-slate-100"><CardTitle className="text-xs font-semibold text-slate-900 uppercase tracking-wider">Agent & Use Case Requirements</CardTitle></CardHeader>
+          <CardContent className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
             <div>
-              <Label className="text-muted-foreground text-xs">Call Type / Direction</Label>
-              <p className="font-medium capitalize">{customer.onboarding_form?.useCaseType || "N/A"}</p>
+              <Label className="text-slate-400 text-[11px] font-medium">Call Type / Direction</Label>
+              <p className="font-semibold capitalize text-slate-800 mt-0.5">{customer.onboarding_form?.useCaseType || "N/A"}</p>
             </div>
             <div>
-              <Label className="text-muted-foreground text-xs">Expected Monthly Call Volume</Label>
-              <p>{customer.onboarding_form?.callVolume || "N/A"}</p>
+              <Label className="text-slate-400 text-[11px] font-medium">Expected Monthly Call Volume</Label>
+              <p className="text-slate-800 mt-0.5">{customer.onboarding_form?.callVolume || "N/A"}</p>
             </div>
             <div>
-              <Label className="text-muted-foreground text-xs">Target Languages</Label>
-              <p>{customer.onboarding_form?.languages || "N/A"}</p>
+              <Label className="text-slate-400 text-[11px] font-medium">Target Languages</Label>
+              <p className="text-slate-800 mt-0.5">{customer.onboarding_form?.languages || "N/A"}</p>
             </div>
             <div>
-              <Label className="text-muted-foreground text-xs">CRM & Software Integrations</Label>
-              <p>{customer.onboarding_form?.integrations || "N/A"}</p>
+              <Label className="text-slate-400 text-[11px] font-medium">CRM & Software Integrations</Label>
+              <p className="text-slate-800 mt-0.5">{customer.onboarding_form?.integrations || "N/A"}</p>
             </div>
             <div className="md:col-span-2">
-              <Label className="text-muted-foreground text-xs">Use Case Description & Prompt Specifications</Label>
-              <p className="mt-1 whitespace-pre-wrap bg-zinc-50 dark:bg-zinc-900 p-3 rounded-md border text-zinc-800 dark:text-zinc-200">
+              <Label className="text-slate-400 text-[11px] font-medium">Use Case Description & Prompt Specifications</Label>
+              <p className="mt-1 whitespace-pre-wrap bg-slate-50 p-3 rounded-lg border border-slate-200 text-slate-800 leading-relaxed text-xs">
                 {customer.onboarding_form?.useCaseDescription || "No detailed description provided."}
               </p>
             </div>
             {customer.onboarding_form?.needsApiIntegration && (
-              <div className="md:col-span-2 bg-blue-50/60 dark:bg-blue-950/30 border border-blue-200 rounded-md p-3">
-                <Label className="text-blue-900 dark:text-blue-300 font-semibold text-xs block mb-1">Custom API Integration Requested</Label>
-                <p className="text-blue-800 dark:text-blue-200">{customer.onboarding_form.apiIntegrationDetails || "Requested, details pending."}</p>
+              <div className="md:col-span-2 bg-blue-50/70 border border-blue-200 rounded-lg p-3">
+                <Label className="text-blue-900 font-semibold text-[11px] block mb-1">Custom API Integration Requested</Label>
+                <p className="text-blue-800 text-xs">{customer.onboarding_form.apiIntegrationDetails || "Requested, details pending."}</p>
               </div>
             )}
           </CardContent>
         </Card>
 
         {/* Documents & System Info */}
-        <Card className="md:col-span-2">
-          <CardHeader><CardTitle className="text-base font-semibold">Verification Documents & System Identifiers</CardTitle></CardHeader>
-          <CardContent className="space-y-4 text-sm">
+        <Card className="bg-white border border-slate-200/80 rounded-xl shadow-none md:col-span-2">
+          <CardHeader className="p-4 pb-2 border-b border-slate-100"><CardTitle className="text-xs font-semibold text-slate-900 uppercase tracking-wider">Verification Documents & System Identifiers</CardTitle></CardHeader>
+          <CardContent className="p-4 space-y-4 text-xs">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
-                <Label className="text-muted-foreground text-xs">Dograh Org ID</Label>
-                <p className="font-mono">{customer.dograh_org_id || "Unprovisioned"}</p>
+                <Label className="text-slate-400 text-[11px] font-medium">Dograh Org ID</Label>
+                <p className="font-mono text-slate-800 mt-0.5 font-semibold">{customer.dograh_org_id || "Unprovisioned"}</p>
               </div>
               <div>
-                <Label className="text-muted-foreground text-xs">Master Billing Org ID</Label>
-                <p className="font-mono">{customer.billing_org_id ? `#${customer.billing_org_id}` : "Self (Master)"}</p>
+                <Label className="text-slate-400 text-[11px] font-medium">Master Billing Org ID</Label>
+                <p className="font-mono text-slate-800 mt-0.5 font-semibold">{customer.billing_org_id ? `#${customer.billing_org_id}` : "Self (Master)"}</p>
               </div>
               <div>
-                <Label className="text-muted-foreground text-xs">Current Tier</Label>
+                <Label className="text-slate-400 text-[11px] font-medium">Current Tier & Quotas</Label>
                 <div className="mt-1 flex items-center gap-2">
-                  <Badge>{currentPlan}</Badge>
+                  <Badge className="bg-indigo-50 text-indigo-700 border-indigo-200 font-medium">{currentPlan}</Badge>
                   {subscription?.plan === "custom" && subscription?.custom_plan_label && (
                     <Badge variant="outline" className="text-xs text-purple-700 border-purple-300">{subscription.custom_plan_label}</Badge>
                   )}
                 </div>
                 {subscription?.plan === "custom" && subscription?.custom_config && (
-                  <div className="mt-2 text-xs text-muted-foreground space-y-0.5">
+                  <div className="mt-2 text-xs text-slate-500 space-y-0.5">
                     <p>⚡ {subscription.per_minute_rate_paise} paise/min · {subscription.custom_config.concurrent_call_limit} concurrent calls</p>
                     <p>🤖 LLM: {subscription.custom_config.llm_model} · TTS: {subscription.custom_config.tts_provider} · STT: {subscription.custom_config.stt_provider}</p>
                   </div>
@@ -559,9 +639,9 @@ export default function CustomerDetailPage() {
             </div>
 
             {(customer.onboarding_form?.gstCertificateUrl || customer.onboarding_form?.businessRegistrationUrl) ? (
-              <div className="pt-3 border-t">
-                <Label className="text-muted-foreground text-xs mb-2 block font-semibold">Submitted Verification Documents</Label>
-                <div className="flex flex-wrap gap-4">
+              <div className="pt-3 border-t border-slate-100">
+                <Label className="text-slate-500 text-[11px] mb-2 block font-semibold">Submitted Verification Documents</Label>
+                <div className="flex flex-wrap gap-3">
                   {customer.onboarding_form?.gstCertificateUrl && (
                     <DocumentViewer title="GST Certificate" dataUrl={customer.onboarding_form.gstCertificateUrl} />
                   )}
@@ -571,7 +651,7 @@ export default function CustomerDetailPage() {
                 </div>
               </div>
             ) : (
-              <div className="pt-3 border-t text-muted-foreground text-xs">
+              <div className="pt-3 border-t border-slate-100 text-slate-400 text-xs">
                 No verification documents uploaded.
               </div>
             )}
@@ -581,21 +661,21 @@ export default function CustomerDetailPage() {
 
       {/* Raw Form Submission Data Viewer */}
       {customer.onboarding_form && (
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between py-3">
-            <CardTitle className="text-sm font-semibold">Full Form Submission Data (JSON)</CardTitle>
+        <Card className="bg-white border border-slate-200/80 rounded-xl shadow-none">
+          <CardHeader className="flex flex-row items-center justify-between p-4 py-3 border-b border-slate-100">
+            <CardTitle className="text-xs font-semibold text-slate-900 uppercase tracking-wider">Full Form Submission Data (JSON)</CardTitle>
             <Button 
               variant="ghost" 
               size="sm" 
               onClick={() => setShowRawJson(!showRawJson)}
-              className="text-xs"
+              className="text-xs text-slate-500 hover:text-slate-900 h-7"
             >
               {showRawJson ? "Hide Raw Data" : "Show Raw Data"}
             </Button>
           </CardHeader>
           {showRawJson && (
-            <CardContent className="pt-0">
-              <pre className="bg-zinc-950 text-zinc-100 p-4 rounded-md text-xs font-mono overflow-auto max-h-96">
+            <CardContent className="p-4">
+              <pre className="bg-slate-950 text-slate-100 p-4 rounded-lg text-xs font-mono overflow-auto max-h-80 border border-slate-800">
                 {JSON.stringify(customer.onboarding_form, null, 2)}
               </pre>
             </CardContent>
@@ -603,30 +683,31 @@ export default function CustomerDetailPage() {
         </Card>
       )}
 
-      <Card>
-        <CardHeader><CardTitle>Agents & Billing Rates</CardTitle></CardHeader>
-        <CardContent className="space-y-4">
+      {/* Agents & Billing Rates */}
+      <Card className="bg-white border border-slate-200/80 rounded-xl shadow-none">
+        <CardHeader className="p-4 pb-2 border-b border-slate-100"><CardTitle className="text-xs font-semibold text-slate-900 uppercase tracking-wider flex items-center gap-2"><Bot className="w-4 h-4 text-indigo-600" /> Agents & Billing Rates</CardTitle></CardHeader>
+        <CardContent className="p-4 space-y-3">
           {agents.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No agents found.</p>
+            <p className="text-xs text-slate-400 py-2">No agents provisioned for this customer.</p>
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               {agents.map((ag) => (
-                <div key={ag.id} className="flex flex-col md:flex-row justify-between items-start md:items-center bg-background border p-4 rounded-md gap-4">
+                <div key={ag.id} className="flex flex-col md:flex-row justify-between items-start md:items-center bg-slate-50/70 border border-slate-200 p-3.5 rounded-lg gap-3">
                   <div>
-                    <p className="font-medium text-base">{ag.name}</p>
+                    <p className="font-semibold text-sm text-slate-900">{ag.name}</p>
                     <div className="flex gap-2 mt-1">
-                      <Badge variant="outline" className="text-xs">ID: {ag.id}</Badge>
-                      <Badge variant="outline" className="text-xs">Org: {ag.dograh_org_id || 'N/A'}</Badge>
-                      <Badge variant="secondary" className="text-xs">{ag.status}</Badge>
+                      <Badge variant="outline" className="text-[10px] bg-white">ID: {ag.id}</Badge>
+                      <Badge variant="outline" className="text-[10px] bg-white">Org: {ag.dograh_org_id || 'N/A'}</Badge>
+                      <Badge className="text-[10px] bg-emerald-50 text-emerald-700 border-emerald-200">{ag.status}</Badge>
                     </div>
                   </div>
-                  <div className="flex items-center gap-3 bg-muted/30 p-2 rounded-md">
-                    <Label className="text-xs font-semibold whitespace-nowrap">Per-Minute Rate (paise)</Label>
+                  <div className="flex items-center gap-2.5 bg-white p-2 rounded-lg border border-slate-200">
+                    <Label className="text-xs font-medium text-slate-600 whitespace-nowrap">Per-Minute Rate (paise)</Label>
                     <Input 
                       type="number" 
                       placeholder={currentPlan === 'starter' ? '2500' : currentPlan === 'pro' ? '1800' : '1200'}
                       defaultValue={ag.per_minute_rate_paise ?? ""}
-                      className="w-28 text-right font-mono"
+                      className="w-28 text-right font-mono text-xs h-8 bg-white border-slate-200"
                       onBlur={(e) => handleUpdateRate(ag.id, e.target.value)}
                     />
                   </div>
@@ -637,39 +718,40 @@ export default function CustomerDetailPage() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader><CardTitle>Phone Numbers</CardTitle></CardHeader>
-        <CardContent className="space-y-4">
-          <div className="bg-muted/30 p-4 rounded-md space-y-4">
-            <h4 className="font-medium text-sm">Assign New Number</h4>
-            <div className="flex gap-4 items-end">
-              <div className="space-y-2 flex-1">
-                <Label>Phone Number (E.164)</Label>
-                <Input placeholder="+919876543210" value={phoneNumberInput} onChange={e => setPhoneNumberInput(e.target.value)} />
+      {/* Phone Numbers */}
+      <Card className="bg-white border border-slate-200/80 rounded-xl shadow-none">
+        <CardHeader className="p-4 pb-2 border-b border-slate-100"><CardTitle className="text-xs font-semibold text-slate-900 uppercase tracking-wider flex items-center gap-2"><PhoneCall className="w-4 h-4 text-indigo-600" /> Assigned Phone Numbers</CardTitle></CardHeader>
+        <CardContent className="p-4 space-y-4">
+          <div className="bg-slate-50/70 p-3.5 rounded-lg border border-slate-200 space-y-3">
+            <h4 className="font-semibold text-xs text-slate-800">Assign New Telephony Number</h4>
+            <div className="flex flex-col sm:flex-row gap-3 items-end">
+              <div className="space-y-1 flex-1">
+                <Label className="text-[11px] text-slate-500 font-medium">Phone Number (E.164)</Label>
+                <Input placeholder="+919876543210" value={phoneNumberInput} onChange={e => setPhoneNumberInput(e.target.value)} className="h-8 text-xs bg-white border-slate-200" />
               </div>
-              <div className="space-y-2 flex-1">
-                <Label>Plivo / Twilio ID (optional)</Label>
-                <Input placeholder="e.g. 1234567890" value={plivoIdInput} onChange={e => setPlivoIdInput(e.target.value)} />
+              <div className="space-y-1 flex-1">
+                <Label className="text-[11px] text-slate-500 font-medium">Plivo / Twilio ID (optional)</Label>
+                <Input placeholder="e.g. 1234567890" value={plivoIdInput} onChange={e => setPlivoIdInput(e.target.value)} className="h-8 text-xs bg-white border-slate-200" />
               </div>
-              <Button onClick={handleAssignPhone} disabled={isAssigningPhone || !phoneNumberInput}>
+              <Button onClick={handleAssignPhone} disabled={isAssigningPhone || !phoneNumberInput} className="h-8 text-xs bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer">
                 {isAssigningPhone ? "Assigning..." : "Assign Number"}
               </Button>
             </div>
           </div>
           
-          <div className="pt-4 border-t">
-            <h4 className="font-medium text-sm mb-2">Assigned Numbers</h4>
+          <div className="pt-2">
+            <h4 className="font-semibold text-xs text-slate-800 mb-2">Current Active Numbers</h4>
             {phoneNumbers.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No phone numbers assigned.</p>
+              <p className="text-xs text-slate-400 py-1">No phone numbers assigned to this customer.</p>
             ) : (
               <div className="space-y-2">
                 {phoneNumbers.map((pn) => (
-                  <div key={pn.id} className="flex justify-between items-center bg-background border p-3 rounded-md">
+                  <div key={pn.id} className="flex justify-between items-center bg-white border border-slate-200 p-3 rounded-lg text-xs">
                     <div>
-                      <p className="font-mono">{pn.number}</p>
-                      {pn.plivo_number_id && <p className="text-xs text-muted-foreground">Provider ID: {pn.plivo_number_id}</p>}
+                      <p className="font-mono font-semibold text-slate-900">{pn.number}</p>
+                      {pn.plivo_number_id && <p className="text-[11px] text-slate-400">Provider ID: {pn.plivo_number_id}</p>}
                     </div>
-                    <Badge>{pn.status}</Badge>
+                    <Badge className="bg-emerald-50 text-emerald-700 border-emerald-200 font-medium">{pn.status}</Badge>
                   </div>
                 ))}
               </div>
@@ -680,69 +762,69 @@ export default function CustomerDetailPage() {
 
       {/* Grant Credit Modal */}
       <Dialog open={isCreditOpen} onOpenChange={setIsCreditOpen}>
-        <DialogContent>
+        <DialogContent className="bg-white border-slate-200 text-slate-900 rounded-xl">
           <DialogHeader>
-            <DialogTitle>Grant Manual Credit</DialogTitle>
+            <DialogTitle className="text-base font-semibold border-b pb-3">Grant Manual Credit</DialogTitle>
           </DialogHeader>
-          <div className="py-4 space-y-4">
-            <div className="space-y-2">
-              <Label>Amount (INR)</Label>
-              <Input type="number" placeholder="e.g. 5000" value={creditAmount} onChange={e => setCreditAmount(e.target.value)} />
+          <div className="py-3 space-y-3 text-xs">
+            <div className="space-y-1.5">
+              <Label className="text-slate-700 font-medium">Amount (INR)</Label>
+              <Input type="number" placeholder="e.g. 5000" value={creditAmount} onChange={e => setCreditAmount(e.target.value)} className="h-9 text-xs bg-white border-slate-200" />
             </div>
-            <div className="space-y-2">
-              <Label>Description / Reason</Label>
-              <Input placeholder="e.g. Apology for downtime" value={creditDesc} onChange={e => setCreditDesc(e.target.value)} />
+            <div className="space-y-1.5">
+              <Label className="text-slate-700 font-medium">Description / Reason</Label>
+              <Input placeholder="e.g. Apology for downtime" value={creditDesc} onChange={e => setCreditDesc(e.target.value)} className="h-9 text-xs bg-white border-slate-200" />
             </div>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsCreditOpen(false)}>Cancel</Button>
-            <Button onClick={handleGrantCredit} disabled={!creditAmount || !creditDesc}>Grant Credit</Button>
+          <DialogFooter className="border-t pt-3">
+            <Button variant="outline" size="sm" onClick={() => setIsCreditOpen(false)} className="text-xs border-slate-200">Cancel</Button>
+            <Button size="sm" onClick={handleGrantCredit} disabled={!creditAmount || !creditDesc} className="text-xs bg-indigo-600 hover:bg-indigo-700 text-white">Grant Credit</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       {/* Deduct Balance Modal */}
       <Dialog open={isDeductOpen} onOpenChange={setIsDeductOpen}>
-        <DialogContent>
+        <DialogContent className="bg-white border-slate-200 text-slate-900 rounded-xl">
           <DialogHeader>
-            <DialogTitle>Deduct Balance</DialogTitle>
+            <DialogTitle className="text-base font-semibold border-b pb-3 text-red-600">Deduct Balance</DialogTitle>
           </DialogHeader>
-          <div className="py-4 space-y-4">
-            <div className="space-y-2">
-              <Label>Amount (INR)</Label>
-              <Input type="number" placeholder="e.g. 5000" value={deductAmount} onChange={e => setDeductAmount(e.target.value)} />
+          <div className="py-3 space-y-3 text-xs">
+            <div className="space-y-1.5">
+              <Label className="text-slate-700 font-medium">Amount (INR)</Label>
+              <Input type="number" placeholder="e.g. 5000" value={deductAmount} onChange={e => setDeductAmount(e.target.value)} className="h-9 text-xs bg-white border-slate-200" />
             </div>
-            <div className="space-y-2">
-              <Label>Reason</Label>
-              <Input placeholder="e.g. Phone number fee" value={deductReason} onChange={e => setDeductReason(e.target.value)} />
+            <div className="space-y-1.5">
+              <Label className="text-slate-700 font-medium">Reason</Label>
+              <Input placeholder="e.g. Phone number fee" value={deductReason} onChange={e => setDeductReason(e.target.value)} className="h-9 text-xs bg-white border-slate-200" />
             </div>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsDeductOpen(false)}>Cancel</Button>
-            <Button variant="destructive" onClick={handleDeduct} disabled={!deductAmount || !deductReason}>Deduct</Button>
+          <DialogFooter className="border-t pt-3">
+            <Button variant="outline" size="sm" onClick={() => setIsDeductOpen(false)} className="text-xs border-slate-200">Cancel</Button>
+            <Button size="sm" variant="destructive" onClick={handleDeduct} disabled={!deductAmount || !deductReason} className="text-xs">Deduct</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       {/* Plan Upgrade Modal */}
       <Dialog open={isPlanOpen} onOpenChange={setIsPlanOpen}>
-        <DialogContent>
+        <DialogContent className="bg-white border-slate-200 text-slate-900 rounded-xl">
           <DialogHeader>
-            <DialogTitle>Change Tier</DialogTitle>
-            <DialogDescription>
-              Changing the tier will immediately update the customer&apos;s Dograh config (LLM model, concurrent call limits, TTS provider) and subscription pricing.
+            <DialogTitle className="text-base font-semibold border-b pb-3">Change Customer Tier</DialogTitle>
+            <DialogDescription className="text-xs text-slate-500 pt-1">
+              Updating the tier will re-provision Dograh quotas (LLM, TTS, concurrent calls) immediately.
             </DialogDescription>
           </DialogHeader>
-          <div className="py-4 space-y-4">
-            <div className="space-y-2">
-              <Label>Current Tier</Label>
-              <Badge className="block w-fit">{currentPlan}</Badge>
+          <div className="py-3 space-y-3 text-xs">
+            <div className="space-y-1.5">
+              <Label className="text-slate-700 font-medium">Current Tier</Label>
+              <Badge className="bg-slate-100 text-slate-700 border-slate-200 block w-fit font-medium">{currentPlan}</Badge>
             </div>
-            <div className="space-y-2">
-              <Label>New Tier</Label>
+            <div className="space-y-1.5">
+              <Label className="text-slate-700 font-medium">New Tier</Label>
               <Select value={newPlan} onValueChange={(v) => v && setNewPlan(v)}>
-                <SelectTrigger><SelectValue placeholder="Select tier" /></SelectTrigger>
-                <SelectContent>
+                <SelectTrigger className="h-9 text-xs bg-white border-slate-200"><SelectValue placeholder="Select tier" /></SelectTrigger>
+                <SelectContent className="bg-white border-slate-200">
                   <SelectItem value="starter">Starter — ₹6/min · 2 concurrent · Deepgram TTS</SelectItem>
                   <SelectItem value="growth">Growth — ₹6/min · 2 concurrent · Smallest AI TTS (Indian voices)</SelectItem>
                   <SelectItem value="pro">Pro — ₹4/min · 10 concurrent · ElevenLabs TTS</SelectItem>
@@ -750,13 +832,13 @@ export default function CustomerDetailPage() {
                 </SelectContent>
               </Select>
             </div>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-[11px] text-amber-600 bg-amber-50 p-2 rounded border border-amber-200">
               ⚠️ This will re-run provisioning and update their Dograh workspace immediately.
             </p>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsPlanOpen(false)}>Cancel</Button>
-            <Button onClick={handleUpgradePlan} disabled={!newPlan || planLoading}>
+          <DialogFooter className="border-t pt-3">
+            <Button variant="outline" size="sm" onClick={() => setIsPlanOpen(false)} className="text-xs border-slate-200">Cancel</Button>
+            <Button size="sm" onClick={handleUpgradePlan} disabled={!newPlan || planLoading} className="text-xs bg-indigo-600 hover:bg-indigo-700 text-white">
               {planLoading ? "Updating..." : "Confirm Tier Change"}
             </Button>
           </DialogFooter>
@@ -765,96 +847,102 @@ export default function CustomerDetailPage() {
 
       {/* Custom Plan Modal */}
       <Dialog open={isCustomPlanOpen} onOpenChange={setIsCustomPlanOpen}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto bg-white border-slate-200 text-slate-900 rounded-xl">
           <DialogHeader>
-            <DialogTitle>Set Custom Pricing</DialogTitle>
-            <DialogDescription>
-              Deploy a completely custom pricing and quota configuration. This ignores global tier limits and overrides the customer's Dograh constraints.
+            <DialogTitle className="text-base font-semibold border-b pb-3">Set Custom Enterprise Pricing</DialogTitle>
+            <DialogDescription className="text-xs text-slate-500 pt-1">
+              Deploy custom pricing and quota limits for high-volume enterprise customers.
             </DialogDescription>
           </DialogHeader>
-          <div className="py-4 space-y-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2 mt-4">
-              <Label>Label / Name</Label>
+          <div className="py-3 space-y-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+            <div className="space-y-1.5">
+              <Label className="text-slate-700 font-medium">Custom Plan Label</Label>
               <Input 
                 value={customPricing.custom_plan_label} 
                 onChange={e => setCustomPricing({...customPricing, custom_plan_label: e.target.value})} 
+                className="h-8 text-xs bg-white border-slate-200"
               />
             </div>
-            <div className="space-y-2 mt-4">
-              <Label>Call Rate (Paise/min)</Label>
+            <div className="space-y-1.5">
+              <Label className="text-slate-700 font-medium">Call Rate (Paise/min)</Label>
               <Input 
                 type="number" 
                 value={customPricing.per_minute_rate_paise} 
                 onChange={e => setCustomPricing({...customPricing, per_minute_rate_paise: e.target.value})} 
+                className="h-8 text-xs bg-white border-slate-200"
               />
             </div>
-            <div className="space-y-2">
-              <Label>Concurrent Call Limit</Label>
+            <div className="space-y-1.5">
+              <Label className="text-slate-700 font-medium">Concurrent Call Limit</Label>
               <Input 
                 type="number" 
                 value={customPricing.concurrent_call_limit} 
                 onChange={e => setCustomPricing({...customPricing, concurrent_call_limit: e.target.value})} 
+                className="h-8 text-xs bg-white border-slate-200"
               />
             </div>
-            <div className="space-y-2">
-              <Label>Max Call Duration (s)</Label>
+            <div className="space-y-1.5">
+              <Label className="text-slate-700 font-medium">Max Call Duration (seconds)</Label>
               <Input 
                 type="number" 
                 value={customPricing.max_call_duration_seconds} 
                 onChange={e => setCustomPricing({...customPricing, max_call_duration_seconds: e.target.value})} 
+                className="h-8 text-xs bg-white border-slate-200"
               />
             </div>
-            <div className="space-y-2">
-              <Label>Activation Min Deposit (Paise)</Label>
+            <div className="space-y-1.5">
+              <Label className="text-slate-700 font-medium">Activation Deposit (Paise)</Label>
               <Input 
                 type="number" 
                 value={customPricing.activation_deposit_paise} 
                 onChange={e => setCustomPricing({...customPricing, activation_deposit_paise: e.target.value})} 
+                className="h-8 text-xs bg-white border-slate-200"
               />
             </div>
-            <div className="space-y-2">
-              <Label>Free Phone Numbers</Label>
+            <div className="space-y-1.5">
+              <Label className="text-slate-700 font-medium">Free Phone Numbers Included</Label>
               <Input 
                 type="number" 
                 value={customPricing.free_phone_numbers} 
                 onChange={e => setCustomPricing({...customPricing, free_phone_numbers: e.target.value})} 
+                className="h-8 text-xs bg-white border-slate-200"
               />
             </div>
-            <div className="space-y-2">
-              <Label>LLM Model</Label>
+            <div className="space-y-1.5">
+              <Label className="text-slate-700 font-medium">LLM Model</Label>
               <Select value={customPricing.llm_model || ""} onValueChange={(v) => setCustomPricing({...customPricing, llm_model: v || ""})}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
+                <SelectTrigger className="h-8 text-xs bg-white border-slate-200"><SelectValue /></SelectTrigger>
+                <SelectContent className="bg-white border-slate-200">
                   <SelectItem value="gpt-4o-mini">gpt-4o-mini</SelectItem>
                   <SelectItem value="gpt-4o">gpt-4o</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2">
-              <Label>TTS Provider</Label>
+            <div className="space-y-1.5">
+              <Label className="text-slate-700 font-medium">TTS Provider</Label>
               <Select value={customPricing.tts_provider || ""} onValueChange={(v) => setCustomPricing({...customPricing, tts_provider: v || ""})}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
+                <SelectTrigger className="h-8 text-xs bg-white border-slate-200"><SelectValue /></SelectTrigger>
+                <SelectContent className="bg-white border-slate-200">
                   <SelectItem value="elevenlabs">ElevenLabs</SelectItem>
                   <SelectItem value="deepgram">Deepgram</SelectItem>
                   <SelectItem value="smallest_ai">Smallest AI</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2">
-              <Label>STT Provider</Label>
+            <div className="space-y-1.5 md:col-span-2">
+              <Label className="text-slate-700 font-medium">STT Provider</Label>
               <Select value={customPricing.stt_provider || ""} onValueChange={(v) => setCustomPricing({...customPricing, stt_provider: v || ""})}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
+                <SelectTrigger className="h-8 text-xs bg-white border-slate-200"><SelectValue /></SelectTrigger>
+                <SelectContent className="bg-white border-slate-200">
                   <SelectItem value="deepgram">Deepgram</SelectItem>
                   <SelectItem value="smallest">Smallest AI</SelectItem>
                 </SelectContent>
               </Select>
             </div>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsCustomPlanOpen(false)}>Cancel</Button>
-            <Button onClick={handleSetCustomPricing} disabled={customPlanLoading}>
+          <DialogFooter className="border-t pt-3">
+            <Button variant="outline" size="sm" onClick={() => setIsCustomPlanOpen(false)} className="text-xs border-slate-200">Cancel</Button>
+            <Button size="sm" onClick={handleSetCustomPricing} disabled={customPlanLoading} className="text-xs bg-indigo-600 hover:bg-indigo-700 text-white">
               {customPlanLoading ? "Deploying..." : "Deploy Custom Plan"}
             </Button>
           </DialogFooter>

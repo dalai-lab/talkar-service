@@ -1,8 +1,8 @@
 "use client";
-import { adminFetch } from "@/lib/api";
 
+import { adminFetch } from "@/lib/api";
 import React, { useEffect, useState } from "react";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,7 @@ import {
   DialogFooter,
   DialogTrigger 
 } from "@/components/ui/dialog";
+import { Building, Eye, UserCheck, CheckCircle2, FileText, Download, AlertCircle } from "lucide-react";
 
 const DocumentViewer = ({ title, dataUrl }: { title: string, dataUrl: string }) => {
   if (!dataUrl) return null;
@@ -33,29 +34,29 @@ const DocumentViewer = ({ title, dataUrl }: { title: string, dataUrl: string }) 
   };
 
   return (
-    <div className="flex items-center gap-3 bg-muted/40 p-2 px-3 rounded-md border text-sm">
+    <div className="flex items-center gap-2.5 bg-slate-50 p-2.5 px-3 rounded-lg border border-slate-200 text-xs">
       <Dialog>
-        <DialogTrigger render={<Button variant="link" className="p-0 h-auto text-sm text-blue-600 font-medium" />}>
-          📄 {title} (View)
+        <DialogTrigger render={<Button variant="link" className="p-0 h-auto text-xs text-indigo-600 font-medium hover:underline flex items-center gap-1.5" />}>
+          <FileText className="w-3.5 h-3.5" /> {title} (View)
         </DialogTrigger>
-        <DialogContent className="max-w-4xl w-full h-[80vh] flex flex-col">
+        <DialogContent className="max-w-4xl w-full h-[80vh] flex flex-col bg-white border-slate-200">
           <DialogHeader>
-            <DialogTitle>{title}</DialogTitle>
+            <DialogTitle className="text-sm font-semibold">{title}</DialogTitle>
           </DialogHeader>
-          <div className="flex-1 overflow-auto bg-zinc-100/50 dark:bg-zinc-900/50 rounded-md border flex items-center justify-center p-4">
+          <div className="flex-1 overflow-auto bg-slate-50 rounded-lg border border-slate-200 flex items-center justify-center p-4">
             {isPdf ? (
-              <iframe src={dataUrl} className="w-full h-full border-0 rounded-md bg-white" title={title} />
+              <iframe src={dataUrl} className="w-full h-full border-0 rounded-lg bg-white" title={title} />
             ) : isImage ? (
-              <img src={dataUrl} alt={title} className="max-w-full max-h-full object-contain rounded-md shadow-sm" />
+              <img src={dataUrl} alt={title} className="max-w-full max-h-full object-contain rounded-lg shadow-sm" />
             ) : (
-              <p className="text-muted-foreground text-sm">Preview not available for this file type.</p>
+              <p className="text-slate-400 text-xs">Preview not available for this file type.</p>
             )}
           </div>
         </DialogContent>
       </Dialog>
-      <span className="text-muted-foreground text-xs">•</span>
-      <a href={dataUrl} download={`${title.replace(/\s+/g, '_').toLowerCase()}.${getExtension()}`} className="text-xs text-zinc-500 hover:text-zinc-800 underline underline-offset-2">
-        Download
+      <span className="text-slate-300">•</span>
+      <a href={dataUrl} download={`${title.replace(/\s+/g, '_').toLowerCase()}.${getExtension()}`} className="text-xs text-slate-500 hover:text-slate-900 inline-flex items-center gap-1 font-medium">
+        <Download className="w-3 h-3" /> Download
       </a>
     </div>
   );
@@ -148,85 +149,108 @@ export default function BuildQueuePage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
+      {/* Page Header */}
+      <div className="flex justify-between items-center pb-2 border-b border-slate-200/70">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Agent Build Queue</h2>
-          <p className="text-muted-foreground mt-2">
-            Customers whose payments have cleared and are waiting for manual agent setup.
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2.5">
+            <div className="p-2 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-600">
+              <Building className="w-5 h-5" />
+            </div>
+            Agent Build Queue
+          </h1>
+          <p className="text-xs text-slate-500 mt-1">
+            Customers whose deposits have cleared and are waiting for AI agent configuration & telephony setup.
           </p>
         </div>
       </div>
 
-      <Card>
+      <Card className="bg-white border border-slate-200/80 rounded-xl overflow-hidden shadow-none">
         <CardContent className="p-0">
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead>Customer</TableHead>
-                <TableHead>Use Case</TableHead>
-                <TableHead>Language</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+              <TableRow className="bg-slate-50/70 border-b border-slate-200/80 hover:bg-slate-50/70">
+                <TableHead className="text-slate-600 font-semibold text-xs py-3">Customer</TableHead>
+                <TableHead className="text-slate-600 font-semibold text-xs py-3">Use Case</TableHead>
+                <TableHead className="text-slate-600 font-semibold text-xs py-3">Language</TableHead>
+                <TableHead className="text-slate-600 font-semibold text-xs py-3">Status</TableHead>
+                <TableHead className="text-right text-slate-600 font-semibold text-xs py-3 pr-4">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8">Loading queue...</TableCell>
+                  <TableCell colSpan={5} className="text-center py-12 text-slate-400 text-xs">
+                    <div className="w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+                    Loading build queue...
+                  </TableCell>
                 </TableRow>
               ) : customers.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">No customers in build queue.</TableCell>
+                  <TableCell colSpan={5} className="text-center py-12 text-slate-400 text-xs">
+                    No customers currently in build queue.
+                  </TableCell>
                 </TableRow>
               ) : (
                 customers.map((c) => (
-                  <TableRow key={c.id}>
-                    <TableCell className="font-medium">
-                      {c.company_name}
-                      <br />
-                      <span className="text-xs text-muted-foreground">{c.contact_name}</span>
+                  <TableRow key={c.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors">
+                    <TableCell className="text-xs">
+                      <div className="font-semibold text-slate-900">{c.company_name}</div>
+                      <span className="text-[11px] text-slate-500">{c.contact_name}</span>
                     </TableCell>
-                    <TableCell className="max-w-xs truncate">
+                    <TableCell className="text-xs max-w-xs truncate text-slate-700">
                       {c.onboarding_form?.useCaseType || "N/A"}
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="text-xs text-slate-700">
                       {c.onboarding_form?.languages || "N/A"}
                     </TableCell>
-                    <TableCell>
-                      <Badge variant="secondary" className="bg-blue-100 text-blue-800 hover:bg-blue-100">
+                    <TableCell className="text-xs whitespace-nowrap">
+                      <Badge className="bg-blue-50 text-blue-700 border-blue-200 font-medium">
                         Agent Building
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-right space-x-2">
+                    <TableCell className="text-right space-x-1.5 whitespace-nowrap pr-4">
                       <Button 
-                        variant="secondary" 
+                        variant="outline" 
                         size="sm"
+                        className="h-7 px-2.5 text-xs font-medium border-slate-200 bg-white hover:bg-slate-50 text-slate-700 shadow-none cursor-pointer"
                         onClick={() => { setSelectedCustomer(c); setIsBriefOpen(true); }}
                       >
                         View Brief
                       </Button>
-                      <Button variant="outline" size="sm" onClick={async () => {
-                        try {
-                          const res = await adminFetch(`/admin/build-queue/${c.id}/assign`, { method: "PATCH" });
-                          if (res.ok) {
-                            const data = await res.json();
-                            if (data.access_token) {
-                              // Open Dograh impersonation route in a new tab
-                              const dograhUrl = process.env.NEXT_PUBLIC_DOGRAH_URL || "https://talkar.in";
-                              window.open(`${dograhUrl}/auth/impersonate?token=${data.access_token}&refresh_token=${data.refresh_token || ''}`, "_blank");
+                      <Button 
+                        variant="outline" 
+                        size="sm"
+                        className="h-7 px-2.5 text-xs font-medium border-slate-200 bg-white hover:bg-slate-50 text-slate-700 shadow-none cursor-pointer"
+                        onClick={async () => {
+                          try {
+                            const res = await adminFetch(`/admin/build-queue/${c.id}/assign`, { method: "PATCH" });
+                            if (res.ok) {
+                              const data = await res.json();
+                              if (data.access_token) {
+                                const dograhUrl = process.env.NEXT_PUBLIC_DOGRAH_URL || "https://talkar.in";
+                                window.open(`${dograhUrl}/auth/impersonate?token=${data.access_token}&refresh_token=${data.refresh_token || ''}`, "_blank");
+                              } else {
+                                alert("Assigned, but no magic link could be generated.");
+                              }
+                              fetchQueue();
                             } else {
-                              alert("Assigned, but no magic link could be generated.");
+                              const error = await res.json();
+                              alert(`Failed to assign: ${error.detail || res.statusText}`);
                             }
-                            fetchQueue();
-                          } else {
-                            const error = await res.json();
-                            alert(`Failed to assign: ${error.detail || res.statusText}`);
+                          } catch (e) {
+                            alert("Network error. Could not assign.");
                           }
-                        } catch (e) {
-                          alert("Network error. Could not assign.");
-                        }
-                      }}>Impersonate & Build</Button>
-                      <Button size="sm" onClick={() => openReadyModal(c)}>Mark as Ready</Button>
+                        }}
+                      >
+                        Impersonate & Build
+                      </Button>
+                      <Button 
+                        size="sm"
+                        className="h-7 px-2.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-700 text-white shadow-none cursor-pointer"
+                        onClick={() => openReadyModal(c)}
+                      >
+                        Mark as Ready
+                      </Button>
                     </TableCell>
                   </TableRow>
                 ))
@@ -238,104 +262,104 @@ export default function BuildQueuePage() {
 
       {/* View Full Agent Brief & Onboarding Details Modal */}
       <Dialog open={isBriefOpen} onOpenChange={setIsBriefOpen}>
-        <DialogContent className="max-w-3xl w-full max-h-[85vh] overflow-y-auto">
+        <DialogContent className="max-w-3xl w-full max-h-[85vh] overflow-y-auto bg-white border-slate-200 text-slate-900 rounded-xl">
           <DialogHeader>
-            <DialogTitle>Agent Setup Brief & Specifications</DialogTitle>
+            <DialogTitle className="text-base font-semibold border-b pb-3">Agent Setup Brief & Specifications</DialogTitle>
           </DialogHeader>
           {selectedCustomer && (
-            <div className="space-y-6 py-2 text-sm">
+            <div className="space-y-4 py-2 text-xs">
               {/* Contact Info */}
-              <div className="border rounded-md p-4 space-y-3 bg-muted/20">
-                <h4 className="font-semibold text-base border-b pb-2">Contact Information</h4>
+              <div className="border border-slate-200 rounded-lg p-4 space-y-3 bg-slate-50/50">
+                <h4 className="font-semibold text-sm text-slate-900 border-b border-slate-200 pb-2">Contact Information</h4>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
-                    <Label className="text-xs text-muted-foreground">Primary Contact</Label>
-                    <p className="font-medium">{selectedCustomer.contact_name || selectedCustomer.onboarding_form?.pocName || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Primary Contact</Label>
+                    <p className="font-semibold text-slate-900">{selectedCustomer.contact_name || selectedCustomer.onboarding_form?.pocName || "N/A"}</p>
                   </div>
                   <div>
-                    <Label className="text-xs text-muted-foreground">Designation / Role</Label>
-                    <p>{selectedCustomer.onboarding_form?.pocDesignation || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Designation / Role</Label>
+                    <p className="text-slate-800">{selectedCustomer.onboarding_form?.pocDesignation || "N/A"}</p>
                   </div>
                   <div>
-                    <Label className="text-xs text-muted-foreground">Email Address</Label>
-                    <p>{selectedCustomer.contact_email || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Email Address</Label>
+                    <p className="text-slate-800 font-mono text-[11px]">{selectedCustomer.contact_email || "N/A"}</p>
                   </div>
                   <div>
-                    <Label className="text-xs text-muted-foreground">Phone Number</Label>
-                    <p>{selectedCustomer.contact_phone || selectedCustomer.onboarding_form?.pocPhone || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Phone Number</Label>
+                    <p className="text-slate-800 font-mono text-[11px]">{selectedCustomer.contact_phone || selectedCustomer.onboarding_form?.pocPhone || "N/A"}</p>
                   </div>
                 </div>
               </div>
 
               {/* Business Profile */}
-              <div className="border rounded-md p-4 space-y-3 bg-muted/20">
-                <h4 className="font-semibold text-base border-b pb-2">Business & Company Profile</h4>
+              <div className="border border-slate-200 rounded-lg p-4 space-y-3 bg-slate-50/50">
+                <h4 className="font-semibold text-sm text-slate-900 border-b border-slate-200 pb-2">Business & Company Profile</h4>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
-                    <Label className="text-xs text-muted-foreground">Company Name</Label>
-                    <p className="font-medium">{selectedCustomer.company_name || selectedCustomer.onboarding_form?.businessName || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Company Name</Label>
+                    <p className="font-semibold text-slate-900">{selectedCustomer.company_name || selectedCustomer.onboarding_form?.businessName || "N/A"}</p>
                   </div>
                   <div>
-                    <Label className="text-xs text-muted-foreground">Industry</Label>
-                    <p>{selectedCustomer.industry || selectedCustomer.onboarding_form?.industry || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Industry</Label>
+                    <p className="text-slate-800">{selectedCustomer.industry || selectedCustomer.onboarding_form?.industry || "N/A"}</p>
                   </div>
                   <div>
-                    <Label className="text-xs text-muted-foreground">GST Number</Label>
-                    <p className="font-mono">{selectedCustomer.onboarding_form?.gstNumber || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">GST Number</Label>
+                    <p className="font-mono text-slate-800">{selectedCustomer.onboarding_form?.gstNumber || "N/A"}</p>
                   </div>
                   <div>
-                    <Label className="text-xs text-muted-foreground">Company Size</Label>
-                    <p>{selectedCustomer.onboarding_form?.companySize || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Company Size</Label>
+                    <p className="text-slate-800">{selectedCustomer.onboarding_form?.companySize || "N/A"}</p>
                   </div>
                   <div className="md:col-span-2">
-                    <Label className="text-xs text-muted-foreground">Website</Label>
+                    <Label className="text-[11px] text-slate-500 font-medium">Website</Label>
                     {selectedCustomer.onboarding_form?.websiteUrl ? (
                       <p>
                         <a 
                           href={selectedCustomer.onboarding_form.websiteUrl.startsWith("http") ? selectedCustomer.onboarding_form.websiteUrl : `https://${selectedCustomer.onboarding_form.websiteUrl}`} 
                           target="_blank" 
                           rel="noreferrer"
-                          className="text-blue-600 hover:underline"
+                          className="text-indigo-600 hover:underline"
                         >
                           {selectedCustomer.onboarding_form.websiteUrl}
                         </a>
                       </p>
                     ) : (
-                      <p className="text-muted-foreground">N/A</p>
+                      <p className="text-slate-400">N/A</p>
                     )}
                   </div>
                 </div>
               </div>
 
               {/* Voice Agent & Use Case */}
-              <div className="border rounded-md p-4 space-y-3 bg-muted/20">
-                <h4 className="font-semibold text-base border-b pb-2">Agent & Use Case Requirements</h4>
+              <div className="border border-slate-200 rounded-lg p-4 space-y-3 bg-slate-50/50">
+                <h4 className="font-semibold text-sm text-slate-900 border-b border-slate-200 pb-2">Agent & Use Case Requirements</h4>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
-                    <Label className="text-xs text-muted-foreground">Call Direction / Type</Label>
-                    <p className="font-medium capitalize">{selectedCustomer.onboarding_form?.useCaseType || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Call Direction / Type</Label>
+                    <p className="font-semibold capitalize text-slate-800">{selectedCustomer.onboarding_form?.useCaseType || "N/A"}</p>
                   </div>
                   <div>
-                    <Label className="text-xs text-muted-foreground">Expected Call Volume</Label>
-                    <p>{selectedCustomer.onboarding_form?.callVolume || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Expected Call Volume</Label>
+                    <p className="text-slate-800">{selectedCustomer.onboarding_form?.callVolume || "N/A"}</p>
                   </div>
                   <div>
-                    <Label className="text-xs text-muted-foreground">Target Languages</Label>
-                    <p>{selectedCustomer.onboarding_form?.languages || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Target Languages</Label>
+                    <p className="text-slate-800">{selectedCustomer.onboarding_form?.languages || "N/A"}</p>
                   </div>
                   <div>
-                    <Label className="text-xs text-muted-foreground">Integrations</Label>
-                    <p>{selectedCustomer.onboarding_form?.integrations || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Integrations</Label>
+                    <p className="text-slate-800">{selectedCustomer.onboarding_form?.integrations || "N/A"}</p>
                   </div>
                   <div className="md:col-span-2">
-                    <Label className="text-xs text-muted-foreground">Use Case Description & Prompt Details</Label>
-                    <p className="mt-1 whitespace-pre-wrap bg-background p-3 rounded-md border text-xs">
+                    <Label className="text-[11px] text-slate-500 font-medium">Use Case Description & Prompt Details</Label>
+                    <p className="mt-1 whitespace-pre-wrap bg-white p-3 rounded-lg border border-slate-200 text-slate-800 leading-relaxed text-xs">
                       {selectedCustomer.onboarding_form?.useCaseDescription || "No detailed description provided."}
                     </p>
                   </div>
                   {selectedCustomer.onboarding_form?.needsApiIntegration && (
-                    <div className="md:col-span-2 bg-blue-50/80 border border-blue-200 p-3 rounded-md">
-                      <Label className="text-xs font-semibold text-blue-900 block mb-1">Custom API Integration Required</Label>
+                    <div className="md:col-span-2 bg-blue-50/70 border border-blue-200 p-3 rounded-lg">
+                      <Label className="text-[11px] font-semibold text-blue-900 block mb-1">Custom API Integration Required</Label>
                       <p className="text-blue-800 text-xs">{selectedCustomer.onboarding_form.apiIntegrationDetails || "Details pending."}</p>
                     </div>
                   )}
@@ -344,9 +368,9 @@ export default function BuildQueuePage() {
 
               {/* Submitted Verification Documents */}
               {(selectedCustomer.onboarding_form?.gstCertificateUrl || selectedCustomer.onboarding_form?.businessRegistrationUrl) && (
-                <div className="border rounded-md p-4 space-y-3 bg-muted/20">
-                  <h4 className="font-semibold text-base border-b pb-2">Submitted Verification Documents</h4>
-                  <div className="flex flex-wrap gap-4">
+                <div className="border border-slate-200 rounded-lg p-4 space-y-3 bg-slate-50/50">
+                  <h4 className="font-semibold text-sm text-slate-900 border-b border-slate-200 pb-2">Submitted Verification Documents</h4>
+                  <div className="flex flex-wrap gap-3">
                     {selectedCustomer.onboarding_form?.gstCertificateUrl && (
                       <DocumentViewer title="GST Certificate" dataUrl={selectedCustomer.onboarding_form.gstCertificateUrl} />
                     )}
@@ -359,17 +383,17 @@ export default function BuildQueuePage() {
 
               {/* Raw JSON submission */}
               {selectedCustomer.onboarding_form && (
-                <div className="pt-2">
+                <div className="pt-1">
                   <Button 
                     variant="ghost" 
                     size="sm" 
                     onClick={() => setShowRawJsonQueue(!showRawJsonQueue)}
-                    className="text-xs text-muted-foreground"
+                    className="text-xs text-slate-500 hover:text-slate-800 h-7"
                   >
                     {showRawJsonQueue ? "Hide Raw Brief Data (JSON)" : "Show Raw Brief Data (JSON)"}
                   </Button>
                   {showRawJsonQueue && (
-                    <pre className="mt-2 bg-zinc-950 text-zinc-100 p-3 rounded-md text-xs font-mono overflow-auto max-h-60">
+                    <pre className="mt-2 bg-slate-950 text-slate-100 p-3 rounded-lg text-xs font-mono overflow-auto max-h-60 border border-slate-800">
                       {JSON.stringify(selectedCustomer.onboarding_form, null, 2)}
                     </pre>
                   )}
@@ -377,34 +401,34 @@ export default function BuildQueuePage() {
               )}
             </div>
           )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsBriefOpen(false)}>Close</Button>
+          <DialogFooter className="border-t pt-3">
+            <Button variant="outline" size="sm" onClick={() => setIsBriefOpen(false)} className="text-xs border-slate-200">Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       {/* Mark Ready Modal */}
       <Dialog open={isReadyModalOpen} onOpenChange={setIsReadyModalOpen}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-lg bg-white border-slate-200 text-slate-900 rounded-xl">
           <DialogHeader>
-            <DialogTitle>Mark Agent Ready & Notify Customer</DialogTitle>
+            <DialogTitle className="text-base font-semibold border-b pb-3">Mark Agent Ready & Notify Customer</DialogTitle>
           </DialogHeader>
           {readyCustomer && (
-            <div className="space-y-4 py-2">
-              <p className="text-sm text-muted-foreground">
-                This will send an email notification to <span className="font-semibold text-foreground">{readyCustomer.contact_email}</span> letting them know their AI agent is built and ready for calls.
+            <div className="space-y-4 py-2 text-xs">
+              <p className="text-slate-600">
+                This will send an email notification to <span className="font-semibold text-slate-900">{readyCustomer.contact_email}</span> letting them know their AI agent is built and ready for calls.
               </p>
 
               {/* Notification Details Preview */}
-              <div className="rounded-lg border bg-zinc-50 dark:bg-zinc-900/60 p-3.5 space-y-2.5 text-sm">
-                <div className="flex items-center justify-between text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between font-semibold text-slate-500 uppercase tracking-wider text-[10px]">
                   <span>Notification Details Preview</span>
                   {useCustomDetails ? (
-                    <Badge variant="secondary" className="bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 text-[10px] font-medium border-amber-200">
+                    <Badge className="bg-amber-50 text-amber-800 border-amber-200 text-[10px] font-medium">
                       Custom Override
                     </Badge>
                   ) : (
-                    <Badge variant="secondary" className="bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 text-[10px] font-medium border-emerald-200">
+                    <Badge className="bg-emerald-50 text-emerald-700 border-emerald-200 text-[10px] font-medium">
                       Auto-detected Default
                     </Badge>
                   )}
@@ -412,21 +436,21 @@ export default function BuildQueuePage() {
 
                 <div className="grid grid-cols-2 gap-3 pt-1">
                   <div>
-                    <span className="text-xs text-muted-foreground block mb-0.5">Agent Name</span>
-                    <span className="font-semibold text-foreground text-sm break-words">
+                    <span className="text-[11px] text-slate-400 block mb-0.5 font-medium">Agent Name</span>
+                    <span className="font-semibold text-slate-900 text-xs break-words">
                       {useCustomDetails && customAgentName.trim()
                         ? customAgentName.trim()
                         : (readyCustomer.company_name || "N/A")}
                     </span>
                   </div>
                   <div>
-                    <span className="text-xs text-muted-foreground block mb-0.5">Assigned Phone Number</span>
-                    <span className="font-mono text-xs font-semibold text-foreground break-words block">
+                    <span className="text-[11px] text-slate-400 block mb-0.5 font-medium">Assigned Phone Number</span>
+                    <span className="font-mono text-xs font-semibold text-slate-900 break-words block">
                       {useCustomDetails && customPhoneNumber.trim()
                         ? customPhoneNumber.trim()
                         : (readyCustomer.phone_numbers && readyCustomer.phone_numbers.length > 0 
                             ? readyCustomer.phone_numbers.join(", ") 
-                            : <span className="text-amber-600 dark:text-amber-400 font-sans font-normal text-xs">No number assigned yet</span>)}
+                            : <span className="text-amber-600 font-sans font-normal text-xs">No number assigned yet</span>)}
                     </span>
                   </div>
                 </div>
@@ -448,35 +472,35 @@ export default function BuildQueuePage() {
                       }
                     }
                   }}
-                  className="h-4 w-4 rounded border-zinc-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
                 />
-                <Label htmlFor="override-details-checkbox" className="text-sm font-medium cursor-pointer select-none">
+                <Label htmlFor="override-details-checkbox" className="text-xs font-medium text-slate-700 cursor-pointer select-none">
                   Customize agent name & phone number
                 </Label>
               </div>
 
               {/* Conditional Inputs */}
               {useCustomDetails && (
-                <div className="space-y-3 p-3.5 rounded-lg border border-blue-100 bg-blue-50/50 dark:bg-blue-950/20 dark:border-blue-900/40">
+                <div className="space-y-3 p-3.5 rounded-lg border border-indigo-100 bg-indigo-50/40">
                   <div className="space-y-1">
-                    <Label className="text-xs font-medium text-zinc-700 dark:text-zinc-300">Custom Agent Name</Label>
+                    <Label className="text-[11px] font-medium text-slate-700">Custom Agent Name</Label>
                     <Input 
                       placeholder="e.g. Sales Assistant"
                       value={customAgentName}
                       onChange={(e) => setCustomAgentName(e.target.value)}
-                      className="bg-white dark:bg-zinc-900"
+                      className="bg-white border-slate-200 h-8 text-xs"
                     />
-                    <p className="text-[11px] text-muted-foreground">Default: {readyCustomer.company_name}</p>
+                    <p className="text-[10px] text-slate-400">Default: {readyCustomer.company_name}</p>
                   </div>
                   <div className="space-y-1">
-                    <Label className="text-xs font-medium text-zinc-700 dark:text-zinc-300">Custom Phone Number</Label>
+                    <Label className="text-[11px] font-medium text-slate-700">Custom Phone Number</Label>
                     <Input 
                       placeholder="e.g. +91 80 1234 5678"
                       value={customPhoneNumber}
                       onChange={(e) => setCustomPhoneNumber(e.target.value)}
-                      className="bg-white dark:bg-zinc-900"
+                      className="bg-white border-slate-200 h-8 text-xs"
                     />
-                    <p className="text-[11px] text-muted-foreground">
+                    <p className="text-[10px] text-slate-400">
                       Default: {readyCustomer.phone_numbers?.length ? readyCustomer.phone_numbers.join(", ") : "None assigned"}
                     </p>
                   </div>
@@ -485,25 +509,25 @@ export default function BuildQueuePage() {
 
               {/* Custom Admin Note */}
               <div className="space-y-1.5">
-                <Label className="text-xs font-medium">Custom Admin Note (Optional)</Label>
+                <Label className="text-slate-700 font-medium text-xs">Custom Admin Note (Optional)</Label>
                 <Textarea 
                   placeholder="e.g. We tweaked your prompt and tested order lookups, it is performing smoothly!"
                   value={customMessage}
                   onChange={(e) => setCustomMessage(e.target.value)}
                   rows={3}
-                  className="text-sm"
+                  className="text-xs bg-white border-slate-200 focus:ring-indigo-500"
                 />
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-[10px] text-slate-400">
                   Included in the notification email under &quot;Admin Note&quot;.
                 </p>
               </div>
             </div>
           )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsReadyModalOpen(false)} disabled={submittingReady}>
+          <DialogFooter className="border-t pt-3">
+            <Button variant="outline" size="sm" onClick={() => setIsReadyModalOpen(false)} disabled={submittingReady} className="text-xs border-slate-200">
               Cancel
             </Button>
-            <Button onClick={submitMarkReady} disabled={submittingReady}>
+            <Button size="sm" onClick={submitMarkReady} disabled={submittingReady} className="text-xs bg-indigo-600 hover:bg-indigo-700 text-white">
               {submittingReady ? "Sending Email..." : "Confirm & Send Email"}
             </Button>
           </DialogFooter>

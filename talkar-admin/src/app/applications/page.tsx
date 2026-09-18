@@ -1,8 +1,8 @@
 "use client";
-import { adminFetch } from "@/lib/api";
 
+import { adminFetch } from "@/lib/api";
 import React, { useEffect, useState } from "react";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,7 @@ import {
   DialogTrigger
 } from "@/components/ui/dialog";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
+import { ListTodo, CheckCircle2, XCircle, HelpCircle, Eye, FileText, Download } from "lucide-react";
 
 const DocumentViewer = ({ title, dataUrl }: { title: string, dataUrl: string }) => {
   if (!dataUrl) return null;
@@ -33,29 +34,33 @@ const DocumentViewer = ({ title, dataUrl }: { title: string, dataUrl: string }) 
   };
 
   return (
-    <div className="flex items-center gap-3 bg-muted/40 p-2 px-3 rounded-md border text-sm">
+    <div className="flex items-center gap-2.5 bg-slate-50 p-2.5 px-3 rounded-lg border border-slate-200 text-xs">
       <Dialog>
-        <DialogTrigger render={<Button variant="link" className="p-0 h-auto text-sm text-blue-600 font-medium" />}>
-          📄 {title} (View)
+        <DialogTrigger render={<Button variant="link" className="p-0 h-auto text-xs text-indigo-600 font-medium hover:underline flex items-center gap-1.5" />}>
+          <FileText className="w-3.5 h-3.5" /> {title} (View)
         </DialogTrigger>
-        <DialogContent className="max-w-4xl w-full h-[80vh] flex flex-col">
+        <DialogContent className="max-w-4xl w-full h-[80vh] flex flex-col bg-white border-slate-200">
           <DialogHeader>
-            <DialogTitle>{title}</DialogTitle>
+            <DialogTitle className="text-sm font-semibold">{title}</DialogTitle>
           </DialogHeader>
-          <div className="flex-1 overflow-auto bg-zinc-100/50 dark:bg-zinc-900/50 rounded-md border flex items-center justify-center p-4">
+          <div className="flex-1 overflow-auto bg-slate-50 rounded-lg border border-slate-200 flex items-center justify-center p-4">
             {isPdf ? (
-              <iframe src={dataUrl} className="w-full h-full border-0 rounded-md bg-white" title={title} />
+              <iframe src={dataUrl} className="w-full h-full border-0 rounded-lg bg-white" title={title} />
             ) : isImage ? (
-              <img src={dataUrl} alt={title} className="max-w-full max-h-full object-contain rounded-md shadow-sm" />
+              <img src={dataUrl} alt={title} className="max-w-full max-h-full object-contain rounded-lg shadow-sm" />
             ) : (
-              <p className="text-muted-foreground text-sm">Preview not available for this file type.</p>
+              <p className="text-slate-400 text-xs">Preview not available for this file type.</p>
             )}
           </div>
         </DialogContent>
       </Dialog>
-      <span className="text-muted-foreground text-xs">•</span>
-      <a href={dataUrl} download={`${title.replace(/\s+/g, '_').toLowerCase()}.${getExtension()}`} className="text-xs text-zinc-500 hover:text-zinc-800 underline underline-offset-2">
-        Download
+      <span className="text-slate-300">•</span>
+      <a 
+        href={dataUrl} 
+        download={`${title.replace(/\s+/g, '_').toLowerCase()}.${getExtension()}`} 
+        className="text-xs text-slate-500 hover:text-slate-900 inline-flex items-center gap-1 font-medium"
+      >
+        <Download className="w-3 h-3" /> Download
       </a>
     </div>
   );
@@ -138,70 +143,87 @@ export default function ApplicationsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
+      {/* Page Header */}
+      <div className="flex justify-between items-center pb-2 border-b border-slate-200/70">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Applications Queue</h2>
-          <p className="text-muted-foreground mt-2">
-            Review and approve new Talkar customer applications.
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2.5">
+            <div className="p-2 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-600">
+              <ListTodo className="w-5 h-5" />
+            </div>
+            Applications Queue
+          </h1>
+          <p className="text-xs text-slate-500 mt-1">
+            Review, qualify, and approve incoming Talkar customer applications.
           </p>
         </div>
       </div>
 
-      <Card>
+      <Card className="bg-white border border-slate-200/80 rounded-xl overflow-hidden shadow-none">
         <CardContent className="p-0">
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead>Date</TableHead>
-                <TableHead>Company</TableHead>
-                <TableHead>Contact</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+              <TableRow className="bg-slate-50/70 border-b border-slate-200/80 hover:bg-slate-50/70">
+                <TableHead className="text-slate-600 font-semibold text-xs py-3">Date</TableHead>
+                <TableHead className="text-slate-600 font-semibold text-xs py-3">Company</TableHead>
+                <TableHead className="text-slate-600 font-semibold text-xs py-3">Contact</TableHead>
+                <TableHead className="text-slate-600 font-semibold text-xs py-3">Status</TableHead>
+                <TableHead className="text-right text-slate-600 font-semibold text-xs py-3 pr-4">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8">Loading applications...</TableCell>
+                  <TableCell colSpan={5} className="text-center py-12 text-slate-400 text-xs">
+                    <div className="w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+                    Loading applications...
+                  </TableCell>
                 </TableRow>
               ) : apps.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">No applications in queue.</TableCell>
+                  <TableCell colSpan={5} className="text-center py-12 text-slate-400 text-xs">
+                    No applications currently waiting in queue.
+                  </TableCell>
                 </TableRow>
               ) : (
                 apps.map((app) => (
-                  <TableRow key={app.id}>
-                    <TableCell>{new Date(app.created_at).toLocaleDateString()}</TableCell>
-                    <TableCell className="font-medium">
-                      {app.company_name}
+                  <TableRow key={app.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors">
+                    <TableCell className="text-xs text-slate-500 whitespace-nowrap">
+                      {new Date(app.created_at).toLocaleDateString()}
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      <div className="font-semibold text-slate-900">{app.company_name}</div>
                       {app.onboarding_form?.needsApiIntegration && (
-                        <div className="mt-1"><Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">Custom API Req</Badge></div>
+                        <div className="mt-1">
+                          <span className="inline-flex items-center text-[10px] font-semibold px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
+                            Custom API Req
+                          </span>
+                        </div>
                       )}
                     </TableCell>
-                    <TableCell>
-                      {app.contact_name}
-                      <br />
-                      <span className="text-xs text-muted-foreground">{app.contact_email}</span>
+                    <TableCell className="text-xs">
+                      <div className="text-slate-800 font-medium">{app.contact_name}</div>
+                      <span className="text-[11px] text-slate-500">{app.contact_email}</span>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="text-xs whitespace-nowrap">
                       {app.status === "pending_approval" ? (
-                        <Badge variant="secondary" className="bg-purple-100 text-purple-800 hover:bg-purple-100">
+                        <Badge className="bg-purple-50 text-purple-700 border-purple-200 font-medium">
                           New Agent Brief
                         </Badge>
                       ) : app.status === "info_requested" ? (
-                        <Badge variant="secondary" className="bg-sky-100 text-sky-800 hover:bg-sky-100">
+                        <Badge className="bg-sky-50 text-sky-700 border-sky-200 font-medium">
                           Info Requested
                         </Badge>
                       ) : (
-                        <Badge variant="secondary" className="bg-amber-100 text-amber-800 hover:bg-amber-100">
+                        <Badge className="bg-amber-50 text-amber-800 border-amber-200 font-medium">
                           Under Review
                         </Badge>
                       )}
                     </TableCell>
-                    <TableCell className="text-right space-x-2">
+                    <TableCell className="text-right space-x-1.5 whitespace-nowrap pr-4">
                       <Button 
-                        variant="secondary" 
+                        variant="outline" 
                         size="sm"
+                        className="h-7 px-2.5 text-xs font-medium border-slate-200 bg-white hover:bg-slate-50 text-slate-700 shadow-none cursor-pointer"
                         onClick={() => { setSelectedApp(app); setIsDetailOpen(true); }}
                       >
                         View Details
@@ -209,6 +231,7 @@ export default function ApplicationsPage() {
                       <Button 
                         variant="outline" 
                         size="sm"
+                        className="h-7 px-2.5 text-xs font-medium border-slate-200 bg-white hover:bg-slate-50 text-slate-700 shadow-none cursor-pointer"
                         onClick={() => { setSelectedApp(app); setIsRequestInfoOpen(true); }}
                       >
                         Request Info
@@ -216,12 +239,14 @@ export default function ApplicationsPage() {
                       <Button 
                         variant="outline" 
                         size="sm"
+                        className="h-7 px-2.5 text-xs font-medium border-slate-200 bg-white hover:bg-red-50 text-red-600 hover:text-red-700 shadow-none cursor-pointer"
                         onClick={() => { setSelectedApp(app); setIsRejectOpen(true); }}
                       >
                         Reject
                       </Button>
                       <Button 
                         size="sm"
+                        className="h-7 px-2.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-700 text-white shadow-none cursor-pointer"
                         onClick={() => { setSelectedApp(app); setIsApproveOpen(true); }}
                       >
                         Review & Approve
@@ -235,39 +260,41 @@ export default function ApplicationsPage() {
         </CardContent>
       </Card>
 
+      {/* APPROVE DIALOG */}
       <Dialog open={isApproveOpen} onOpenChange={setIsApproveOpen}>
-        <DialogContent>
+        <DialogContent className="bg-white border-slate-200 text-slate-900 rounded-xl">
           <DialogHeader>
-            <DialogTitle>Approve Application</DialogTitle>
+            <DialogTitle className="text-base font-semibold border-b pb-3">Approve Application</DialogTitle>
           </DialogHeader>
-          <div className="py-4 space-y-4">
-            <p className="text-sm text-muted-foreground">
+          <div className="py-3 space-y-4 text-xs">
+            <p className="text-slate-600 leading-relaxed">
               {selectedApp?.onboarding_form?.needsApiIntegration 
-                ? `Approving ${selectedApp?.company_name} will generate a custom integration fee Razorpay link and notify the customer.`
+                ? `Approving ${selectedApp?.company_name} will generate a custom integration fee Razorpay payment link and notify the customer.`
                 : `Approving ${selectedApp?.company_name} will mark their agent as ready for building. No integration fee is required by default.`}
             </p>
             
             {selectedApp?.onboarding_form?.needsApiIntegration && (
-              <div className="bg-blue-50/50 border border-blue-100 p-3 rounded-md text-sm mb-4">
+              <div className="bg-blue-50/70 border border-blue-200 p-3 rounded-lg text-xs">
                 <span className="font-semibold text-blue-900 block mb-1">Customer's Integration Request:</span>
                 <span className="text-blue-800">{selectedApp.onboarding_form.apiIntegrationDetails}</span>
               </div>
             )}
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Custom Integration Fee (₹)</label>
+            <div className="space-y-1.5">
+              <label className="text-slate-700 font-medium">Custom Integration Fee (₹)</label>
               <Input 
                 type="number" 
                 value={integrationFee} 
                 onChange={(e: any) => setIntegrationFee(e.target.value)} 
                 placeholder="0 for no fee"
+                className="h-9 text-xs bg-white border-slate-200"
               />
-              <p className="text-xs text-muted-foreground">₹0 = agent build is always free. Customer selects their own tier after wallet deposit.</p>
+              <p className="text-[11px] text-slate-400">₹0 = agent build is always free. Customer selects their own tier after wallet deposit.</p>
             </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Approved Tier</label>
+            <div className="space-y-1.5">
+              <label className="text-slate-700 font-medium">Approved Tier</label>
               <Select value={approvedTier} onValueChange={(v) => v && setApprovedTier(v)}>
-                <SelectTrigger><SelectValue placeholder="Select tier" /></SelectTrigger>
-                <SelectContent>
+                <SelectTrigger className="h-9 text-xs bg-white border-slate-200"><SelectValue placeholder="Select tier" /></SelectTrigger>
+                <SelectContent className="bg-white border-slate-200">
                   <SelectItem value="starter">Starter</SelectItem>
                   <SelectItem value="pro">Pro</SelectItem>
                   <SelectItem value="elite">Elite</SelectItem>
@@ -275,10 +302,10 @@ export default function ApplicationsPage() {
               </Select>
             </div>
             {parseInt(integrationFee) > 0 && (
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Integration Description</label>
+              <div className="space-y-1.5">
+                <label className="text-slate-700 font-medium">Integration Description</label>
                 <textarea 
-                  className="w-full min-h-[80px] p-2 border rounded-md text-sm" 
+                  className="w-full min-h-[80px] p-2.5 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none focus:border-indigo-500" 
                   value={integrationDescription} 
                   onChange={(e: any) => setIntegrationDescription(e.target.value)} 
                   placeholder="E.g., HubSpot CRM webhook integration + Custom reporting pipeline..."
@@ -286,54 +313,59 @@ export default function ApplicationsPage() {
               </div>
             )}
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsApproveOpen(false)}>Cancel</Button>
-            <Button onClick={handleApprove}>Confirm Approval</Button>
+          <DialogFooter className="border-t pt-3">
+            <Button variant="outline" size="sm" onClick={() => setIsApproveOpen(false)} className="text-xs border-slate-200">Cancel</Button>
+            <Button size="sm" onClick={handleApprove} className="text-xs bg-indigo-600 hover:bg-indigo-700 text-white">Confirm Approval</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
+      {/* REJECT DIALOG */}
       <Dialog open={isRejectOpen} onOpenChange={setIsRejectOpen}>
-        <DialogContent>
+        <DialogContent className="bg-white border-slate-200 text-slate-900 rounded-xl">
           <DialogHeader>
-            <DialogTitle>Reject Application</DialogTitle>
+            <DialogTitle className="text-base font-semibold border-b pb-3 text-red-600">Reject Application</DialogTitle>
           </DialogHeader>
-          <div className="py-4 space-y-4">
-            <p className="text-sm text-muted-foreground">
-              Please provide a reason for rejecting <strong>{selectedApp?.company_name}</strong>. This will be shown to the customer.
+          <div className="py-3 space-y-3 text-xs">
+            <p className="text-slate-600">
+              Please provide a reason for rejecting <strong className="text-slate-900">{selectedApp?.company_name}</strong>. This will be shown to the customer.
             </p>
             <textarea 
-              className="w-full min-h-[100px] p-3 border rounded-md" 
+              className="w-full min-h-[100px] p-3 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none focus:border-red-500" 
               placeholder="e.g. Incomplete GST documents..."
               value={rejectReason}
               onChange={(e) => setRejectReason(e.target.value)}
             />
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsRejectOpen(false)}>Cancel</Button>
-            <Button variant="destructive" onClick={handleReject} disabled={!rejectReason.trim()}>Confirm Rejection</Button>
+          <DialogFooter className="border-t pt-3">
+            <Button variant="outline" size="sm" onClick={() => setIsRejectOpen(false)} className="text-xs border-slate-200">Cancel</Button>
+            <Button size="sm" variant="destructive" onClick={handleReject} disabled={!rejectReason.trim()} className="text-xs">Confirm Rejection</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* REQUEST INFO DIALOG */}
       <Dialog open={isRequestInfoOpen} onOpenChange={setIsRequestInfoOpen}>
-        <DialogContent>
+        <DialogContent className="bg-white border-slate-200 text-slate-900 rounded-xl">
           <DialogHeader>
-            <DialogTitle>Request Information</DialogTitle>
+            <DialogTitle className="text-base font-semibold border-b pb-3">Request Additional Information</DialogTitle>
           </DialogHeader>
-          <div className="py-4 space-y-4">
-            <p className="text-sm text-muted-foreground">
-              What additional information do you need from <strong>{selectedApp?.company_name}</strong>?
+          <div className="py-3 space-y-3 text-xs">
+            <p className="text-slate-600">
+              What additional information do you need from <strong className="text-slate-900">{selectedApp?.company_name}</strong>?
             </p>
             <textarea 
-              className="w-full min-h-[100px] p-3 border rounded-md" 
+              className="w-full min-h-[100px] p-3 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none focus:border-indigo-500" 
               placeholder="e.g. Please clarify your use case for outbound calls..."
               value={requestInfoMessage}
               onChange={(e) => setRequestInfoMessage(e.target.value)}
             />
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsRequestInfoOpen(false)}>Cancel</Button>
+          <DialogFooter className="border-t pt-3">
+            <Button variant="outline" size="sm" onClick={() => setIsRequestInfoOpen(false)} className="text-xs border-slate-200">Cancel</Button>
             <Button 
+              size="sm"
+              className="text-xs bg-indigo-600 hover:bg-indigo-700 text-white"
               onClick={async () => {
                 if (!selectedApp || !requestInfoMessage.trim()) return;
                 try {
@@ -359,106 +391,106 @@ export default function ApplicationsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* View Full Application Submission Modal */}
+      {/* VIEW FULL SUBMISSION DETAILS MODAL */}
       <Dialog open={isDetailOpen} onOpenChange={setIsDetailOpen}>
-        <DialogContent className="max-w-3xl w-full max-h-[85vh] overflow-y-auto">
+        <DialogContent className="max-w-3xl w-full max-h-[85vh] overflow-y-auto bg-white border-slate-200 text-slate-900 rounded-xl">
           <DialogHeader>
-            <DialogTitle>Application Submission Details</DialogTitle>
+            <DialogTitle className="text-base font-semibold border-b pb-3">Application Submission Details</DialogTitle>
           </DialogHeader>
           {selectedApp && (
-            <div className="space-y-6 py-2 text-sm">
+            <div className="space-y-4 py-2 text-xs">
               {/* Contact Info */}
-              <div className="border rounded-md p-4 space-y-3 bg-muted/20">
-                <h4 className="font-semibold text-base border-b pb-2">Contact Information</h4>
+              <div className="border border-slate-200 rounded-lg p-4 space-y-3 bg-slate-50/50">
+                <h4 className="font-semibold text-sm text-slate-900 border-b border-slate-200 pb-2">Contact Information</h4>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
-                    <Label className="text-xs text-muted-foreground">Primary Contact</Label>
-                    <p className="font-medium">{selectedApp.contact_name || selectedApp.onboarding_form?.pocName || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Primary Contact</Label>
+                    <p className="font-semibold text-slate-900">{selectedApp.contact_name || selectedApp.onboarding_form?.pocName || "N/A"}</p>
                   </div>
                   <div>
-                    <Label className="text-xs text-muted-foreground">Designation / Role</Label>
-                    <p>{selectedApp.onboarding_form?.pocDesignation || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Designation / Role</Label>
+                    <p className="text-slate-800">{selectedApp.onboarding_form?.pocDesignation || "N/A"}</p>
                   </div>
                   <div>
-                    <Label className="text-xs text-muted-foreground">Email Address</Label>
-                    <p>{selectedApp.contact_email || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Email Address</Label>
+                    <p className="text-slate-800 font-mono text-[11px]">{selectedApp.contact_email || "N/A"}</p>
                   </div>
                   <div>
-                    <Label className="text-xs text-muted-foreground">Phone Number</Label>
-                    <p>{selectedApp.contact_phone || selectedApp.onboarding_form?.pocPhone || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Phone Number</Label>
+                    <p className="text-slate-800 font-mono text-[11px]">{selectedApp.contact_phone || selectedApp.onboarding_form?.pocPhone || "N/A"}</p>
                   </div>
                 </div>
               </div>
 
               {/* Business Profile */}
-              <div className="border rounded-md p-4 space-y-3 bg-muted/20">
-                <h4 className="font-semibold text-base border-b pb-2">Business & Company Profile</h4>
+              <div className="border border-slate-200 rounded-lg p-4 space-y-3 bg-slate-50/50">
+                <h4 className="font-semibold text-sm text-slate-900 border-b border-slate-200 pb-2">Business & Company Profile</h4>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
-                    <Label className="text-xs text-muted-foreground">Company Name</Label>
-                    <p className="font-medium">{selectedApp.company_name || selectedApp.onboarding_form?.businessName || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Company Name</Label>
+                    <p className="font-semibold text-slate-900">{selectedApp.company_name || selectedApp.onboarding_form?.businessName || "N/A"}</p>
                   </div>
                   <div>
-                    <Label className="text-xs text-muted-foreground">Industry</Label>
-                    <p>{selectedApp.industry || selectedApp.onboarding_form?.industry || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Industry</Label>
+                    <p className="text-slate-800">{selectedApp.industry || selectedApp.onboarding_form?.industry || "N/A"}</p>
                   </div>
                   <div>
-                    <Label className="text-xs text-muted-foreground">GST Number</Label>
-                    <p className="font-mono">{selectedApp.onboarding_form?.gstNumber || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">GST Number</Label>
+                    <p className="font-mono text-slate-800">{selectedApp.onboarding_form?.gstNumber || "N/A"}</p>
                   </div>
                   <div>
-                    <Label className="text-xs text-muted-foreground">Company Size</Label>
-                    <p>{selectedApp.onboarding_form?.companySize || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Company Size</Label>
+                    <p className="text-slate-800">{selectedApp.onboarding_form?.companySize || "N/A"}</p>
                   </div>
                   <div className="md:col-span-2">
-                    <Label className="text-xs text-muted-foreground">Website</Label>
+                    <Label className="text-[11px] text-slate-500 font-medium">Website</Label>
                     {selectedApp.onboarding_form?.websiteUrl ? (
                       <p>
                         <a 
                           href={selectedApp.onboarding_form.websiteUrl.startsWith("http") ? selectedApp.onboarding_form.websiteUrl : `https://${selectedApp.onboarding_form.websiteUrl}`} 
                           target="_blank" 
                           rel="noreferrer"
-                          className="text-blue-600 hover:underline"
+                          className="text-indigo-600 hover:underline"
                         >
                           {selectedApp.onboarding_form.websiteUrl}
                         </a>
                       </p>
                     ) : (
-                      <p className="text-muted-foreground">N/A</p>
+                      <p className="text-slate-400">N/A</p>
                     )}
                   </div>
                 </div>
               </div>
 
               {/* Voice Agent & Use Case */}
-              <div className="border rounded-md p-4 space-y-3 bg-muted/20">
-                <h4 className="font-semibold text-base border-b pb-2">Agent & Use Case Requirements</h4>
+              <div className="border border-slate-200 rounded-lg p-4 space-y-3 bg-slate-50/50">
+                <h4 className="font-semibold text-sm text-slate-900 border-b border-slate-200 pb-2">Agent & Use Case Requirements</h4>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
-                    <Label className="text-xs text-muted-foreground">Call Direction / Type</Label>
-                    <p className="font-medium capitalize">{selectedApp.onboarding_form?.useCaseType || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Call Direction / Type</Label>
+                    <p className="font-semibold capitalize text-slate-800">{selectedApp.onboarding_form?.useCaseType || "N/A"}</p>
                   </div>
                   <div>
-                    <Label className="text-xs text-muted-foreground">Expected Call Volume</Label>
-                    <p>{selectedApp.onboarding_form?.callVolume || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Expected Call Volume</Label>
+                    <p className="text-slate-800">{selectedApp.onboarding_form?.callVolume || "N/A"}</p>
                   </div>
                   <div>
-                    <Label className="text-xs text-muted-foreground">Target Languages</Label>
-                    <p>{selectedApp.onboarding_form?.languages || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Target Languages</Label>
+                    <p className="text-slate-800">{selectedApp.onboarding_form?.languages || "N/A"}</p>
                   </div>
                   <div>
-                    <Label className="text-xs text-muted-foreground">Integrations</Label>
-                    <p>{selectedApp.onboarding_form?.integrations || "N/A"}</p>
+                    <Label className="text-[11px] text-slate-500 font-medium">Integrations</Label>
+                    <p className="text-slate-800">{selectedApp.onboarding_form?.integrations || "N/A"}</p>
                   </div>
                   <div className="md:col-span-2">
-                    <Label className="text-xs text-muted-foreground">Use Case Description & Prompt Details</Label>
-                    <p className="mt-1 whitespace-pre-wrap bg-background p-3 rounded-md border text-xs">
+                    <Label className="text-[11px] text-slate-500 font-medium">Use Case Description & Prompt Details</Label>
+                    <p className="mt-1 whitespace-pre-wrap bg-white p-3 rounded-lg border border-slate-200 text-slate-800 leading-relaxed text-xs">
                       {selectedApp.onboarding_form?.useCaseDescription || "No detailed description provided."}
                     </p>
                   </div>
                   {selectedApp.onboarding_form?.needsApiIntegration && (
-                    <div className="md:col-span-2 bg-blue-50/80 border border-blue-200 p-3 rounded-md">
-                      <Label className="text-xs font-semibold text-blue-900 block mb-1">Custom API Integration Required</Label>
+                    <div className="md:col-span-2 bg-blue-50/70 border border-blue-200 p-3 rounded-lg">
+                      <Label className="text-[11px] font-semibold text-blue-900 block mb-1">Custom API Integration Required</Label>
                       <p className="text-blue-800 text-xs">{selectedApp.onboarding_form.apiIntegrationDetails || "Details pending."}</p>
                     </div>
                   )}
@@ -467,9 +499,9 @@ export default function ApplicationsPage() {
 
               {/* Submitted Verification Documents */}
               {(selectedApp.onboarding_form?.gstCertificateUrl || selectedApp.onboarding_form?.businessRegistrationUrl) && (
-                <div className="border rounded-md p-4 space-y-3 bg-muted/20">
-                  <h4 className="font-semibold text-base border-b pb-2">Submitted Verification Documents</h4>
-                  <div className="flex flex-wrap gap-4">
+                <div className="border border-slate-200 rounded-lg p-4 space-y-3 bg-slate-50/50">
+                  <h4 className="font-semibold text-sm text-slate-900 border-b border-slate-200 pb-2">Submitted Verification Documents</h4>
+                  <div className="flex flex-wrap gap-3">
                     {selectedApp.onboarding_form?.gstCertificateUrl && (
                       <DocumentViewer title="GST Certificate" dataUrl={selectedApp.onboarding_form.gstCertificateUrl} />
                     )}
@@ -482,17 +514,17 @@ export default function ApplicationsPage() {
 
               {/* Raw JSON submission */}
               {selectedApp.onboarding_form && (
-                <div className="pt-2">
+                <div className="pt-1">
                   <Button 
                     variant="ghost" 
                     size="sm" 
                     onClick={() => setShowRawJsonApp(!showRawJsonApp)}
-                    className="text-xs text-muted-foreground"
+                    className="text-xs text-slate-500 hover:text-slate-800 h-7"
                   >
                     {showRawJsonApp ? "Hide Raw Submission Data (JSON)" : "Show Raw Submission Data (JSON)"}
                   </Button>
                   {showRawJsonApp && (
-                    <pre className="mt-2 bg-zinc-950 text-zinc-100 p-3 rounded-md text-xs font-mono overflow-auto max-h-60">
+                    <pre className="mt-2 bg-slate-950 text-slate-100 p-3 rounded-lg text-xs font-mono overflow-auto max-h-60 border border-slate-800">
                       {JSON.stringify(selectedApp.onboarding_form, null, 2)}
                     </pre>
                   )}
@@ -500,9 +532,9 @@ export default function ApplicationsPage() {
               )}
             </div>
           )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsDetailOpen(false)}>Close</Button>
-            <Button onClick={() => { setIsDetailOpen(false); setIsApproveOpen(true); }}>Review & Approve</Button>
+          <DialogFooter className="border-t pt-3">
+            <Button variant="outline" size="sm" onClick={() => setIsDetailOpen(false)} className="text-xs border-slate-200">Close</Button>
+            <Button size="sm" onClick={() => { setIsDetailOpen(false); setIsApproveOpen(true); }} className="text-xs bg-indigo-600 hover:bg-indigo-700 text-white">Review & Approve</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

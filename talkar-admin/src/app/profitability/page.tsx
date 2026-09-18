@@ -1,7 +1,9 @@
 "use client";
+
 import { adminFetch } from "@/lib/api";
 import React, { useEffect, useState } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import {
   TrendingUp,
   TrendingDown,
@@ -13,7 +15,6 @@ import {
   RefreshCw,
 } from "lucide-react";
 
-// ── types ──────────────────────────────────────────────────────────────────────
 interface PlanBucket {
   plan: string;
   tts_provider: string;
@@ -68,36 +69,34 @@ interface ProfitData {
   cost_assumptions: Record<string, unknown>;
 }
 
-// ── helpers ────────────────────────────────────────────────────────────────────
 const inr = (v: number) =>
   `₹${v.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 const pct = (v: number) => `${v.toFixed(1)}%`;
 
 const marginColor = (m: number) => {
-  if (m >= 50) return "text-green-600";
-  if (m >= 30) return "text-yellow-600";
-  return "text-red-600";
+  if (m >= 50) return "text-emerald-700";
+  if (m >= 30) return "text-amber-700";
+  return "text-red-700";
 };
 
 const marginBg = (m: number) => {
-  if (m >= 50) return "bg-green-100 text-green-800";
-  if (m >= 30) return "bg-yellow-100 text-yellow-800";
-  return "bg-red-100 text-red-800";
+  if (m >= 50) return "bg-emerald-50 text-emerald-700 border border-emerald-200";
+  if (m >= 30) return "bg-amber-50 text-amber-800 border border-amber-200";
+  return "bg-red-50 text-red-700 border border-red-200";
 };
 
-// ── CostBar ────────────────────────────────────────────────────────────────────
 function CostBar({ breakdown, total }: { breakdown: CustomerRow["breakdown"]; total: number }) {
   if (total === 0) return null;
   const segments = [
-    { label: "Plivo", value: breakdown.plivo_inr, color: "bg-blue-400" },
-    { label: "STT", value: breakdown.stt_inr, color: "bg-purple-400" },
-    { label: "TTS", value: breakdown.tts_inr, color: "bg-orange-400" },
-    { label: "LLM", value: breakdown.llm_inr, color: "bg-emerald-400" },
+    { label: "Plivo", value: breakdown.plivo_inr, color: "bg-blue-500" },
+    { label: "STT", value: breakdown.stt_inr, color: "bg-purple-500" },
+    { label: "TTS", value: breakdown.tts_inr, color: "bg-amber-500" },
+    { label: "LLM", value: breakdown.llm_inr, color: "bg-emerald-500" },
   ];
   return (
-    <div className="flex gap-1 items-center">
-      <div className="flex h-2 flex-1 rounded overflow-hidden gap-0.5">
+    <div className="flex gap-2 items-center">
+      <div className="flex h-2 flex-1 rounded-full overflow-hidden gap-0.5 bg-slate-100">
         {segments.map((s) => (
           <div
             key={s.label}
@@ -107,10 +106,10 @@ function CostBar({ breakdown, total }: { breakdown: CustomerRow["breakdown"]; to
           />
         ))}
       </div>
-      <div className="flex gap-2 text-[10px] text-muted-foreground">
+      <div className="flex gap-2 text-[10px] text-slate-500">
         {segments.map((s) => (
-          <span key={s.label} className="flex items-center gap-0.5">
-            <span className={`inline-block w-2 h-2 rounded-sm ${s.color}`} />
+          <span key={s.label} className="flex items-center gap-1">
+            <span className={`inline-block w-1.5 h-1.5 rounded-full ${s.color}`} />
             {s.label}
           </span>
         ))}
@@ -123,48 +122,48 @@ function PlanBucketRow({ b }: { b: PlanBucket }) {
   const sttLabel = b.tts_provider.includes("smallest") ? "🎤 STT (Smallest AI)" : "🎤 STT (Deepgram)";
   const ttsLabel = b.tts_provider.includes("smallest") ? "🔊 TTS (Smallest AI)" : b.tts_provider.includes("elevenlabs") ? "🔊 TTS (ElevenLabs)" : "🔊 TTS (Deepgram)";
   const planColors: Record<string, string> = {
-    starter: "bg-slate-100 text-slate-700",
-    growth: "bg-emerald-100 text-emerald-800",
-    pro: "bg-orange-100 text-orange-800",
-    elite: "bg-purple-100 text-purple-800",
+    starter: "bg-slate-100 text-slate-700 border-slate-200",
+    growth: "bg-emerald-50 text-emerald-800 border-emerald-200",
+    pro: "bg-amber-50 text-amber-800 border-amber-200",
+    elite: "bg-purple-50 text-purple-800 border-purple-200",
   };
   return (
-    <div className="border border-dashed rounded-lg overflow-hidden">
-      <div className="flex items-center gap-4 px-4 py-2.5 bg-slate-50">
+    <div className="border border-slate-200 rounded-lg overflow-hidden bg-white text-xs">
+      <div className="flex items-center gap-4 px-4 py-2.5 bg-slate-50/60 border-b border-slate-100">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider ${planColors[b.plan] ?? "bg-slate-100 text-slate-700"}`}>
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider border ${planColors[b.plan] ?? "bg-slate-100 text-slate-700"}`}>
               {b.plan}
             </span>
-            <span className="text-xs text-muted-foreground">{b.calls} calls · {b.total_minutes.toFixed(1)} min</span>
+            <span className="text-xs text-slate-500">{b.calls} calls · {b.total_minutes.toFixed(1)} min</span>
           </div>
         </div>
         <div className="text-right shrink-0">
-          <div className="text-sm font-semibold text-green-700">{inr(b.revenue_inr)}</div>
-          <div className="text-[10px] text-muted-foreground">billed</div>
+          <div className="text-xs font-semibold text-emerald-700">{inr(b.revenue_inr)}</div>
+          <div className="text-[10px] text-slate-400">billed</div>
         </div>
         <div className="text-right shrink-0">
-          <div className="text-sm font-semibold text-red-600">{inr(b.cost_inr)}</div>
-          <div className="text-[10px] text-muted-foreground">cost</div>
+          <div className="text-xs font-semibold text-red-600">{inr(b.cost_inr)}</div>
+          <div className="text-[10px] text-slate-400">cost</div>
         </div>
         <div className="text-right shrink-0">
-          <div className={`text-sm font-bold ${b.profit_inr >= 0 ? "text-green-700" : "text-red-600"}`}>{inr(b.profit_inr)}</div>
-          <div className="text-[10px] text-muted-foreground">profit</div>
+          <div className={`text-xs font-bold ${b.profit_inr >= 0 ? "text-emerald-700" : "text-red-600"}`}>{inr(b.profit_inr)}</div>
+          <div className="text-[10px] text-slate-400">profit</div>
         </div>
-        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${marginBg(b.margin_pct)}`}>{pct(b.margin_pct)}</span>
+        <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${marginBg(b.margin_pct)}`}>{pct(b.margin_pct)}</span>
       </div>
-      <div className="px-4 py-2 bg-white border-t">
+      <div className="px-4 py-3 bg-white">
         <CostBar breakdown={b.breakdown} total={b.cost_inr} />
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2.5">
           {[
             { label: "📞 Plivo", value: b.breakdown.plivo_inr },
             { label: sttLabel, value: b.breakdown.stt_inr },
             { label: ttsLabel, value: b.breakdown.tts_inr },
             { label: "🤖 LLM", value: b.breakdown.llm_inr },
           ].map((item) => (
-            <div key={item.label} className="bg-slate-50 border rounded p-2 text-center">
-              <div className="text-[10px] text-muted-foreground">{item.label}</div>
-              <div className="font-semibold text-xs mt-0.5">{inr(item.value)}</div>
+            <div key={item.label} className="bg-slate-50/70 border border-slate-200 rounded-md p-2 text-center">
+              <div className="text-[10px] text-slate-500">{item.label}</div>
+              <div className="font-semibold text-xs text-slate-900 mt-0.5">{inr(item.value)}</div>
             </div>
           ))}
         </div>
@@ -173,74 +172,73 @@ function PlanBucketRow({ b }: { b: PlanBucket }) {
   );
 }
 
-// ── CustomerRow ────────────────────────────────────────────────────────────────
 function CustomerRowCard({ c }: { c: CustomerRow }) {
   const [open, setOpen] = useState(false);
   const isGrowth = c.plan === "growth";
   const isPro = c.plan === "pro" || c.plan === "elite";
   const planColors: Record<string, string> = {
-    starter: "bg-slate-100 text-slate-700",
-    growth: "bg-emerald-100 text-emerald-800",
-    pro: "bg-orange-100 text-orange-800",
-    elite: "bg-purple-100 text-purple-800",
+    starter: "bg-slate-100 text-slate-700 border-slate-200",
+    growth: "bg-emerald-50 text-emerald-800 border-emerald-200",
+    pro: "bg-amber-50 text-amber-800 border-amber-200",
+    elite: "bg-purple-50 text-purple-800 border-purple-200",
   };
   const hasMultiplePlans = c.plan_breakdown && c.plan_breakdown.length > 1;
   return (
-    <div className="border rounded-lg overflow-hidden">
+    <div className="border border-slate-200/80 rounded-xl overflow-hidden bg-white shadow-none">
       <button
-        className="w-full flex items-center gap-4 px-4 py-3 bg-white hover:bg-slate-50 transition-colors text-left"
+        className="w-full flex items-center gap-4 px-4 py-3 hover:bg-slate-50/60 transition-colors text-left cursor-pointer"
         onClick={() => setOpen((v) => !v)}
       >
         <div className="flex-1 min-w-0">
-          <div className="font-medium text-sm truncate flex items-center gap-2">
+          <div className="font-semibold text-xs text-slate-900 truncate flex items-center gap-2">
             {c.company_name}
             {hasMultiplePlans ? (
-              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider bg-blue-100 text-blue-800">
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider bg-blue-50 text-blue-800 border border-blue-200">
                 mixed plans
               </span>
             ) : (
-              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider ${planColors[c.plan] ?? "bg-slate-100 text-slate-700"}`}>
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider border ${planColors[c.plan] ?? "bg-slate-100 text-slate-700"}`}>
                 {c.plan}
               </span>
             )}
           </div>
           {c.contact_email && (
-            <div className="text-xs text-muted-foreground truncate">{c.contact_email}</div>
+            <div className="text-[11px] text-slate-500 truncate mt-0.5">{c.contact_email}</div>
           )}
-          <div className="text-xs text-muted-foreground mt-0.5">
+          <div className="text-[11px] text-slate-400 mt-0.5">
             {c.calls} calls · {c.total_minutes.toFixed(1)} min
             {c.status && c.status !== "active" && (
-              <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700">
+              <span className="ml-2 px-1.5 py-0.2 rounded text-[10px] font-medium bg-amber-50 text-amber-800 border border-amber-200">
                 {c.status}
               </span>
             )}
           </div>
         </div>
         <div className="text-right shrink-0">
-          <div className="text-sm font-semibold text-green-700">{inr(c.revenue_inr)}</div>
-          <div className="text-xs text-muted-foreground">billed</div>
+          <div className="text-xs font-semibold text-emerald-700">{inr(c.revenue_inr)}</div>
+          <div className="text-[10px] text-slate-400">billed</div>
         </div>
         <div className="text-right shrink-0">
-          <div className="text-sm font-semibold text-red-600">{inr(c.cost_inr)}</div>
-          <div className="text-xs text-muted-foreground">cost</div>
+          <div className="text-xs font-semibold text-red-600">{inr(c.cost_inr)}</div>
+          <div className="text-[10px] text-slate-400">cost</div>
         </div>
         <div className="text-right shrink-0">
-          <div className={`text-sm font-bold ${c.profit_inr >= 0 ? "text-green-700" : "text-red-600"}`}>
+          <div className={`text-xs font-bold ${c.profit_inr >= 0 ? "text-emerald-700" : "text-red-600"}`}>
             {inr(c.profit_inr)}
           </div>
-          <div className="text-xs text-muted-foreground">profit</div>
+          <div className="text-[10px] text-slate-400">profit</div>
         </div>
-        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${marginBg(c.margin_pct)}`}>
+        <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${marginBg(c.margin_pct)}`}>
           {pct(c.margin_pct)}
         </span>
-        {open ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+        {open ? <ChevronUp className="h-4 w-4 text-slate-400" /> : <ChevronDown className="h-4 w-4 text-slate-400" />}
       </button>
 
       {open && (
-        <div className="px-4 py-3 bg-slate-50 border-t space-y-3">
+        <div className="px-4 py-3.5 bg-slate-50/70 border-t border-slate-100 space-y-3">
           {hasMultiplePlans ? (
             <>
-              <p className="text-xs text-muted-foreground font-medium">This customer used multiple plans in this period — costs are broken down per plan:</p>
+              <p className="text-xs text-slate-600 font-medium">Customer used multiple subscription plans during this period:</p>
               <div className="space-y-2">
                 {c.plan_breakdown.map((b) => (
                   <PlanBucketRow key={`${b.plan}-${b.tts_provider}`} b={b} />
@@ -250,7 +248,7 @@ function CustomerRowCard({ c }: { c: CustomerRow }) {
           ) : (
             <>
               <CostBar breakdown={c.breakdown} total={c.cost_inr} />
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
                 {(c.plan_breakdown?.[0] ? [
                   { label: "📞 Plivo (telephony)", value: c.breakdown.plivo_inr },
                   { label: c.plan_breakdown[0].tts_provider.includes("smallest") ? "🎤 STT (Smallest AI)" : "🎤 STT (Deepgram)", value: c.breakdown.stt_inr },
@@ -262,9 +260,9 @@ function CustomerRowCard({ c }: { c: CustomerRow }) {
                   { label: "🔊 TTS", value: c.breakdown.tts_inr },
                   { label: "🤖 LLM (OpenAI)", value: c.breakdown.llm_inr },
                 ]).map((item) => (
-                  <div key={item.label} className="bg-white border rounded p-2 text-center">
-                    <div className="text-xs text-muted-foreground">{item.label}</div>
-                    <div className="font-semibold text-sm mt-1">{inr(item.value)}</div>
+                  <div key={item.label} className="bg-white border border-slate-200 rounded-lg p-2.5 text-center">
+                    <div className="text-[10px] text-slate-500">{item.label}</div>
+                    <div className="font-semibold text-xs text-slate-900 mt-1">{inr(item.value)}</div>
                   </div>
                 ))}
               </div>
@@ -276,7 +274,6 @@ function CustomerRowCard({ c }: { c: CustomerRow }) {
   );
 }
 
-// ── Main Page ──────────────────────────────────────────────────────────────────
 const PERIODS = [
   { value: "today", label: "Today" },
   { value: "week", label: "Last 7 days" },
@@ -309,124 +306,113 @@ export default function ProfitabilityPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex justify-between items-start flex-wrap gap-4">
+      {/* Page Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-slate-200/70">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Profitability Dashboard</h2>
-          <p className="text-muted-foreground mt-1">
-            Revenue vs. estimated AI + telephony costs · Estimated values based on real usage data
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2.5">
+            <div className="p-2 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-600">
+              <TrendingUp className="w-5 h-5" />
+            </div>
+            Profitability Dashboard
+          </h1>
+          <p className="text-xs text-slate-500 mt-1">
+            Revenue vs. estimated AI & telephony infrastructure costs based on live call usage.
           </p>
         </div>
+
         <div className="flex items-center gap-2">
-          <div className="flex rounded-lg border overflow-hidden">
+          {/* Segmented Period Switcher */}
+          <div className="flex items-center bg-slate-100 p-0.5 rounded-lg text-xs border border-slate-200/60">
             {PERIODS.map((p) => (
               <button
                 key={p.value}
                 onClick={() => setPeriod(p.value)}
-                className={`px-3 py-1.5 text-sm transition-colors ${
+                className={`px-3 py-1 rounded-md transition-all font-medium cursor-pointer ${
                   period === p.value
-                    ? "bg-slate-900 text-white"
-                    : "bg-white text-slate-700 hover:bg-slate-50"
+                    ? "bg-white text-slate-900 shadow-sm font-semibold"
+                    : "text-slate-600 hover:text-slate-900"
                 }`}
               >
                 {p.label}
               </button>
             ))}
           </div>
-          <button
+
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => fetchData(period)}
-            className="p-2 border rounded-lg hover:bg-slate-50 transition-colors"
+            className="h-8 w-8 p-0 border-slate-200 bg-white hover:bg-slate-50 text-slate-700 shadow-none cursor-pointer"
+            title="Refresh metrics"
           >
-            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-          </button>
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+          </Button>
         </div>
       </div>
 
       {/* Summary Cards */}
       {s && (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-          <Card className="border-slate-200">
-            <CardHeader className="pb-1 pt-3 px-4">
-              <CardTitle className="text-xs text-muted-foreground font-normal">Total Calls</CardTitle>
-            </CardHeader>
-            <CardContent className="px-4 pb-3">
-              <div className="text-2xl font-bold flex items-center gap-1">
-                <Phone className="h-4 w-4 text-slate-400" />
-                {s.total_calls}
-              </div>
-            </CardContent>
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3.5">
+          <Card className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-none">
+            <div className="text-[11px] text-slate-500 font-medium">Total Calls</div>
+            <div className="text-xl font-bold text-slate-900 mt-1 flex items-center gap-1.5">
+              <Phone className="h-4 w-4 text-slate-400" />
+              {s.total_calls}
+            </div>
           </Card>
 
-          <Card className="border-slate-200">
-            <CardHeader className="pb-1 pt-3 px-4">
-              <CardTitle className="text-xs text-muted-foreground font-normal">Wallet Topups</CardTitle>
-            </CardHeader>
-            <CardContent className="px-4 pb-3">
-              <div className="text-2xl font-bold text-blue-700">{inr(s.total_topups_inr)}</div>
-            </CardContent>
+          <Card className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-none">
+            <div className="text-[11px] text-slate-500 font-medium">Wallet Topups</div>
+            <div className="text-xl font-bold text-blue-700 mt-1">{inr(s.total_topups_inr)}</div>
           </Card>
 
-          <Card className="border-green-100">
-            <CardHeader className="pb-1 pt-3 px-4">
-              <CardTitle className="text-xs text-muted-foreground font-normal flex items-center gap-1">
-                <TrendingUp className="h-3 w-3 text-green-600" /> Revenue Billed
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-4 pb-3">
-              <div className="text-2xl font-bold text-green-700">{inr(s.total_revenue_inr)}</div>
-            </CardContent>
+          <Card className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-none">
+            <div className="text-[11px] text-emerald-700 font-medium flex items-center gap-1">
+              <TrendingUp className="h-3.5 w-3.5" /> Revenue Billed
+            </div>
+            <div className="text-xl font-bold text-emerald-700 mt-1">{inr(s.total_revenue_inr)}</div>
           </Card>
 
-          <Card className="border-red-100">
-            <CardHeader className="pb-1 pt-3 px-4">
-              <CardTitle className="text-xs text-muted-foreground font-normal flex items-center gap-1">
-                <TrendingDown className="h-3 w-3 text-red-500" /> Est. AI Cost
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-4 pb-3">
-              <div className="text-2xl font-bold text-red-600">{inr(s.total_cost_inr)}</div>
-            </CardContent>
+          <Card className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-none">
+            <div className="text-[11px] text-red-600 font-medium flex items-center gap-1">
+              <TrendingDown className="h-3.5 w-3.5" /> Est. AI Cost
+            </div>
+            <div className="text-xl font-bold text-red-600 mt-1">{inr(s.total_cost_inr)}</div>
           </Card>
 
-          <Card className="border-emerald-200 bg-emerald-50">
-            <CardHeader className="pb-1 pt-3 px-4">
-              <CardTitle className="text-xs text-muted-foreground font-normal flex items-center gap-1">
-                <DollarSign className="h-3 w-3 text-emerald-600" /> Gross Profit
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-4 pb-3">
-              <div className={`text-2xl font-bold ${s.gross_profit_inr >= 0 ? "text-emerald-700" : "text-red-600"}`}>
-                {inr(s.gross_profit_inr)}
-              </div>
-            </CardContent>
+          <Card className="bg-emerald-50/50 border border-emerald-200/80 rounded-xl p-4 shadow-none">
+            <div className="text-[11px] text-emerald-800 font-medium flex items-center gap-1">
+              <DollarSign className="h-3.5 w-3.5" /> Gross Profit
+            </div>
+            <div className={`text-xl font-bold mt-1 ${s.gross_profit_inr >= 0 ? "text-emerald-700" : "text-red-600"}`}>
+              {inr(s.gross_profit_inr)}
+            </div>
           </Card>
 
-          <Card className="border-blue-200 bg-blue-50">
-            <CardHeader className="pb-1 pt-3 px-4">
-              <CardTitle className="text-xs text-muted-foreground font-normal">Gross Margin</CardTitle>
-            </CardHeader>
-            <CardContent className="px-4 pb-3">
-              <div className={`text-2xl font-bold ${marginColor(s.gross_margin_pct)}`}>
-                {pct(s.gross_margin_pct)}
-              </div>
-            </CardContent>
+          <Card className="bg-blue-50/50 border border-blue-200/80 rounded-xl p-4 shadow-none">
+            <div className="text-[11px] text-blue-800 font-medium">Gross Margin</div>
+            <div className={`text-xl font-bold mt-1 ${marginColor(s.gross_margin_pct)}`}>
+              {pct(s.gross_margin_pct)}
+            </div>
           </Card>
         </div>
       )}
 
       {/* Per-Customer Breakdown */}
       <div>
-        <h3 className="text-lg font-semibold mb-3">Per-Customer Breakdown</h3>
+        <h3 className="text-sm font-semibold text-slate-900 mb-3">Customer Profitability Breakdown</h3>
         {loading ? (
-          <div className="text-center py-12 text-muted-foreground">Loading...</div>
+          <div className="text-center py-12 text-slate-400 text-xs">
+            <div className="w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+            Loading profitability breakdown...
+          </div>
         ) : !data || !data.customers || data.customers.length === 0 ? (
-          <div className="text-center py-12 text-muted-foreground border rounded-lg bg-slate-50">
-            No call data for this period.
+          <div className="text-center py-12 text-slate-400 border border-slate-200 rounded-xl bg-white text-xs">
+            No call activity recorded for this period.
           </div>
         ) : (
           <div className="space-y-2">
-            {/* Header */}
-            <div className="hidden sm:flex items-center gap-4 px-4 py-1 text-xs text-muted-foreground font-medium">
+            <div className="hidden sm:flex items-center gap-4 px-4 py-1 text-xs text-slate-400 font-semibold uppercase tracking-wider text-[10px]">
               <div className="flex-1">Customer</div>
               <div className="w-24 text-right">Revenue</div>
               <div className="w-24 text-right">Est. Cost</div>
@@ -443,10 +429,10 @@ export default function ProfitabilityPage() {
 
       {/* Assumptions footnote */}
       {data && (
-        <div className="text-xs text-muted-foreground border rounded p-3 bg-slate-50 space-y-1">
-          <div><strong>Cost model assumptions (Starter / Pro):</strong> Plivo ₹0.60/min · Deepgram STT $0.0048/min · Deepgram TTS $0.015/1k chars · ElevenLabs TTS $0.18/1k chars · GPT-4o-mini $0.15/$0.60 per 1M tokens · USD/INR ₹95.7 · TTS speaking ratio 47% · 900 chars/min of AI speech.</div>
-          <div><strong>Growth plan:</strong> Smallest AI STT ~$0.003/min · Smallest AI TTS $0.0175/1k chars (Lightning v3.1 = $0.175/10k chars).</div>
-          <div className="text-amber-600">⚠ These are estimates. Actual provider bills may differ slightly. Verify against your Smallest AI invoice once Growth plan has real call volume.</div>
+        <div className="text-[11px] text-slate-500 border border-slate-200 rounded-xl p-3.5 bg-slate-50/60 space-y-1 leading-relaxed">
+          <div><strong className="text-slate-700">Cost model assumptions:</strong> Plivo ₹0.60/min · Deepgram STT $0.0048/min · Deepgram TTS $0.015/1k chars · ElevenLabs TTS $0.18/1k chars · GPT-4o-mini $0.15/$0.60 per 1M tokens · USD/INR ₹95.7 · TTS speaking ratio 47% · 900 chars/min of AI speech.</div>
+          <div><strong className="text-slate-700">Growth plan:</strong> Smallest AI STT ~$0.003/min · Smallest AI TTS $0.0175/1k chars (Lightning v3.1).</div>
+          <div className="text-amber-700 font-medium">⚠️ Estimates based on aggregate call duration and provider pricing. Verify against actual upstream API invoices monthly.</div>
         </div>
       )}
     </div>
