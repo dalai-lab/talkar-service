@@ -106,10 +106,10 @@ export default function CustomerDetailPage() {
   const [isCustomPlanOpen, setIsCustomPlanOpen] = useState(false);
   const [customPlanLoading, setCustomPlanLoading] = useState(false);
   const [customPricing, setCustomPricing] = useState({
-    per_minute_rate_paise: "500",
+    per_minute_rate_paise: "5.00",
     concurrent_call_limit: "100",
     max_call_duration_seconds: "3600",
-    activation_deposit_paise: "1000000",
+    activation_deposit_paise: "10000.00",
     llm_model: "gpt-4o",
     tts_provider: "elevenlabs",
     stt_provider: "deepgram",
@@ -160,10 +160,10 @@ export default function CustomerDetailPage() {
         if (subData?.plan === "custom" && subData?.custom_config) {
           const cc = subData.custom_config;
           setCustomPricing({
-            per_minute_rate_paise: String(subData.per_minute_rate_paise ?? "500"),
+            per_minute_rate_paise: String((subData.per_minute_rate_paise ?? 500) / 100),
             concurrent_call_limit: String(cc.concurrent_call_limit ?? "100"),
             max_call_duration_seconds: String(cc.max_call_duration_seconds ?? "3600"),
-            activation_deposit_paise: String(cc.activation_deposit_paise ?? "1000000"),
+            activation_deposit_paise: String((cc.activation_deposit_paise ?? 1000000) / 100),
             llm_model: cc.llm_model ?? "gpt-4o",
             tts_provider: cc.tts_provider ?? "elevenlabs",
             stt_provider: cc.stt_provider ?? "deepgram",
@@ -359,10 +359,10 @@ export default function CustomerDetailPage() {
     setCustomPlanLoading(true);
     try {
       const payload = {
-        per_minute_rate_paise: parseInt(customPricing.per_minute_rate_paise),
+        per_minute_rate_paise: Math.round(parseFloat(customPricing.per_minute_rate_paise) * 100),
         concurrent_call_limit: parseInt(customPricing.concurrent_call_limit),
         max_call_duration_seconds: parseInt(customPricing.max_call_duration_seconds),
-        activation_deposit_paise: parseInt(customPricing.activation_deposit_paise),
+        activation_deposit_paise: Math.round(parseFloat(customPricing.activation_deposit_paise) * 100),
         llm_model: customPricing.llm_model,
         tts_provider: customPricing.tts_provider,
         stt_provider: customPricing.stt_provider,
@@ -764,7 +764,7 @@ export default function CustomerDetailPage() {
                 </div>
                 {subscription?.plan === "custom" && subscription?.custom_config && (
                   <div className="mt-2 text-xs text-slate-500 space-y-0.5">
-                    <p>⚡ {subscription.per_minute_rate_paise} paise/min · {subscription.custom_config.concurrent_call_limit} concurrent calls</p>
+                    <p>⚡ ₹{(subscription.per_minute_rate_paise / 100).toFixed(2)}/min · {subscription.custom_config.concurrent_call_limit} concurrent calls</p>
                     <p>🤖 LLM: {subscription.custom_config.llm_model} · TTS: {subscription.custom_config.tts_provider} · STT: {subscription.custom_config.stt_provider}</p>
                   </div>
                 )}
@@ -1124,13 +1124,18 @@ export default function CustomerDetailPage() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-slate-700 font-medium">Call Rate (Paise/min)</Label>
-              <Input 
-                type="number" 
-                value={customPricing.per_minute_rate_paise} 
-                onChange={e => setCustomPricing({...customPricing, per_minute_rate_paise: e.target.value})} 
-                className="h-8 text-xs bg-white border-slate-200"
-              />
+              <Label className="text-slate-700 font-medium">Call Rate (₹/min)</Label>
+              <div className="relative">
+                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs">₹</span>
+                <Input 
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={customPricing.per_minute_rate_paise} 
+                  onChange={e => setCustomPricing({...customPricing, per_minute_rate_paise: e.target.value})} 
+                  className="h-8 text-xs bg-white border-slate-200 pl-6"
+                />
+              </div>
             </div>
             <div className="space-y-1.5">
               <Label className="text-slate-700 font-medium">Concurrent Call Limit</Label>
@@ -1151,13 +1156,18 @@ export default function CustomerDetailPage() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-slate-700 font-medium">Activation Deposit (Paise)</Label>
-              <Input 
-                type="number" 
-                value={customPricing.activation_deposit_paise} 
-                onChange={e => setCustomPricing({...customPricing, activation_deposit_paise: e.target.value})} 
-                className="h-8 text-xs bg-white border-slate-200"
-              />
+              <Label className="text-slate-700 font-medium">Activation Deposit (₹)</Label>
+              <div className="relative">
+                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs">₹</span>
+                <Input 
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={customPricing.activation_deposit_paise} 
+                  onChange={e => setCustomPricing({...customPricing, activation_deposit_paise: e.target.value})} 
+                  className="h-8 text-xs bg-white border-slate-200 pl-6"
+                />
+              </div>
             </div>
             <div className="space-y-1.5">
               <Label className="text-slate-700 font-medium">Free Phone Numbers Included</Label>
