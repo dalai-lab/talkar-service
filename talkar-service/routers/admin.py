@@ -1016,9 +1016,9 @@ def _estimate_call_cost_inr(
         if key.startswith("QAAnalysis"):
             continue
         if isinstance(val, dict):
-            prompt_tokens += val.get("prompt_tokens", 0)
-            completion_tokens += val.get("completion_tokens", 0)
-            cached_tokens += val.get("cache_read_input_tokens", 0)
+            prompt_tokens += (val.get("prompt_tokens") or 0)
+            completion_tokens += (val.get("completion_tokens") or 0)
+            cached_tokens += (val.get("cache_read_input_tokens") or 0)
 
     non_cached = max(prompt_tokens - cached_tokens, 0)
     llm_usd = (
