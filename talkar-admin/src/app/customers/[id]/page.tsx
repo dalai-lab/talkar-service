@@ -74,6 +74,21 @@ export default function CustomerDetailPage() {
   const [newPlan, setNewPlan] = useState("");
   const [planLoading, setPlanLoading] = useState(false);
 
+  // Custom Plan modal
+  const [isCustomPlanOpen, setIsCustomPlanOpen] = useState(false);
+  const [customPlanLoading, setCustomPlanLoading] = useState(false);
+  const [customPricing, setCustomPricing] = useState({
+    per_minute_rate_paise: "500",
+    concurrent_call_limit: "100",
+    max_call_duration_seconds: "3600",
+    activation_deposit_paise: "1000000",
+    llm_model: "gpt-4o",
+    tts_provider: "elevenlabs",
+    stt_provider: "deepgram",
+    free_phone_numbers: "5",
+    custom_plan_label: "Custom Enterprise",
+  });
+
   const [phoneNumbers, setPhoneNumbers] = useState<any[]>([]);
   const [agents, setAgents] = useState<any[]>([]);
   const [showRawJson, setShowRawJson] = useState(false);
@@ -199,6 +214,41 @@ export default function CustomerDetailPage() {
     }
   };
 
+  const handleSetCustomPricing = async () => {
+    setCustomPlanLoading(true);
+    try {
+      const payload = {
+        per_minute_rate_paise: parseInt(customPricing.per_minute_rate_paise),
+        concurrent_call_limit: parseInt(customPricing.concurrent_call_limit),
+        max_call_duration_seconds: parseInt(customPricing.max_call_duration_seconds),
+        activation_deposit_paise: parseInt(customPricing.activation_deposit_paise),
+        llm_model: customPricing.llm_model,
+        tts_provider: customPricing.tts_provider,
+        stt_provider: customPricing.stt_provider,
+        free_phone_numbers: parseInt(customPricing.free_phone_numbers),
+        custom_plan_label: customPricing.custom_plan_label,
+        trigger_reprovisioning: true,
+      };
+      const res = await adminFetch(`/admin/customers/${id}/set-custom-pricing`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        setIsCustomPlanOpen(false);
+        alert("Custom pricing set and customer reprovisioned!");
+        fetchCustomer();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Failed to set custom pricing: ${err.detail || "Unknown error"}`);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setCustomPlanLoading(false);
+    }
+  };
+
   const handleSuspend = async () => {
     if (!confirm("Are you sure you want to suspend this account?")) return;
     try {
@@ -311,6 +361,7 @@ export default function CustomerDetailPage() {
           <Button variant="outline" onClick={() => setIsCreditOpen(true)}>Grant Manual Credit</Button>
           <Button variant="outline" onClick={() => setIsDeductOpen(true)}>Deduct Balance</Button>
           <Button variant="outline" onClick={() => setIsPlanOpen(true)}>Change Tier</Button>
+          <Button variant="secondary" onClick={() => setIsCustomPlanOpen(true)}>Set Custom Plan</Button>
           <Button variant="outline" onClick={handleRetryProvisioning}>Retry Provisioning</Button>
           <Button variant="destructive" onClick={handleSuspend}>Suspend Account</Button>
         </div>
@@ -657,6 +708,106 @@ export default function CustomerDetailPage() {
             <Button variant="outline" onClick={() => setIsPlanOpen(false)}>Cancel</Button>
             <Button onClick={handleUpgradePlan} disabled={!newPlan || planLoading}>
               {planLoading ? "Updating..." : "Confirm Tier Change"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Custom Plan Modal */}
+      <Dialog open={isCustomPlanOpen} onOpenChange={setIsCustomPlanOpen}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Set Custom Pricing</DialogTitle>
+            <DialogDescription>
+              Deploy a completely custom pricing and quota configuration. This ignores global tier limits and overrides the customer's Dograh constraints.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4 space-y-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2 mt-4">
+              <Label>Label / Name</Label>
+              <Input 
+                value={customPricing.custom_plan_label} 
+                onChange={e => setCustomPricing({...customPricing, custom_plan_label: e.target.value})} 
+              />
+            </div>
+            <div className="space-y-2 mt-4">
+              <Label>Call Rate (Paise/min)</Label>
+              <Input 
+                type="number" 
+                value={customPricing.per_minute_rate_paise} 
+                onChange={e => setCustomPricing({...customPricing, per_minute_rate_paise: e.target.value})} 
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Concurrent Call Limit</Label>
+              <Input 
+                type="number" 
+                value={customPricing.concurrent_call_limit} 
+                onChange={e => setCustomPricing({...customPricing, concurrent_call_limit: e.target.value})} 
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Max Call Duration (s)</Label>
+              <Input 
+                type="number" 
+                value={customPricing.max_call_duration_seconds} 
+                onChange={e => setCustomPricing({...customPricing, max_call_duration_seconds: e.target.value})} 
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Activation Min Deposit (Paise)</Label>
+              <Input 
+                type="number" 
+                value={customPricing.activation_deposit_paise} 
+                onChange={e => setCustomPricing({...customPricing, activation_deposit_paise: e.target.value})} 
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Free Phone Numbers</Label>
+              <Input 
+                type="number" 
+                value={customPricing.free_phone_numbers} 
+                onChange={e => setCustomPricing({...customPricing, free_phone_numbers: e.target.value})} 
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>LLM Model</Label>
+              <Select value={customPricing.llm_model} onValueChange={(v) => setCustomPricing({...customPricing, llm_model: v})}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="gpt-4o-mini">gpt-4o-mini</SelectItem>
+                  <SelectItem value="gpt-4o">gpt-4o</SelectItem>
+                  <SelectItem value="claude-3-5-sonnet">claude-3-5-sonnet</SelectItem>
+                  <SelectItem value="llama3-70b-8192">llama3-70b-8192</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>TTS Provider</Label>
+              <Select value={customPricing.tts_provider} onValueChange={(v) => setCustomPricing({...customPricing, tts_provider: v})}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="elevenlabs">ElevenLabs</SelectItem>
+                  <SelectItem value="deepgram">Deepgram</SelectItem>
+                  <SelectItem value="smallest_ai">Smallest AI</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>STT Provider</Label>
+              <Select value={customPricing.stt_provider} onValueChange={(v) => setCustomPricing({...customPricing, stt_provider: v})}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="deepgram">Deepgram</SelectItem>
+                  <SelectItem value="smallest">Smallest AI</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsCustomPlanOpen(false)}>Cancel</Button>
+            <Button onClick={handleSetCustomPricing} disabled={customPlanLoading}>
+              {customPlanLoading ? "Deploying..." : "Deploy Custom Plan"}
             </Button>
           </DialogFooter>
         </DialogContent>

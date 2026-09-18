@@ -80,13 +80,14 @@ async def block_org_calls(org_id: int):
     await upsert_org_config(org_id, "CONCURRENT_CALL_LIMIT", {"value": 0})
     logger.info(f"Blocked calls for Dograh org {org_id} (CONCURRENT_CALL_LIMIT=0)")
 
-async def restore_org_calls(org_id: int, tier: str = "starter"):
+async def restore_org_calls(org_id: int, tier: str = "starter", limit: int = None):
     """Restore call capacity for a Dograh org after reactivation.
     
     Sets CONCURRENT_CALL_LIMIT back to the tier's configured limit.
     """
-    from config import TIER_CONFIG
-    limit = TIER_CONFIG.get(tier, TIER_CONFIG["starter"])["concurrent_call_limit"]
+    if limit is None:
+        from config import TIER_CONFIG
+        limit = TIER_CONFIG.get(tier, TIER_CONFIG["starter"])["concurrent_call_limit"]
     await upsert_org_config(org_id, "CONCURRENT_CALL_LIMIT", {"value": limit})
     logger.info(f"Restored calls for Dograh org {org_id} to limit={limit} (tier={tier})")
 

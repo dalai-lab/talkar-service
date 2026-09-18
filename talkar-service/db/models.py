@@ -36,6 +36,8 @@ class Subscription(Base):
     setup_fee_paid = Column(Boolean, default=False)
     start_date = Column(Date, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    custom_config = Column(JSON, nullable=True)
+    custom_plan_label = Column(Text, nullable=True)
 
 class PhoneNumberRequest(Base):
     __tablename__ = "phone_number_requests"

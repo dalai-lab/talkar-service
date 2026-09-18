@@ -96,3 +96,17 @@ TIER_CONFIG = {
         "disabled": True,
     },
 }
+
+def resolve_tier_config(subscription=None) -> dict:
+    """
+    Returns the effective tier config dict for a given subscription row.
+    For custom plans, merges the stored custom_config over sane starter defaults.
+    For standard plans, returns from TIER_CONFIG directly.
+    Pass None to get the starter fallback.
+    """
+    if subscription and subscription.plan == "custom" and getattr(subscription, "custom_config", None):
+        base = dict(TIER_CONFIG["starter"])
+        base.update(subscription.custom_config)
+        return base
+    plan = (subscription.plan if subscription else None) or "starter"
+    return TIER_CONFIG.get(plan, TIER_CONFIG["starter"])

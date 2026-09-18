@@ -40,13 +40,12 @@ async def create_topup_order(data: TopupRequest, db: AsyncSession = Depends(get_
     sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
     sub = sub_res.scalar_one_or_none()
     
-    from config import TIER_CONFIG
-    tier_name = sub.plan if sub else (customer.onboarding_form or {}).get("approved_tier", "starter")
-    tier_cfg = TIER_CONFIG.get(tier_name, TIER_CONFIG["starter"])
+    from config import resolve_tier_config
+    tier_cfg = resolve_tier_config(sub)
     plan_min_rupees = tier_cfg.get("activation_deposit_paise", 600000) // 100
     
     if data.amount_rupees < plan_min_rupees:
-        raise HTTPException(400, f"Minimum recharge for the {tier_name} plan is ₹{plan_min_rupees}. You cannot add less than this.")
+        raise HTTPException(400, f"Minimum recharge for your plan is ₹{plan_min_rupees}. You cannot add less than this.")
 
     if customer.status not in ("active", "suspended", "pending_deposit", "pending_plan_selection", "approved"):
         raise HTTPException(400, "Account not eligible for top-up")
@@ -79,12 +78,15 @@ async def create_upgrade_order(data: UpgradeOrderRequest, db: AsyncSession = Dep
     if not customer:
         raise HTTPException(404, "Customer not found")
         
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+    sub = sub_res.scalar_one_or_none()
+    if sub and sub.plan == "custom":
+        raise HTTPException(400, "Your plan is custom-configured. Contact Talkar support to modify it.")
+        
     from services.billing_service import get_billing_wallet
     wallet, master_id = await get_billing_wallet(db, customer.id)
     
     if wallet and wallet.balance_paise >= activation_min:
-        sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
-        sub = sub_res.scalar_one_or_none()
         if sub:
             sub.plan = data.requested_tier
             sub.per_minute_rate_paise = tier_config["per_minute_rate_paise"]
@@ -181,6 +183,8 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
     
     # 5. Process Tier Upgrade if requested
     if data.requested_tier:
+        if data.requested_tier == "custom":
+            raise HTTPException(400, "Cannot self-assign a custom plan.")
         from config import TIER_CONFIG
         if data.requested_tier in TIER_CONFIG:
             sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
@@ -228,9 +232,9 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
     # 6. Auto-reactivate if suspended or pending_deposit
     sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
     sub = sub_res.scalar_one_or_none()
-    tier_name = sub.plan if sub else (customer.onboarding_form or {}).get("approved_tier", "starter")
-    from config import TIER_CONFIG
-    activation_threshold = TIER_CONFIG.get(tier_name, TIER_CONFIG["starter"]).get("activation_deposit_paise", 600000)
+    from config import resolve_tier_config
+    tier_cfg = resolve_tier_config(sub)
+    activation_threshold = tier_cfg.get("activation_deposit_paise", 600000)
 
     if customer.status == "pending_deposit":
         if wallet.balance_paise >= activation_threshold:
@@ -246,7 +250,8 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
             if customer.dograh_org_id:
                 try:
                     tier = sub.plan if sub else "starter"
-                    await dograh_client.restore_org_calls(customer.dograh_org_id, tier)
+                    concurrent_limit = resolve_tier_config(sub).get("concurrent_call_limit")
+                    await dograh_client.restore_org_calls(customer.dograh_org_id, tier, concurrent_limit)
                 except Exception as e:
                     logger.error(f"Failed to restore calls for org {customer.dograh_org_id}: {e}")
             await notification_service.send_email(
@@ -267,7 +272,8 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
         if customer.dograh_org_id:
             try:
                 tier = sub.plan if sub else "starter"
-                await dograh_client.restore_org_calls(customer.dograh_org_id, tier)
+                concurrent_limit = resolve_tier_config(sub).get("concurrent_call_limit")
+                await dograh_client.restore_org_calls(customer.dograh_org_id, tier, concurrent_limit)
             except Exception as e:
                 logger.error(f"Failed to restore calls for org {customer.dograh_org_id}: {e}")
     elif customer.status == "active" and wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE:
@@ -277,12 +283,13 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
         if customer.dograh_org_id:
             try:
                 tier = sub.plan if sub else "starter"
-                await dograh_client.restore_org_calls(customer.dograh_org_id, tier)
+                concurrent_limit = resolve_tier_config(sub).get("concurrent_call_limit")
+                await dograh_client.restore_org_calls(customer.dograh_org_id, tier, concurrent_limit)
                 # Also restore sub-orgs billing under this master
                 sub_orgs_res2 = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
                 for sub_org in sub_orgs_res2.scalars().all():
                     if sub_org.dograh_org_id:
-                        await dograh_client.restore_org_calls(sub_org.dograh_org_id, tier)
+                        await dograh_client.restore_org_calls(sub_org.dograh_org_id, tier, concurrent_limit)
             except Exception as e:
                 logger.error(f"Failed to restore calls after topup for active customer {customer.id}: {e}")
 
@@ -411,7 +418,11 @@ async def razorpay_webhook(request: Request, db: AsyncSession = Depends(get_db))
                             try:
                                 await run_provisioning(customer_id, requested_tier, db)
                                 if upg_customer.dograh_org_id:
-                                    await dograh_client.restore_org_calls(upg_customer.dograh_org_id, requested_tier)
+                                    sub_res2 = await db.execute(select(Subscription).where(Subscription.customer_id == customer_id))
+                                    upg_sub = sub_res2.scalar_one_or_none()
+                                    from config import resolve_tier_config
+                                    concurrent_limit = resolve_tier_config(upg_sub).get("concurrent_call_limit")
+                                    await dograh_client.restore_org_calls(upg_customer.dograh_org_id, requested_tier, concurrent_limit)
                             except Exception as e:
                                 logger.error(f"Provisioning/restore failed after webhook upgrade for {customer_id}: {e}")
                                 
@@ -435,7 +446,10 @@ async def razorpay_webhook(request: Request, db: AsyncSession = Depends(get_db))
                                     try:
                                         await run_provisioning(sub_org.id, requested_tier, db)
                                         if sub_org.dograh_org_id:
-                                            await dograh_client.restore_org_calls(sub_org.dograh_org_id, requested_tier)
+                                            sub_sub_res2 = await db.execute(select(Subscription).where(Subscription.customer_id == sub_org.id))
+                                            sub_sub2 = sub_sub_res2.scalar_one_or_none()
+                                            sub_concurrent = resolve_tier_config(sub_sub2).get("concurrent_call_limit")
+                                            await dograh_client.restore_org_calls(sub_org.dograh_org_id, requested_tier, sub_concurrent)
                                     except Exception as e:
                                         logger.error(f"Failed to cascade provisioning/restore to sub-org {sub_org.id}: {e}")
 
@@ -464,13 +478,15 @@ async def check_quota(data: DograhQuotaRequest, db: AsyncSession = Depends(get_d
         return {"has_quota": False}
 
     # 1. Minimum Reserve Check (Risk 1)
-    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+    # For sub-orgs, subscription and custom_config live on the master — use master_id.
+    sub_customer_id = master_id  # master_id already resolved by get_billing_wallet above
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == sub_customer_id))
     sub = sub_res.scalar_one_or_none()
-    from config import TIER_CONFIG
+    from config import resolve_tier_config
     
-    rate = sub.per_minute_rate_paise if sub else TIER_CONFIG["starter"]["per_minute_rate_paise"]
-    tier_name = sub.plan if sub else "starter"
-    max_duration_secs = TIER_CONFIG[tier_name].get("max_call_duration_seconds", 900)
+    tier_cfg = resolve_tier_config(sub)
+    rate = sub.per_minute_rate_paise if sub else tier_cfg["per_minute_rate_paise"]
+    max_duration_secs = tier_cfg.get("max_call_duration_seconds", 900)
     
     # Require 5 minutes of funds to even start a call
     minimum_reserve_paise = 5 * rate
@@ -535,8 +551,9 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
 
     # Stamp plan+tts_provider at billing time so profitability always reflects the
     # plan that was active during the call, even after later plan switches.
+    from config import resolve_tier_config
     active_plan = sub.plan if sub else "starter"
-    active_tts = TIER_CONFIG.get(active_plan, {}).get("tts_provider", "deepgram")
+    active_tts = resolve_tier_config(sub).get("tts_provider", "deepgram")
 
     # --- SOT edge case: zero-duration call (pipeline crash, abnormal termination) ---
     # SOT line 278: log it with cost=0, do not retry, alert admin
@@ -713,7 +730,9 @@ async def get_subscription_by_org(org_id: int, db: AsyncSession = Depends(get_db
     if not customer:
         raise HTTPException(404, "Customer not found")
     
-    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+    # For sub-orgs, subscription + custom config live on the billing master
+    billing_customer_id = customer.billing_org_id if customer.billing_org_id else customer.id
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == billing_customer_id))
     sub = sub_res.scalar_one_or_none()
     if not sub:
         # Provisioning may not have run yet — return graceful empty
@@ -723,6 +742,9 @@ async def get_subscription_by_org(org_id: int, db: AsyncSession = Depends(get_db
         "tier": sub.plan,
         "per_minute_rate_paise": sub.per_minute_rate_paise,
         "status": sub.status,
+        "is_custom": sub.plan == "custom",
+        "custom_plan_label": getattr(sub, "custom_plan_label", None),
+        "custom_activation_deposit_paise": getattr(sub, "custom_config", {}).get("activation_deposit_paise") if getattr(sub, "custom_config", None) else None,
         "tier_upgrade_requested": customer.onboarding_form.get("tier_upgrade_requested") if customer.onboarding_form else None
     }
 

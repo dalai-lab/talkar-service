@@ -41,6 +41,18 @@ class CustomerUpdateRequest(BaseModel):
     status: Optional[str] = None
     tier: Optional[str] = None
 
+class SetCustomPricingRequest(BaseModel):
+    per_minute_rate_paise: int
+    concurrent_call_limit: int
+    max_call_duration_seconds: int
+    activation_deposit_paise: int
+    llm_model: str = "gpt-4o-mini"
+    tts_provider: str = "deepgram"
+    stt_provider: str = "deepgram"
+    free_phone_numbers: int = 1
+    custom_plan_label: str = "Custom"
+    trigger_reprovisioning: bool = True
+
 
 # --- AUTH ---
 
@@ -212,6 +224,87 @@ async def impersonate_customer(customer_id: int, db: AsyncSession = Depends(get_
         "refresh_token": data.get("refresh_token")
     }
 
+@router.post("/customers/{customer_id}/set-custom-pricing")
+async def set_custom_pricing(customer_id: int, data: SetCustomPricingRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    result = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = result.scalar_one_or_none()
+    if not customer: raise HTTPException(404, "Customer not found")
+    
+    if customer.status not in ("active", "agent_building"):
+        raise HTTPException(400, "Can only set custom pricing on active or building customers.")
+    
+    # EC-2: Only master orgs can have custom pricing. Sub-orgs inherit from master.
+    if customer.billing_org_id:
+        raise HTTPException(400, "Cannot set custom pricing on a sub-org. Set it on the master org and it will cascade.")
+        
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer_id))
+    sub = sub_res.scalar_one_or_none()
+    if not sub:
+        raise HTTPException(400, "Customer has no subscription record yet. Ensure provisioning has run first.")
+    
+    custom_config_data = {
+        "concurrent_call_limit": data.concurrent_call_limit,
+        "max_call_duration_seconds": data.max_call_duration_seconds,
+        "activation_deposit_paise": data.activation_deposit_paise,
+        "llm_model": data.llm_model,
+        "tts_provider": data.tts_provider,
+        "stt_provider": data.stt_provider,
+        "free_phone_numbers": data.free_phone_numbers,
+    }
+    
+    from sqlalchemy.orm.attributes import flag_modified
+    sub.plan = "custom"
+    sub.per_minute_rate_paise = data.per_minute_rate_paise
+    sub.custom_config = custom_config_data
+    sub.custom_plan_label = data.custom_plan_label
+    flag_modified(sub, "custom_config")
+        
+    existing_form = customer.onboarding_form or {}
+    existing_form["approved_tier"] = "custom"
+    existing_form.pop("tier_upgrade_requested", None)
+    existing_form.pop("tier_upgrade_requested_at", None)
+    customer.onboarding_form = dict(existing_form)
+    flag_modified(customer, "onboarding_form")
+    await db.commit()
+
+    
+    if data.trigger_reprovisioning:
+        from services.provisioning_service import run_provisioning
+        try:
+            await run_provisioning(customer.id, None, db)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to provision custom plan for customer {customer_id}: {e}")
+            
+    # Cascade to sub-orgs
+    sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
+    for sub_org in sub_orgs_res.scalars().all():
+        sub_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == sub_org.id))
+        sub_sub = sub_sub_res.scalar_one_or_none()
+        if sub_sub:
+            sub_sub.plan = "custom"
+            sub_sub.per_minute_rate_paise = data.per_minute_rate_paise
+            sub_sub.custom_config = custom_config_data
+            sub_sub.custom_plan_label = data.custom_plan_label
+            
+        sub_form = sub_org.onboarding_form or {}
+        sub_form["approved_tier"] = "custom"
+        sub_org.onboarding_form = dict(sub_form)
+        flag_modified(sub_org, "onboarding_form")
+        
+        await db.commit()
+        if sub_org.status == "active" and data.trigger_reprovisioning:
+            try:
+                from services.provisioning_service import run_provisioning
+                await run_provisioning(sub_org.id, None, db)
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Failed to cascade custom plan provisioning to sub-org {sub_org.id}: {e}")
+                
+    return {"status": "success"}
+
 @router.patch("/customers/{customer_id}")
 async def update_customer(customer_id: int, data: CustomerUpdateRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
     result = await db.execute(select(Customer).where(Customer.id == customer_id))
@@ -220,6 +313,8 @@ async def update_customer(customer_id: int, data: CustomerUpdateRequest, db: Asy
     
     if data.status: customer.status = data.status
     if data.tier:
+        if data.tier == "custom":
+            raise HTTPException(400, "Use POST /customers/{id}/set-custom-pricing to set a custom plan.")
         from config import TIER_CONFIG
         tier_cfg = TIER_CONFIG.get(data.tier)
         if not tier_cfg: raise HTTPException(400, "Invalid tier")
@@ -230,6 +325,8 @@ async def update_customer(customer_id: int, data: CustomerUpdateRequest, db: Asy
         if sub:
             sub.plan = data.tier
             sub.per_minute_rate_paise = tier_cfg["per_minute_rate_paise"]
+            sub.custom_config = None
+            sub.custom_plan_label = None
 
         # Store new tier in onboarding_form so provisioning picks it up
         existing_form = customer.onboarding_form or {}

@@ -45,8 +45,15 @@ async def run_provisioning(customer_id: int, plan: str = None, db: AsyncSession 
 
         logger.info(f"Starting provisioning for customer {customer_id} with tier {tier}")
         
-        from config import TIER_CONFIG
-        tier_cfg = TIER_CONFIG.get(tier, TIER_CONFIG["starter"])
+        from config import resolve_tier_config
+        sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+        sub = sub_res.scalar_one_or_none()
+        
+        if sub:
+            tier_cfg = resolve_tier_config(sub)
+        else:
+            from config import TIER_CONFIG
+            tier_cfg = TIER_CONFIG.get(tier, TIER_CONFIG["starter"])
 
         # Step 1: Overwrite Dograh's auto-injected MPS config with Talkar keys
         # Uses the OrganizationAIModelConfigurationV2 schema that Dograh expects.
@@ -140,8 +147,11 @@ async def run_provisioning(customer_id: int, plan: str = None, db: AsyncSession 
             db.add(subscription)
         else:
             # Re-provisioning an existing customer (e.g. tier upgrade)
-            existing_sub.plan = tier
-            existing_sub.per_minute_rate_paise = tier_cfg["per_minute_rate_paise"]
+            # For custom plans, preserve rate and plan — only update if it's a standard tier change.
+            if existing_sub.plan != "custom":
+                existing_sub.plan = tier
+                existing_sub.per_minute_rate_paise = tier_cfg["per_minute_rate_paise"]
+            # If plan is 'custom', the sub row already has correct rate/config — do not overwrite.
 
         await db.commit()
 

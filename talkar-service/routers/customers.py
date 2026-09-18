@@ -314,6 +314,7 @@ async def get_customer_status(
     sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == billing_customer_id))
     sub = sub_res.scalar_one_or_none()
     resp["plan"] = sub.plan if sub else None
+    resp["custom_plan_label"] = getattr(sub, "custom_plan_label", None) if sub and sub.plan == "custom" else None
 
     if customer.status == "rejected" and customer.onboarding_form:
         resp["rejection_reason"] = customer.onboarding_form.get("rejection_reason")
@@ -440,6 +441,8 @@ async def select_tier(org_id: int, data: SelectTierRequest, db: AsyncSession = D
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
 
+    if data.tier == "custom":
+        raise HTTPException(400, "Cannot self-select a custom plan.")
     tier_cfg = TIER_CONFIG.get(data.tier)
     if not tier_cfg: raise HTTPException(400, "Invalid tier")
     if tier_cfg.get("disabled"): raise HTTPException(400, f"The {data.tier} plan is not currently available.")
@@ -494,6 +497,9 @@ class TierUpgradeRequest(BaseModel):
 
 @router.post("/by-org/{org_id}/request-tier-upgrade")
 async def request_tier_upgrade(org_id: int, data: TierUpgradeRequest, db: AsyncSession = Depends(get_db)):
+    if data.requested_tier == "custom":
+        raise HTTPException(400, "Cannot self-assign a custom plan.")
+        
     from config import TIER_CONFIG
     
     if data.requested_tier not in TIER_CONFIG:
@@ -510,6 +516,8 @@ async def request_tier_upgrade(org_id: int, data: TierUpgradeRequest, db: AsyncS
     
     sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
     sub = sub_res.scalar_one_or_none()
+    if sub and sub.plan == "custom":
+        raise HTTPException(400, "Your plan is custom-configured. Contact Talkar to modify it.")
     current_tier = sub.plan if sub else "starter"
     
     if current_tier == data.requested_tier:

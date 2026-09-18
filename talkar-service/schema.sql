@@ -31,7 +31,9 @@ CREATE TABLE subscriptions (
   per_minute_rate_paise     BIGINT NOT NULL,
   setup_fee_paid            BOOLEAN DEFAULT false,
   start_date                DATE NOT NULL,
-  created_at                TIMESTAMPTZ DEFAULT now()
+  created_at                TIMESTAMPTZ DEFAULT now(),
+  custom_config             JSONB,
+  custom_plan_label         TEXT
 );
 
 CREATE TABLE phone_number_requests (
