@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Talkar Admin API client.
  * Reads `talkar_admin_token` cookie and attaches it as Authorization header.
  */
@@ -13,7 +13,7 @@ function getToken(): string {
 
 export async function adminFetch(path: string, options: RequestInit = {}): Promise<Response> {
   const token = getToken();
-  return fetch(`${TALKAR_API}${path}`, {
+  return fetch(`${TALKAR_API}${path}`, { cache: "no-store",
     ...options,
     headers: {
       "Content-Type": "application/json",
