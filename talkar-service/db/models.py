@@ -19,6 +19,7 @@ class Customer(Base):
     dograh_user_id = Column(Integer)
     setup_fee_order_id = Column(Text)
     crm_links = Column(JSON, default=list)
+    report_settings = Column(JSON, default=dict)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

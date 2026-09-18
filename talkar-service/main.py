@@ -25,6 +25,7 @@ async def lifespan(app: FastAPI):
             # Phase 1/2 Migrations - individual commands for asyncpg
             await conn.execute(text("ALTER TABLE agents ADD COLUMN IF NOT EXISTS crm_link TEXT;"))
             await conn.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS crm_links JSONB DEFAULT '[]'::jsonb;"))
+            await conn.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS report_settings JSONB DEFAULT '{\"enabled\": false, \"frequency\": \"weekly\", \"recipients\": []}'::jsonb;"))
             
             await conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS notifications (

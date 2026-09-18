@@ -194,4 +194,73 @@ async def cleanup_abandoned_signups(ctx):
         await db.commit()
     logger.info("Abandoned signup cleanup completed.")
 
+async def dispatch_scheduled_reports(ctx):
+    """
+    Check for organizations with reports enabled and due, then dispatch Talkar email digests.
+    Runs every hour at minute 0.
+    """
+    logger.info("Checking for scheduled organization reports...")
+    now_utc = datetime.now(timezone.utc)
+    redis = ctx.get("redis")
+    
+    async with AsyncSessionLocal() as db:
+        query = text("""
+            SELECT id, company_name, contact_email, report_settings
+            FROM customers
+            WHERE status = 'active'
+              AND report_settings IS NOT NULL
+              AND (report_settings->>'enabled')::boolean = true
+              AND (
+                  report_settings->>'next_due_at' IS NULL
+                  OR (report_settings->>'next_due_at')::timestamptz <= now()
+              )
+        """)
+        res = await db.execute(query)
+        customers_due = res.fetchall()
+
+        for c_row in customers_due:
+            customer_id = c_row.id
+            settings = c_row.report_settings or {}
+            freq = settings.get("frequency", "weekly")
+            
+            # Deduplication lock
+            lock_key = f"lock:report:{customer_id}:{now_utc.strftime('%Y%m%d%H')}"
+            acquired = True
+            if redis:
+                try:
+                    acquired = await redis.set(lock_key, "1", nx=True, ex=3600)
+                except Exception as e:
+                    logger.warning(f"Redis lock check failed for customer {customer_id}: {e}")
+            
+            if not acquired:
+                continue
+
+            try:
+                cust_res = await db.execute(select(Customer).where(Customer.id == customer_id))
+                customer = cust_res.scalar_one_or_none()
+                if not customer:
+                    continue
+
+                sent = await notification_service.send_organization_report(
+                    db=db,
+                    customer=customer,
+                    frequency=freq,
+                    is_test=False
+                )
+                
+                if sent:
+                    next_due = notification_service.calculate_next_report_due_date(freq).isoformat()
+                    updated_settings = {
+                        **settings,
+                        "last_sent_at": now_utc.isoformat(),
+                        "next_due_at": next_due
+                    }
+                    customer.report_settings = updated_settings
+                    await db.commit()
+                    logger.info(f"Dispatched scheduled report for customer {customer_id}, next due: {next_due}")
+            except Exception as e:
+                logger.error(f"Failed to dispatch scheduled report for customer {customer_id}: {e}")
+
+    logger.info("Scheduled organization reports check completed.")
+
 

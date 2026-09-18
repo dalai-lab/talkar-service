@@ -533,3 +533,363 @@ async def notify_customer_tier_upgrade_denied(customer_id: int, requested_tier: 
         notification_type="warning",
         push_body=f"Your request to upgrade to the {requested_tier.title()} tier was denied."
     )
+
+
+# =====================================================================
+# SCHEDULED ACCOUNT SUMMARY REPORTS (Pure SQL & Talkar-Themed HTML)
+# =====================================================================
+
+IST_TZ = timezone(timedelta(hours=5, minutes=30))
+
+def format_report_duration(seconds: int) -> str:
+    """Format seconds into human-readable Xh Ym Zs."""
+    if not seconds or seconds <= 0:
+        return "0s"
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    rem_seconds = seconds % 60
+    parts = []
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0:
+        parts.append(f"{minutes}m")
+    if rem_seconds > 0 or not parts:
+        parts.append(f"{rem_seconds}s")
+    return " ".join(parts)
+
+def format_report_inr(paise: int) -> str:
+    """Format paise into INR currency display."""
+    if paise is None:
+        paise = 0
+    return f"₹{paise / 100.0:,.2f}"
+
+def calculate_next_report_due_date(frequency: str, from_dt: Optional[datetime] = None) -> datetime:
+    """Calculate next report delivery timestamp at 08:00 AM IST (02:30 UTC)."""
+    now = from_dt or datetime.now(timezone.utc)
+    now_ist = now.astimezone(IST_TZ)
+    
+    if frequency == "daily":
+        next_ist = now_ist.replace(hour=8, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    elif frequency == "monthly":
+        year = now_ist.year + (1 if now_ist.month == 12 else 0)
+        month = 1 if now_ist.month == 12 else now_ist.month + 1
+        next_ist = datetime(year, month, 1, 8, 0, 0, tzinfo=IST_TZ)
+    else:  # weekly (every Monday)
+        days_ahead = (0 - now_ist.weekday()) % 7
+        if days_ahead == 0:
+            days_ahead = 7
+        next_ist = (now_ist + timedelta(days=days_ahead)).replace(hour=8, minute=0, second=0, microsecond=0)
+        
+    return next_ist.astimezone(timezone.utc)
+
+async def get_organization_report_data(
+    db: AsyncSession,
+    customer_id: int,
+    period_start: datetime,
+    period_end: datetime
+) -> Dict[str, Any]:
+    """Pure SQL deterministic metrics calculation for an organization."""
+    from sqlalchemy import text
+    
+    # 1. Overall Call Metrics
+    call_query = text("""
+        SELECT 
+            COUNT(id) AS total_calls,
+            COUNT(CASE WHEN duration_seconds >= 10 THEN 1 END) AS completed_calls,
+            COUNT(CASE WHEN duration_seconds < 10 THEN 1 END) AS dropped_calls,
+            COALESCE(SUM(duration_seconds), 0) AS total_duration_seconds,
+            COALESCE(SUM(cost_to_customer_paise), 0) AS total_cost_paise
+        FROM call_logs
+        WHERE customer_id = :customer_id
+          AND called_at >= :start_time
+          AND called_at <= :end_time
+    """)
+    call_res = await db.execute(call_query, {
+        "customer_id": customer_id,
+        "start_time": period_start,
+        "end_time": period_end
+    })
+    call_row = call_res.fetchone()
+    
+    total_calls = call_row.total_calls if call_row else 0
+    completed_calls = call_row.completed_calls if call_row else 0
+    dropped_calls = call_row.dropped_calls if call_row else 0
+    total_duration_sec = call_row.total_duration_seconds if call_row else 0
+    total_cost_paise = call_row.total_cost_paise if call_row else 0
+    
+    completion_rate = (completed_calls / total_calls * 100) if total_calls > 0 else 0.0
+    avg_call_duration_sec = (total_duration_sec // total_calls) if total_calls > 0 else 0
+
+    # 2. Agent Breakdown
+    agent_query = text("""
+        SELECT 
+            COALESCE(a.name, 'Default Agent') AS agent_name,
+            COUNT(cl.id) AS calls,
+            COALESCE(SUM(cl.duration_seconds), 0) AS duration_seconds,
+            COALESCE(SUM(cl.cost_to_customer_paise), 0) AS cost_paise
+        FROM call_logs cl
+        LEFT JOIN agents a ON a.id = cl.agent_id
+        WHERE cl.customer_id = :customer_id
+          AND cl.called_at >= :start_time
+          AND cl.called_at <= :end_time
+        GROUP BY COALESCE(a.name, 'Default Agent')
+        ORDER BY calls DESC
+    """)
+    agent_res = await db.execute(agent_query, {
+        "customer_id": customer_id,
+        "start_time": period_start,
+        "end_time": period_end
+    })
+    agents_data = [
+        {
+            "name": r.agent_name,
+            "calls": r.calls,
+            "duration_seconds": r.duration_seconds,
+            "formatted_duration": format_report_duration(r.duration_seconds),
+            "cost_paise": r.cost_paise,
+            "formatted_cost": format_report_inr(r.cost_paise)
+        }
+        for r in agent_res.fetchall()
+    ]
+
+    # 3. Wallet Balance
+    from services.billing_service import get_billing_wallet
+    wallet, _ = await get_billing_wallet(db, customer_id)
+    current_balance_paise = wallet.balance_paise if wallet else 0
+
+    return {
+        "total_calls": total_calls,
+        "completed_calls": completed_calls,
+        "dropped_calls": dropped_calls,
+        "completion_rate": round(completion_rate, 1),
+        "total_duration_sec": total_duration_sec,
+        "formatted_duration": format_report_duration(total_duration_sec),
+        "avg_duration_sec": avg_call_duration_sec,
+        "formatted_avg_duration": format_report_duration(avg_call_duration_sec),
+        "total_cost_paise": total_cost_paise,
+        "formatted_cost": format_report_inr(total_cost_paise),
+        "current_balance_paise": current_balance_paise,
+        "formatted_balance": format_report_inr(current_balance_paise),
+        "agents": agents_data
+    }
+
+def render_report_html(data: Dict[str, Any], company_name: str, period_label: str, date_range_str: str) -> str:
+    """Generate a pixel-perfect, responsive Talkar-branded HTML email."""
+    agent_rows_html = ""
+    if data["agents"]:
+        for ag in data["agents"]:
+            agent_rows_html += f"""
+            <tr style="border-bottom: 1px solid #f4f4f5;">
+                <td style="padding: 10px 12px; font-size: 13px; font-weight: 600; color: #18181b;">{ag['name']}</td>
+                <td style="padding: 10px 12px; font-size: 13px; color: #3f3f46; text-align: right;">{ag['calls']:,}</td>
+                <td style="padding: 10px 12px; font-size: 13px; color: #3f3f46; text-align: right;">{ag['formatted_duration']}</td>
+                <td style="padding: 10px 12px; font-size: 13px; font-weight: 600; color: #09090b; text-align: right;">{ag['formatted_cost']}</td>
+            </tr>
+            """
+    else:
+        agent_rows_html = """
+        <tr>
+            <td colspan="4" style="padding: 16px; text-align: center; color: #a1a1aa; font-size: 13px;">
+                No calls recorded in this time window.
+            </td>
+        </tr>
+        """
+
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Talkar {period_label} Summary</title>
+        <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #fafafa; margin: 0; padding: 0; -webkit-font-smoothing: antialiased; }}
+            .container {{ max-width: 600px; margin: 32px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; border: 1px solid #e4e4e7; box-shadow: 0 4px 12px rgba(9, 9, 11, 0.03); }}
+            .header {{ background-color: #09090b; padding: 24px 32px; text-align: center; border-bottom: 2px solid #fe6905; }}
+            .body-content {{ padding: 32px; }}
+            .kpi-grid {{ width: 100%; border-collapse: separate; border-spacing: 10px; margin-bottom: 24px; }}
+            .kpi-card {{ background-color: #fafafa; border: 1px solid #e4e4e7; border-radius: 8px; padding: 14px 16px; text-align: left; }}
+            .kpi-label {{ font-size: 10px; font-weight: 700; color: #71717a; text-transform: uppercase; letter-spacing: 0.5px; margin: 0 0 4px 0; }}
+            .kpi-value {{ font-size: 20px; font-weight: 700; color: #09090b; margin: 0; }}
+            .table-container {{ background-color: #fafafa; border: 1px solid #e4e4e7; border-radius: 8px; overflow: hidden; margin-top: 14px; }}
+            .agent-table {{ width: 100%; border-collapse: collapse; }}
+            .agent-table th {{ background-color: #f4f4f5; padding: 10px 12px; font-size: 11px; font-weight: 700; color: #71717a; text-transform: uppercase; letter-spacing: 0.5px; text-align: left; border-bottom: 1px solid #e4e4e7; }}
+            .btn-cta {{ display: inline-block; background-color: #fe6905; color: #ffffff !important; font-size: 13px; font-weight: 600; padding: 12px 28px; border-radius: 6px; text-decoration: none; }}
+            .footer {{ background-color: #fafafa; padding: 20px 32px; text-align: center; font-size: 11px; color: #a1a1aa; border-top: 1px solid #f4f4f5; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <!-- Header -->
+            <div class="header">
+                <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                    <tr>
+                        <td align="center">
+                            <img src="https://talkar.in/logo-white.png" alt="Talkar" width="140" style="display: block; max-width: 140px; height: auto;" />
+                        </td>
+                    </tr>
+                </table>
+            </div>
+
+            <!-- Main Content -->
+            <div class="body-content">
+                <div style="margin-bottom: 24px;">
+                    <span style="font-size: 11px; font-weight: 700; color: #fe6905; text-transform: uppercase; letter-spacing: 0.5px;">Account Performance Digest</span>
+                    <h2 style="font-size: 20px; font-weight: 700; color: #09090b; margin: 4px 0 6px 0;">{period_label} Summary for {company_name}</h2>
+                    <p style="font-size: 13px; color: #71717a; margin: 0;">Period: {date_range_str}</p>
+                </div>
+
+                <!-- 4 KPI Cards -->
+                <table class="kpi-grid" cellpadding="0" cellspacing="0">
+                    <tr>
+                        <td class="kpi-card" width="50%">
+                            <p class="kpi-label">Total Calls</p>
+                            <p class="kpi-value">{data['total_calls']:,}</p>
+                            <span style="font-size: 11px; color: #71717a;">Avg: {data['formatted_avg_duration']}/call</span>
+                        </td>
+                        <td class="kpi-card" width="50%">
+                            <p class="kpi-label">Connected Time</p>
+                            <p class="kpi-value">{data['formatted_duration']}</p>
+                            <span style="font-size: 11px; color: #71717a;">Total voice talk time</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td class="kpi-card" width="50%">
+                            <p class="kpi-label">Call Success Rate</p>
+                            <p class="kpi-value" style="color: {'#16a34a' if data['completion_rate'] >= 80 else '#d97706'};">{data['completion_rate']}%</p>
+                            <span style="font-size: 11px; color: #71717a;">{data['completed_calls']:,} connected calls</span>
+                        </td>
+                        <td class="kpi-card" width="50%">
+                            <p class="kpi-label">Total Spent</p>
+                            <p class="kpi-value">{data['formatted_cost']}</p>
+                            <span style="font-size: 11px; color: #71717a;">Wallet Balance: {data['formatted_balance']}</span>
+                        </td>
+                    </tr>
+                </table>
+
+                <!-- Agent Breakdown Table -->
+                <div style="margin-top: 24px;">
+                    <h3 style="font-size: 13px; font-weight: 700; color: #09090b; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 0.5px;">Voice Agent Breakdown</h3>
+                    <div class="table-container">
+                        <table class="agent-table" cellpadding="0" cellspacing="0">
+                            <thead>
+                                <tr>
+                                    <th>Agent Name</th>
+                                    <th style="text-align: right;">Calls</th>
+                                    <th style="text-align: right;">Duration</th>
+                                    <th style="text-align: right;">Deductions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {agent_rows_html}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- CTA Button -->
+                <div style="text-align: center; margin-top: 32px;">
+                    <a href="https://talkar.in/wallet" class="btn-cta" target="_blank">View Live Analytics & Wallet</a>
+                </div>
+            </div>
+
+            <!-- Footer -->
+            <div class="footer">
+                &copy; 2026 Talkar AI. All rights reserved.<br>
+                This automated summary was sent per your organization's report preferences.<br>
+                Manage or unsubscribe anytime in your Platform Settings.
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+async def send_organization_report(
+    db: AsyncSession,
+    customer: Any,
+    frequency: str = "weekly",
+    is_test: bool = False,
+    recipient_override: Optional[List[str]] = None
+) -> bool:
+    """Calculates report data, generates the HTML, and sends it to recipients."""
+    now_utc = datetime.now(timezone.utc)
+    
+    if frequency == "daily":
+        start_time = now_utc - timedelta(days=1)
+        period_label = "Daily"
+    elif frequency == "monthly":
+        start_time = now_utc - timedelta(days=30)
+        period_label = "Monthly"
+    else:  # weekly
+        start_time = now_utc - timedelta(days=7)
+        period_label = "Weekly"
+
+    if is_test:
+        period_label = f"Sample {period_label}"
+
+    data = await get_organization_report_data(
+        db=db,
+        customer_id=customer.id,
+        period_start=start_time,
+        period_end=now_utc
+    )
+
+    company_name = customer.company_name or "Your Organization"
+    date_range_str = f"{start_time.strftime('%b %d, %Y')} – {now_utc.strftime('%b %d, %Y')}"
+    
+    html_content = render_report_html(
+        data=data,
+        company_name=company_name,
+        period_label=period_label,
+        date_range_str=date_range_str
+    )
+
+    recipients = recipient_override
+    if not recipients:
+        settings = customer.report_settings or {}
+        configured = settings.get("recipients", [])
+        if configured and isinstance(configured, list) and len(configured) > 0:
+            recipients = [r.strip() for r in configured if r.strip()]
+        else:
+            recipients = [customer.contact_email] if customer.contact_email else []
+
+    if not recipients:
+        logger.warning(f"No recipients found for report delivery (customer_id={customer.id})")
+        return False
+
+    subject = f"Talkar {period_label} Summary - {company_name} ({date_range_str})"
+    if is_test:
+        subject = f"[PREVIEW] {subject}"
+
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    import aiosmtplib
+
+    if not settings.SMTP_HOST or not settings.SMTP_USER:
+        logger.info(f"[REPORT EMAIL MOCK] To: {recipients} | Subject: {subject}")
+        return True
+
+    success = True
+    for to_email in recipients:
+        try:
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"] = f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL}>"
+            msg["To"] = to_email
+            msg.attach(MIMEText(html_content, "html"))
+
+            await aiosmtplib.send(
+                msg,
+                hostname=settings.SMTP_HOST,
+                port=settings.SMTP_PORT,
+                username=settings.SMTP_USER,
+                password=settings.SMTP_PASSWORD,
+                use_tls=False,
+                start_tls=True,
+            )
+            logger.info(f"Report email successfully sent to {to_email} (customer_id={customer.id})")
+        except Exception as e:
+            logger.error(f"Failed to send report email to {to_email}: {e}")
+            success = False
+
+    return success

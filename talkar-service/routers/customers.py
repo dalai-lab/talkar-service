@@ -4,7 +4,7 @@ from sqlalchemy import select, func
 from db.session import get_db
 from db.models import Customer, Subscription
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 import logging
 from services import notification_service, dograh_client
@@ -412,6 +412,93 @@ async def get_org_crm_links(dograh_org_id: int, db: AsyncSession = Depends(get_d
                 "url": ag.crm_link
             })
     return fallback_links
+
+class UpdateReportSettingsRequest(BaseModel):
+    enabled: bool
+    frequency: str = "weekly"  # "daily" | "weekly" | "monthly"
+    recipients: List[str] = []
+
+class SendTestReportRequest(BaseModel):
+    frequency: Optional[str] = "weekly"
+    recipients: Optional[List[str]] = None
+
+@router.get("/by-org/{dograh_org_id}/report-settings")
+async def get_org_report_settings(dograh_org_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found for this org")
+    
+    defaults = {
+        "enabled": False,
+        "frequency": "weekly",
+        "recipients": [customer.contact_email] if customer.contact_email else [],
+        "last_sent_at": None,
+        "next_due_at": None
+    }
+    current_settings = getattr(customer, "report_settings", None) or {}
+    return {**defaults, **current_settings}
+
+@router.patch("/by-org/{dograh_org_id}/report-settings")
+async def update_org_report_settings(
+    dograh_org_id: int,
+    data: UpdateReportSettingsRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found for this org")
+
+    clean_recipients = [r.strip() for r in data.recipients if r.strip() and "@" in r]
+    if not clean_recipients and customer.contact_email:
+        clean_recipients = [customer.contact_email]
+
+    freq = data.frequency.lower()
+    if freq not in ("daily", "weekly", "monthly"):
+        freq = "weekly"
+
+    next_due = None
+    if data.enabled:
+        next_due = notification_service.calculate_next_report_due_date(freq).isoformat()
+
+    updated = {
+        "enabled": data.enabled,
+        "frequency": freq,
+        "recipients": clean_recipients,
+        "last_sent_at": (customer.report_settings or {}).get("last_sent_at"),
+        "next_due_at": next_due
+    }
+    customer.report_settings = updated
+    await db.commit()
+    return updated
+
+@router.post("/by-org/{dograh_org_id}/send-test-report")
+async def send_test_org_report(
+    dograh_org_id: int,
+    data: SendTestReportRequest = SendTestReportRequest(),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found for this org")
+
+    clean_recipients = None
+    if data.recipients:
+        clean_recipients = [r.strip() for r in data.recipients if r.strip() and "@" in r]
+
+    success = await notification_service.send_organization_report(
+        db=db,
+        customer=customer,
+        frequency=data.frequency or "weekly",
+        is_test=True,
+        recipient_override=clean_recipients
+    )
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to dispatch test report email")
+
+    return {"status": "ok", "message": "Test report dispatched successfully"}
 
 @router.post("/by-org/{dograh_org_id}/onboarding")
 async def submit_onboarding_by_org(dograh_org_id: int, data: dict, db: AsyncSession = Depends(get_db)):

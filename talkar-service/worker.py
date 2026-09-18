@@ -5,7 +5,8 @@ from jobs.cron import (
     nightly_reconciliation,
     check_low_balances,
     check_suspensions,
-    cleanup_abandoned_signups
+    cleanup_abandoned_signups,
+    dispatch_scheduled_reports
 )
 from db.session import engine
 from config import settings
@@ -36,7 +37,10 @@ class WorkerSettings:
         cron(check_suspensions, minute=30, hour=2),
         
         # 8D: Abandoned signup cleanup (Daily at 3:00 AM IST = 21:30 UTC)
-        cron(cleanup_abandoned_signups, minute=30, hour=21)
+        cron(cleanup_abandoned_signups, minute=30, hour=21),
+
+        # 8E: Scheduled Account Performance Reports (Hourly check for due reports)
+        cron(dispatch_scheduled_reports, minute=0)
     ]
     redis_settings = redis_settings
     on_startup = startup
