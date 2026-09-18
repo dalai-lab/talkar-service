@@ -327,7 +327,24 @@ async def update_customer(customer_id: int, data: CustomerUpdateRequest, db: Asy
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
     
-    if data.status: customer.status = data.status
+    if data.status:
+        prev_status = customer.status
+        customer.status = data.status
+        await db.commit()
+        # If admin is manually reactivating a suspended customer, restore their call capacity in Dograh
+        if prev_status == "suspended" and data.status == "active" and customer.dograh_org_id:
+            from services import dograh_client
+            from config import resolve_tier_config
+            sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer_id))
+            sub = sub_res.scalar_one_or_none()
+            tier_cfg = resolve_tier_config(sub)
+            concurrent_limit = tier_cfg.get("concurrent_call_limit", 2)
+            tier = sub.plan if sub else "starter"
+            try:
+                await dograh_client.restore_org_calls(customer.dograh_org_id, tier, concurrent_limit)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Failed to restore calls after admin unsuspend for org {customer.dograh_org_id}: {e}")
     if data.tier:
         if data.tier == "custom":
             raise HTTPException(400, "Use POST /customers/{id}/set-custom-pricing to set a custom plan.")
@@ -389,7 +406,8 @@ async def update_customer(customer_id: int, data: CustomerUpdateRequest, db: Asy
                     import logging
                     logging.getLogger(__name__).error(f"Failed to cascade admin provisioning to sub-org {sub_org.id}: {e}")
     else:
-        await db.commit()
+        if not data.status:  # only commit if status block didn't already commit
+            await db.commit()
 
     return {"status": "success"}
 
