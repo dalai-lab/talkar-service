@@ -24,6 +24,10 @@ class RejectApplicationRequest(BaseModel):
     reason: str
     reapply_countdown_days: int = 30
 
+class SuspendCustomerRequest(BaseModel):
+    reason: str = "zero_balance"  # zero_balance | policy_violation | fraud | other
+    custom_message: Optional[str] = None
+
 class RequestInfoRequest(BaseModel):
     message: str
 
@@ -670,11 +674,16 @@ async def deny_tier_upgrade(customer_id: int, db: AsyncSession = Depends(get_db)
     return {"status": "success"}
 
 @router.post("/customers/{customer_id}/suspend")
-async def suspend_customer(customer_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+async def suspend_customer(customer_id: int, data: SuspendCustomerRequest = SuspendCustomerRequest(), db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
     result = await db.execute(select(Customer).where(Customer.id == customer_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
     customer.status = "suspended"
+    # Store suspension reason in onboarding_form for audit trail
+    existing_form = dict(customer.onboarding_form or {})
+    existing_form["suspension_reason"] = data.reason
+    existing_form["suspension_message"] = data.custom_message or ""
+    customer.onboarding_form = existing_form
     await db.commit()
     # Block calls in Dograh immediately
     if customer.dograh_org_id:
@@ -684,12 +693,41 @@ async def suspend_customer(customer_id: int, db: AsyncSession = Depends(get_db),
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Failed to block calls for org {customer.dograh_org_id}: {e}")
-            
+
     # Notify customer of suspension
     import asyncio
-    asyncio.create_task(notification_service.notify_customer_suspended(customer_id))
-            
+    asyncio.create_task(notification_service.notify_customer_suspended(customer_id, data.reason, data.custom_message))
+
     return {"status": "suspended"}
+
+@router.post("/customers/{customer_id}/unsuspend")
+async def unsuspend_customer(customer_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    result = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = result.scalar_one_or_none()
+    if not customer: raise HTTPException(404, "Customer not found")
+    if customer.status != "suspended": raise HTTPException(400, "Customer is not suspended")
+    customer.status = "active"
+    # Clear suspension reason from onboarding_form
+    existing_form = dict(customer.onboarding_form or {})
+    existing_form.pop("suspension_reason", None)
+    existing_form.pop("suspension_message", None)
+    customer.onboarding_form = existing_form
+    await db.commit()
+    # Restore calls in Dograh
+    if customer.dograh_org_id:
+        from services import dograh_client
+        from config import resolve_tier_config
+        sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer_id))
+        sub = sub_res.scalar_one_or_none()
+        tier_cfg = resolve_tier_config(sub)
+        concurrent_limit = tier_cfg.get("concurrent_call_limit", 2)
+        tier = sub.plan if sub else "starter"
+        try:
+            await dograh_client.restore_org_calls(customer.dograh_org_id, tier, concurrent_limit)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to restore calls after unsuspend for org {customer.dograh_org_id}: {e}")
+    return {"status": "active"}
 
 @router.post("/customers/{customer_id}/provision/retry")
 async def retry_provisioning(customer_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):

@@ -134,6 +134,13 @@ export default function CustomerDetailPage() {
   const [testNotifSendEmail, setTestNotifSendEmail] = useState(true);
   const [isSendingNotif, setIsSendingNotif] = useState(false);
 
+  // Suspend modal
+  const [isSuspendOpen, setIsSuspendOpen] = useState(false);
+  const [suspendReason, setSuspendReason] = useState("zero_balance");
+  const [suspendMessage, setSuspendMessage] = useState("");
+  const [isSuspending, setIsSuspending] = useState(false);
+  const [isUnsuspending, setIsUnsuspending] = useState(false);
+
   useEffect(() => {
     fetchCustomer();
   }, [id]);
@@ -391,13 +398,28 @@ export default function CustomerDetailPage() {
   };
 
   const handleSuspend = async () => {
-    if (!confirm("Are you sure you want to suspend this account?")) return;
+    setIsSuspending(true);
     try {
-      const res = await adminFetch(`/admin/customers/${id}/suspend`, { method: "POST" });
+      const res = await adminFetch(`/admin/customers/${id}/suspend`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: suspendReason, custom_message: suspendMessage || null }),
+      });
+      if (res.ok) { setIsSuspendOpen(false); setSuspendMessage(""); fetchCustomer(); }
+      else { const err = await res.json().catch(() => ({})); alert(`Failed: ${err.detail || "Unknown error"}`); }
+    } catch (e) { console.error(e); }
+    finally { setIsSuspending(false); }
+  };
+
+  const handleUnsuspend = async () => {
+    if (!confirm("Unsuspend this account? Their calls will be immediately restored.")) return;
+    setIsUnsuspending(true);
+    try {
+      const res = await adminFetch(`/admin/customers/${id}/unsuspend`, { method: "POST" });
       if (res.ok) fetchCustomer();
-    } catch (e) {
-      console.error(e);
-    }
+      else { const err = await res.json().catch(() => ({})); alert(`Failed: ${err.detail || "Unknown error"}`); }
+    } catch (e) { console.error(e); }
+    finally { setIsUnsuspending(false); }
   };
 
   const handleDenyUpgrade = async () => {
@@ -594,17 +616,30 @@ export default function CustomerDetailPage() {
             <Button variant="outline" size="sm" onClick={handleRetryProvisioning} className="h-8 text-xs border-slate-200 bg-white hover:bg-slate-50">
               <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Retry Sync
             </Button>
-            <Button 
-              variant="outline" 
-              size="sm" 
-              onClick={() => setIsTestNotifOpen(true)} 
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsTestNotifOpen(true)}
               className="h-8 text-xs border-amber-200 bg-amber-50/50 hover:bg-amber-100 text-amber-800 cursor-pointer font-medium"
             >
               <Bell className="w-3.5 h-3.5 mr-1.5 text-amber-600" /> Test Notification
             </Button>
-            <Button variant="outline" size="sm" onClick={handleSuspend} className="h-8 text-xs border-red-200 text-red-600 hover:bg-red-50">
-              <Ban className="w-3.5 h-3.5 mr-1.5" /> Suspend
-            </Button>
+            {customer?.status === "suspended" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleUnsuspend}
+                disabled={isUnsuspending}
+                className="h-8 text-xs border-emerald-200 text-emerald-700 bg-emerald-50 hover:bg-emerald-100"
+              >
+                <ShieldAlert className="w-3.5 h-3.5 mr-1.5" />
+                {isUnsuspending ? "Restoring..." : "Unsuspend"}
+              </Button>
+            ) : (
+              <Button variant="outline" size="sm" onClick={() => setIsSuspendOpen(true)} className="h-8 text-xs border-red-200 text-red-600 hover:bg-red-50">
+                <Ban className="w-3.5 h-3.5 mr-1.5" /> Suspend
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -1220,6 +1255,51 @@ export default function CustomerDetailPage() {
       </Dialog>
 
       {/* Test Notification Modal */}
+      {/* Suspend Modal */}
+      <Dialog open={isSuspendOpen} onOpenChange={setIsSuspendOpen}>
+        <DialogContent className="max-w-md bg-white border-slate-200">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-semibold flex items-center gap-2">
+              <Ban className="w-4 h-4 text-red-500" /> Suspend Account
+            </DialogTitle>
+            <DialogDescription className="text-xs text-slate-500">
+              This will immediately block all calls for {customer?.company_name || customer?.contact_name} and notify them by email.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3.5 py-2 text-xs">
+            <div>
+              <Label className="text-xs font-medium text-slate-700">Suspension Reason</Label>
+              <Select value={suspendReason} onValueChange={(v) => setSuspendReason(v || "zero_balance")}>
+                <SelectTrigger className="mt-1 h-8 text-xs bg-white border-slate-200">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-white border-slate-200">
+                  <SelectItem value="zero_balance">Zero Balance (Extended)</SelectItem>
+                  <SelectItem value="policy_violation">Policy Violation</SelectItem>
+                  <SelectItem value="fraud">Suspicious / Fraud Activity</SelectItem>
+                  <SelectItem value="other">Other / Administrative Review</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs font-medium text-slate-700">Custom Message to Customer <span className="text-slate-400 font-normal">(optional)</span></Label>
+              <textarea
+                className="mt-1 w-full text-xs p-2 rounded-md border border-slate-200 focus:outline-none focus:ring-1 focus:ring-slate-400 min-h-[70px] bg-white"
+                value={suspendMessage}
+                onChange={(e) => setSuspendMessage(e.target.value)}
+                placeholder="Add any additional context for the customer (shown in their suspension email)..."
+              />
+            </div>
+          </div>
+          <DialogFooter className="border-t pt-3">
+            <Button variant="outline" size="sm" onClick={() => setIsSuspendOpen(false)} className="text-xs border-slate-200">Cancel</Button>
+            <Button size="sm" onClick={handleSuspend} disabled={isSuspending} className="text-xs bg-red-600 hover:bg-red-700 text-white">
+              {isSuspending ? "Suspending..." : "Confirm Suspend"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={isTestNotifOpen} onOpenChange={setIsTestNotifOpen}>
         <DialogContent className="max-w-md bg-white border-slate-200">
           <DialogHeader>

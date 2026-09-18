@@ -481,22 +481,35 @@ async def notify_customer_support_replied(customer_id: int, subject: str, admin_
         push_body=f"Ticket '{subject}' updated. Status: {formatted_status}."
     )
 
-async def notify_customer_suspended(customer_id: int):
+SUSPENSION_REASON_LABELS = {
+    "zero_balance": "zero wallet balance for an extended period",
+    "policy_violation": "a violation of our Terms of Service",
+    "fraud": "suspicious account activity detected",
+    "other": "an administrative review",
+}
+
+async def notify_customer_suspended(customer_id: int, reason: str = "zero_balance", custom_message: str = None):
     info = await _get_customer_email(customer_id)
     if not info: return
     email, name = info
+    reason_label = SUSPENSION_REASON_LABELS.get(reason, "an administrative review")
+    body = (
+        f"Hi {name},\n\n"
+        f"Your Talkar workspace and calling services have been suspended due to {reason_label}.\n\n"
+    )
+    if custom_message:
+        body += f"Additional information from Talkar:\n{custom_message}\n\n"
+    body += (
+        f"To reactivate your account, please top up your wallet or contact our support team.\n\n"
+        f"The Talkar Team"
+    )
     await send_email_and_push(
         customer_id=customer_id,
         to_email=email,
         subject="Important: Your Talkar Workspace has been Suspended",
-        body=(
-            f"Hi {name},\n\n"
-            f"Your Talkar workspace and calling services have been administratively suspended.\n\n"
-            f"Please contact support immediately to resolve this issue.\n\n"
-            f"The Talkar Team"
-        ),
+        body=body,
         notification_type="warning",
-        push_body="Your workspace has been suspended. Please contact support."
+        push_body=f"Your workspace has been suspended ({reason_label}). Top up to reactivate."
     )
 
 async def notify_customer_credit_granted(customer_id: int, amount_paise: int, description: str):
