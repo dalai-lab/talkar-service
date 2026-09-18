@@ -22,10 +22,10 @@ async def lifespan(app: FastAPI):
                 WHERE company_name IS NULL OR TRIM(company_name) = '';
             """))
             
-            # Phase 1/2 Migrations
+            # Phase 1/2 Migrations - individual commands for asyncpg
+            await conn.execute(text("ALTER TABLE agents ADD COLUMN IF NOT EXISTS crm_link TEXT;"))
+            
             await conn.execute(text("""
-                ALTER TABLE agents ADD COLUMN IF NOT EXISTS crm_link TEXT;
-                
                 CREATE TABLE IF NOT EXISTS notifications (
                     id SERIAL PRIMARY KEY,
                     customer_id INTEGER NOT NULL REFERENCES customers(id),
@@ -38,7 +38,7 @@ async def lifespan(app: FastAPI):
             """))
     except Exception as e:
         import logging
-        logging.getLogger(__name__).warning(f"Company name backfill skipped/failed: {e}")
+        logging.getLogger(__name__).warning(f"Database migration / backfill skipped/failed: {e}")
     yield
     await redis_client.close_redis()
 
