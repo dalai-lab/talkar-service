@@ -425,6 +425,18 @@ async def update_agent_rate(customer_id: int, agent_id: int, data: UpdateAgentRa
     await db.commit()
     return {"status": "ok", "per_minute_rate_paise": agent.per_minute_rate_paise}
 
+class UpdateAgentCrmLinkRequest(BaseModel):
+    crm_link: Optional[str] = None
+
+@router.patch("/customers/{customer_id}/agents/{agent_id}/crm-link")
+async def update_agent_crm_link(customer_id: int, agent_id: int, data: UpdateAgentCrmLinkRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    result = await db.execute(select(Agent).where(Agent.id == agent_id, Agent.customer_id == customer_id))
+    agent = result.scalar_one_or_none()
+    if not agent: raise HTTPException(404, "Agent not found for this customer")
+    agent.crm_link = data.crm_link
+    await db.commit()
+    return {"status": "ok", "crm_link": agent.crm_link}
+
 
 @router.post("/customers/{customer_id}/credit")
 async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
@@ -450,6 +462,15 @@ async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: As
     db.add(txn)
     
     await db.commit()
+    
+    # Notify customer of manual credit grant
+    import asyncio
+    asyncio.create_task(notification_service.notify_customer_credit_granted(
+        customer_id=customer_id,
+        amount_paise=data.amount_paise,
+        description=data.description
+    ))
+    
     return {"status": "success", "new_balance_paise": wallet.balance_paise}
 
 class AdminDeductRequest(BaseModel):
@@ -505,6 +526,11 @@ async def deny_tier_upgrade(customer_id: int, db: AsyncSession = Depends(get_db)
         customer.onboarding_form = existing_form
         await db.commit()
     
+    # Notify customer of tier upgrade denial
+    import asyncio
+    requested_tier = customer.onboarding_form.get("tier_upgrade_requested", "higher") if customer.onboarding_form else "higher"
+    asyncio.create_task(notification_service.notify_customer_tier_upgrade_denied(customer_id, requested_tier))
+    
     return {"status": "success"}
 
 @router.post("/customers/{customer_id}/suspend")
@@ -522,6 +548,11 @@ async def suspend_customer(customer_id: int, db: AsyncSession = Depends(get_db),
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Failed to block calls for org {customer.dograh_org_id}: {e}")
+            
+    # Notify customer of suspension
+    import asyncio
+    asyncio.create_task(notification_service.notify_customer_suspended(customer_id))
+            
     return {"status": "suspended"}
 
 @router.post("/customers/{customer_id}/provision/retry")
@@ -609,6 +640,17 @@ async def update_support_request(req_id: int, data: SupportRequestUpdate, db: As
         req.admin_note = data.admin_note
         
     await db.commit()
+    
+    # Notify customer of support ticket update (if note added or status changed)
+    if data.admin_note or (data.status and data.status != req.status):
+        import asyncio
+        asyncio.create_task(notification_service.notify_customer_support_replied(
+            customer_id=req.customer_id,
+            subject=req.subject,
+            admin_note=data.admin_note or "",
+            status=req.status
+        ))
+        
     return {"status": "success", "id": req.id, "status_value": req.status}
 
 @router.delete("/support-requests/{req_id}")
@@ -919,6 +961,10 @@ async def approve_phone_number_request(request_id: int, data: ApprovePhoneNumber
         db.add(pn)
         
     await db.commit()
+    
+    import asyncio
+    asyncio.create_task(notification_service.notify_customer_phone_approved(req.customer_id, data.numbers))
+    
     return {"status": "approved"}
 
 @router.patch("/phone-number-requests/{request_id}/deny")
@@ -931,6 +977,10 @@ async def deny_phone_number_request(request_id: int, data: DenyPhoneNumberReques
     req.admin_note = data.admin_note
     req.resolved_at = func.now()
     await db.commit()
+    
+    import asyncio
+    asyncio.create_task(notification_service.notify_customer_phone_denied(req.customer_id, data.admin_note))
+    
     return {"status": "denied"}
 
 

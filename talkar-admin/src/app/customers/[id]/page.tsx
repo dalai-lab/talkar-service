@@ -234,6 +234,25 @@ export default function CustomerDetailPage() {
     }
   };
 
+  const handleUpdateCrmLink = async (agentId: number, linkStr: string) => {
+    try {
+      const res = await adminFetch(`/admin/customers/${id}/agents/${agentId}/crm-link`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ crm_link: linkStr || null })
+      });
+      if (res.ok) {
+        alert("CRM Link updated successfully!");
+        fetchCustomer();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Failed to update CRM link: ${err.detail || "Unknown error"}`);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   const handleUpgradePlan = async () => {
     if (!newPlan) return;
     setPlanLoading(true);
@@ -701,15 +720,27 @@ export default function CustomerDetailPage() {
                       <Badge className="text-[10px] bg-emerald-50 text-emerald-700 border-emerald-200">{ag.status}</Badge>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2.5 bg-white p-2 rounded-lg border border-slate-200">
-                    <Label className="text-xs font-medium text-slate-600 whitespace-nowrap">Per-Minute Rate (paise)</Label>
-                    <Input 
-                      type="number" 
-                      placeholder={currentPlan === 'starter' ? '2500' : currentPlan === 'pro' ? '1800' : '1200'}
-                      defaultValue={ag.per_minute_rate_paise ?? ""}
-                      className="w-28 text-right font-mono text-xs h-8 bg-white border-slate-200"
-                      onBlur={(e) => handleUpdateRate(ag.id, e.target.value)}
-                    />
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center justify-between gap-2.5 bg-white p-2 rounded-lg border border-slate-200">
+                      <Label className="text-xs font-medium text-slate-600 whitespace-nowrap">Per-Minute Rate (paise)</Label>
+                      <Input 
+                        type="number" 
+                        placeholder={currentPlan === 'starter' ? '2500' : currentPlan === 'pro' ? '1800' : '1200'}
+                        defaultValue={ag.per_minute_rate_paise ?? ""}
+                        className="w-28 text-right font-mono text-xs h-8 bg-white border-slate-200"
+                        onBlur={(e) => handleUpdateRate(ag.id, e.target.value)}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between gap-2.5 bg-white p-2 rounded-lg border border-slate-200">
+                      <Label className="text-xs font-medium text-slate-600 whitespace-nowrap">CRM Link</Label>
+                      <Input 
+                        type="url" 
+                        placeholder="https://crm.example.com/..."
+                        defaultValue={ag.crm_link ?? ""}
+                        className="w-48 text-right font-mono text-xs h-8 bg-white border-slate-200"
+                        onBlur={(e) => handleUpdateCrmLink(ag.id, e.target.value)}
+                      />
+                    </div>
                   </div>
                 </div>
               ))}

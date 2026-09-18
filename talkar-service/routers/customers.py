@@ -337,6 +337,27 @@ async def get_customer_by_org(dograh_org_id: int, db: AsyncSession = Depends(get
         raise HTTPException(status_code=404, detail="Customer not found for this org")
     return customer
 
+@router.get("/by-org/{dograh_org_id}/agents")
+async def get_org_agents(dograh_org_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found for this org")
+    
+    from db.models import Agent
+    agents_res = await db.execute(select(Agent).where(Agent.customer_id == customer.id))
+    agents = agents_res.scalars().all()
+    
+    return [
+        {
+            "id": a.id,
+            "dograh_agent_id": a.dograh_agent_id,
+            "name": a.name,
+            "crm_link": getattr(a, "crm_link", None)
+        }
+        for a in agents if a.dograh_agent_id
+    ]
+
 @router.post("/by-org/{dograh_org_id}/onboarding")
 async def submit_onboarding_by_org(dograh_org_id: int, data: dict, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))

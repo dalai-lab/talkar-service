@@ -111,6 +111,7 @@ class Agent(Base):
     dograh_org_id = Column(Integer)
     per_minute_rate_paise = Column(BigInteger, nullable=True)
     status = Column(Text, default="building")
+    crm_link = Column(Text, nullable=True)
     built_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -159,3 +160,14 @@ class SupportRequest(Base):
     resolved_by = Column(Integer, ForeignKey("talkar_admins.id"))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     resolved_at = Column(DateTime(timezone=True))
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
+    title = Column(Text, nullable=False)
+    body = Column(Text, nullable=False)
+    type = Column(Text, nullable=False)
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

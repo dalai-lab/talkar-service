@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import health, customers, wallet, billing, provisioning, admin
+from routers import health, customers, wallet, billing, provisioning, admin, notifications
 from contextlib import asynccontextmanager
 from services import redis_client
 
@@ -20,6 +20,21 @@ async def lifespan(app: FastAPI):
                     SPLIT_PART(contact_email, '@', 1)
                 )
                 WHERE company_name IS NULL OR TRIM(company_name) = '';
+            """))
+            
+            # Phase 1/2 Migrations
+            await conn.execute(text("""
+                ALTER TABLE agents ADD COLUMN IF NOT EXISTS crm_link TEXT;
+                
+                CREATE TABLE IF NOT EXISTS notifications (
+                    id SERIAL PRIMARY KEY,
+                    customer_id INTEGER NOT NULL REFERENCES customers(id),
+                    title TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    is_read BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
             """))
     except Exception as e:
         import logging
@@ -52,6 +67,7 @@ app.include_router(wallet.router, prefix="/wallet", tags=["Wallet"])
 app.include_router(billing.router, prefix="/billing", tags=["Billing"])
 app.include_router(provisioning.router, prefix="/provisioning", tags=["Provisioning"])
 app.include_router(admin.router, prefix="/admin", tags=["Admin"])
+app.include_router(notifications.router, prefix="/notifications", tags=["Notifications"])
 
 if __name__ == "__main__":
     import uvicorn

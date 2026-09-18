@@ -32,7 +32,7 @@ async def get_billing_wallet(db: AsyncSession, customer_id: int):
         
     return wallet, master_customer_id
 
-async def credit_wallet(db: AsyncSession, customer_id: int, amount_paise: int, razorpay_order_id: str = None, description: str = "Wallet top-up via Razorpay") -> Wallet:
+async def credit_wallet(db: AsyncSession, customer_id: int, amount_paise: int, razorpay_order_id: str = None, description: str = "Wallet top-up via Razorpay", tx_type: str = "top_up") -> Wallet:
     """Safely adds balance to a customer's wallet and records the ledger entry."""
     wallet, master_id = await get_billing_wallet(db, customer_id)
     if not wallet:
@@ -52,7 +52,7 @@ async def credit_wallet(db: AsyncSession, customer_id: int, amount_paise: int, r
     # 2. Record transaction on the master wallet owner
     transaction = WalletTransaction(
         customer_id=master_id,
-        type="top_up",
+        type=tx_type,
         amount_paise=amount_paise,
         description=description,
         razorpay_order_id=razorpay_order_id
@@ -62,11 +62,18 @@ async def credit_wallet(db: AsyncSession, customer_id: int, amount_paise: int, r
     
     return wallet
 
+_in_flight_recharges = set()
+
 async def check_and_trigger_auto_recharge(db: AsyncSession, customer_id: int):
-    """Evaluates threshold and triggers Razorpay token charge if enabled."""
+    """Evaluates threshold and triggers Razorpay token charge if enabled with duplicate charge guard."""
     wallet, master_id = await get_billing_wallet(db, customer_id)
     
     if not wallet or not wallet.auto_recharge_enabled:
+        return
+
+    # Ensure saved payment method exists
+    if not wallet.razorpay_payment_method_id or not wallet.razorpay_customer_id:
+        logger.warning(f"Wallet {wallet.id} for master {master_id} has auto-recharge enabled but no saved payment method.")
         return
 
     # Check if the master customer is active before charging
@@ -76,7 +83,20 @@ async def check_and_trigger_auto_recharge(db: AsyncSession, customer_id: int):
         return
 
     if wallet.balance_paise < wallet.auto_recharge_threshold_paise:
-        logger.info(f"Wallet {wallet.id} below threshold. Triggering auto-recharge.")
+        # In-memory in-flight guard
+        if master_id in _in_flight_recharges:
+            logger.info(f"Auto-recharge already in flight in this process for customer {master_id}, skipping.")
+            return
+
+        # Distributed lock guard to prevent race condition across multiple concurrent calls/workers
+        from services import redis_client
+        locked = await redis_client.acquire_auto_recharge_lock(master_id, ttl_seconds=120)
+        if not locked:
+            logger.info(f"Auto-recharge lock currently held for customer {master_id}, skipping concurrent charge.")
+            return
+
+        _in_flight_recharges.add(master_id)
+        logger.info(f"Wallet {wallet.id} below threshold ({wallet.balance_paise} < {wallet.auto_recharge_threshold_paise}). Triggering auto-recharge.")
         try:
             charge = await razorpay_client.charge_saved_card(
                 customer_id=wallet.razorpay_customer_id,
@@ -92,10 +112,15 @@ async def check_and_trigger_auto_recharge(db: AsyncSession, customer_id: int):
                     description="Auto-recharge: Low balance top-up via saved card"
                 )
                 logger.info(f"Auto-recharge successful for customer {master_id}")
+            else:
+                logger.error(f"Auto-recharge charge uncaptured for customer {master_id}: {charge}")
         except Exception as e:
             logger.error(f"Auto-recharge failed for customer {master_id}: {e}")
             await notification_service.notify_customer_auto_recharge_failed(master_id)
             await notification_service.notify_admin_auto_recharge_failed(master_id)
+        finally:
+            _in_flight_recharges.discard(master_id)
+            await redis_client.release_auto_recharge_lock(master_id)
 
 async def deduct_for_run(run_id: int):
     """

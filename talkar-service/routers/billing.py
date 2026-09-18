@@ -169,9 +169,7 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
             hashlib.sha256
         ).hexdigest()
         if not hmac.compare_digest(expected, data.razorpay_signature):
-            # TEMPORARY: Allow bypass in production as requested by user
-            # raise HTTPException(400, "Invalid payment signature")
-            logger.warning("WARNING: Bypassed invalid signature for topup!")
+            raise HTTPException(400, "Invalid payment signature")
     
     # 2. Find customer
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id))
@@ -332,9 +330,7 @@ async def confirm_setup_fee_payment(data: ConfirmPaymentRequest, db: AsyncSessio
             _hashlib.sha256
         ).hexdigest()
         if not _hmac.compare_digest(expected, data.razorpay_signature):
-            # TEMPORARY: Allow bypass in production as requested by user
-            # raise HTTPException(400, "Invalid payment signature")
-            logger.warning("WARNING: Bypassed invalid signature for setup fee!")
+            raise HTTPException(400, "Invalid payment signature")
 
     # Find customer by order ID
     result = await db.execute(select(Customer).where(Customer.setup_fee_order_id == data.razorpay_order_id))
@@ -645,15 +641,38 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
     )
     wallet = result2.scalar_one_or_none()
 
-    # Log wallet transaction
+    # Add usage stats to wallet transaction description for ledger transparency
+    description = f"Call deduction for run {data.workflow_run_id} ({data.duration_seconds}s)"
+    
     txn = WalletTransaction(
         customer_id=master_id,
-        type="call_deduction",
         amount_paise=-cost_paise,
-        description=f"Call deduction for run {data.workflow_run_id}",
+        type="call_deduction",
+        description=description,
         dograh_run_id=data.workflow_run_id
     )
     db.add(txn)
+    
+    # Send low balance alert if dropped below threshold (₹1500)
+    # Check if we should alert (cooldown of 24h to prevent spam)
+    LOW_BALANCE_THRESHOLD_PAISE = 150000
+    if wallet.balance_paise < LOW_BALANCE_THRESHOLD_PAISE:
+        from datetime import timezone
+        import datetime
+        now = datetime.datetime.now(timezone.utc)
+        
+        should_alert = True
+        if wallet.low_balance_alerted_at:
+            # Check if 24h passed
+            if (now - wallet.low_balance_alerted_at).total_seconds() < 86400:
+                should_alert = False
+                
+        if should_alert:
+            wallet.low_balance_alerted_at = now
+            # Fire in background so we don't block Dograh
+            import asyncio
+            asyncio.create_task(notification_service.notify_customer_low_balance(wallet.customer_id, wallet.balance_paise))
+
     await db.commit()
 
     # SOT line 284-285: check auto-recharge, then check low balance
@@ -838,7 +857,8 @@ async def confirm_add_card(data: ConfirmAddCardRequest, db: AsyncSession = Depen
             master_id,
             200,
             razorpay_order_id=data.razorpay_order_id,
-            description="Card verification deposit credited"
+            description="Card verification refund (auto-recharge setup)",
+            tx_type="refund"
         )
     except Exception as e:
         logger.warning(f"Could not credit authorization deposit: {e}")
@@ -911,9 +931,10 @@ async def get_transactions_by_org(
     if not customer:
         raise HTTPException(404, "Customer not found")
     
-    # Unified ledger: get all customer IDs with same email
-    customers_result = await db.execute(select(Customer.id).where(Customer.contact_email == customer.contact_email))
-    customer_ids = customers_result.scalars().all()
+    # Unified ledger: resolve billing master and all sub-orgs
+    master_id = customer.billing_org_id if customer.billing_org_id else customer.id
+    sub_orgs_res = await db.execute(select(Customer.id).where(Customer.billing_org_id == master_id))
+    customer_ids = list(set([master_id] + list(sub_orgs_res.scalars().all())))
     
     base_query = select(WalletTransaction).where(WalletTransaction.customer_id.in_(customer_ids))
     if type and type != "all":
@@ -962,9 +983,10 @@ async def get_usage_by_org(
     month_start = datetime(year, mon, 1)
     month_end = datetime(year + 1, 1, 1) if mon == 12 else datetime(year, mon + 1, 1)
     
-    # Unified ledger: get all customer IDs with same email to include sub-orgs
-    customers_result = await db.execute(select(Customer.id).where(Customer.contact_email == customer.contact_email))
-    customer_ids = customers_result.scalars().all()
+    # Unified ledger: resolve billing master and all sub-orgs
+    master_id = customer.billing_org_id if customer.billing_org_id else customer.id
+    sub_orgs_res = await db.execute(select(Customer.id).where(Customer.billing_org_id == master_id))
+    customer_ids = list(set([master_id] + list(sub_orgs_res.scalars().all())))
     
     logs_result = await db.execute(
         select(CallLog).where(
@@ -1000,10 +1022,13 @@ async def update_auto_recharge(org_id: int, data: AutoRechargeSettings, db: Asyn
     if not customer:
         raise HTTPException(404, "Customer not found")
     
-    wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
-    wallet = wallet_res.scalar_one_or_none()
+    from services.billing_service import get_billing_wallet
+    wallet, master_id = await get_billing_wallet(db, customer.id)
     if not wallet:
         raise HTTPException(404, "Wallet not found")
+
+    if data.enabled and not wallet.razorpay_payment_method_id:
+        raise HTTPException(400, "Cannot enable auto-recharge without a saved payment method. Please save and verify a card first.")
     
     wallet.auto_recharge_enabled = data.enabled
     wallet.auto_recharge_threshold_paise = data.threshold_paise
