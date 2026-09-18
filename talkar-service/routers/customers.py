@@ -390,6 +390,29 @@ async def get_org_agents(dograh_org_id: int, db: AsyncSession = Depends(get_db))
         for a in agents if a.dograh_workflow_id
     ]
 
+@router.get("/by-org/{dograh_org_id}/crm-links")
+async def get_org_crm_links(dograh_org_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found for this org")
+    
+    links = getattr(customer, "crm_links", None)
+    if links and isinstance(links, list) and len(links) > 0:
+        return links
+    
+    # Fallback to agent crm_link if customer-level list is empty
+    from db.models import Agent
+    agents_res = await db.execute(select(Agent).where(Agent.customer_id == customer.id))
+    fallback_links = []
+    for ag in agents_res.scalars().all():
+        if ag.crm_link:
+            fallback_links.append({
+                "name": f"{ag.name} CRM",
+                "url": ag.crm_link
+            })
+    return fallback_links
+
 @router.post("/by-org/{dograh_org_id}/onboarding")
 async def submit_onboarding_by_org(dograh_org_id: int, data: dict, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))

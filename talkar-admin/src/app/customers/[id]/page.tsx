@@ -25,7 +25,10 @@ import {
   Ban, 
   PhoneCall, 
   Bot, 
-  ShieldAlert
+  ShieldAlert,
+  Link2,
+  Plus,
+  Trash2
 } from "lucide-react";
 
 const DocumentViewer = ({ title, dataUrl }: { title: string, dataUrl: string }) => {
@@ -136,6 +139,9 @@ export default function CustomerDetailPage() {
         const data = await res.json();
         setCustomer(data);
         setNewPlan(data.onboarding_form?.approved_tier || "");
+        if (Array.isArray(data.crm_links)) {
+          setCustomerCrmLinks(data.crm_links);
+        }
       }
       const subRes = await adminFetch(`/admin/customers/${id}/subscription`);
       if (subRes.ok) {
@@ -222,6 +228,53 @@ export default function CustomerDetailPage() {
   };
 
 
+  // Customer-level CRM Integrations (collapsible in customer portal)
+  const [customerCrmLinks, setCustomerCrmLinks] = React.useState<Array<{ name: string; url: string }>>([]);
+  const [customerCrmSaving, setCustomerCrmSaving] = React.useState(false);
+  const [customerCrmSaved, setCustomerCrmSaved] = React.useState(false);
+
+  const handleAddCustomerCrmLink = () => {
+    setCustomerCrmLinks(prev => [...prev, { name: "", url: "" }]);
+  };
+
+  const handleUpdateCustomerCrmLinkItem = (index: number, field: "name" | "url", val: string) => {
+    setCustomerCrmLinks(prev => {
+      const copy = [...prev];
+      copy[index] = { ...copy[index], [field]: val };
+      return copy;
+    });
+  };
+
+  const handleRemoveCustomerCrmLink = (index: number) => {
+    setCustomerCrmLinks(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleSaveCustomerCrmLinks = async () => {
+    setCustomerCrmSaving(true);
+    try {
+      const validLinks = customerCrmLinks.filter(l => l.url && l.url.trim() !== "");
+      const res = await adminFetch(`/admin/customers/${id}/crm-links`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ crm_links: validLinks })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCustomerCrmLinks(data.crm_links || []);
+        setCustomerCrmSaved(true);
+        setTimeout(() => setCustomerCrmSaved(false), 2500);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Failed to save CRM links: ${err.detail || "Unknown error"}`);
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Network error saving CRM links.");
+    } finally {
+      setCustomerCrmSaving(false);
+    }
+  };
+
   const [crmLinkInputs, setCrmLinkInputs] = React.useState<Record<number, string>>({});
   const [crmSaving, setCrmSaving] = React.useState<Record<number, boolean>>({});
   const [crmSaved, setCrmSaved] = React.useState<Record<number, boolean>>({});
@@ -238,6 +291,12 @@ export default function CustomerDetailPage() {
       if (res.ok) {
         setCrmSaved(prev => ({ ...prev, [agentId]: true }));
         setTimeout(() => setCrmSaved(prev => ({ ...prev, [agentId]: false })), 2000);
+        // Also refresh agents list
+        const aRes = await adminFetch(`/admin/customers/${id}/agents`);
+        if (aRes.ok) {
+          const aData = await aRes.json();
+          setAgents(aData);
+        }
       } else {
         const err = await res.json().catch(() => ({}));
         alert(`Failed to update CRM link: ${err.detail || "Unknown error"}`);
@@ -698,6 +757,104 @@ export default function CustomerDetailPage() {
           )}
         </Card>
       )}
+
+      {/* CRM Portals & External Links (Custom Named & Collapsible in Client Portal) */}
+      <Card className="bg-white border border-slate-200/80 rounded-xl shadow-none">
+        <CardHeader className="flex flex-row items-center justify-between p-4 py-3 border-b border-slate-100">
+          <div className="flex items-center gap-2">
+            <Link2 className="w-4 h-4 text-[#fe6905]" />
+            <div>
+              <CardTitle className="text-xs font-semibold text-slate-900 uppercase tracking-wider">
+                CRM Integrations & External Portals
+              </CardTitle>
+              <p className="text-[11px] text-slate-500 font-normal mt-0.5">
+                These links appear in the customer's portal navigation as a collapsible CRM dropdown menu.
+              </p>
+            </div>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleAddCustomerCrmLink}
+            className="text-xs h-8 border-slate-200 text-slate-700 hover:text-slate-900 cursor-pointer flex items-center gap-1.5"
+          >
+            <Plus className="w-3.5 h-3.5" /> Add CRM Link
+          </Button>
+        </CardHeader>
+        <CardContent className="p-4 space-y-3">
+          {customerCrmLinks.length === 0 ? (
+            <div className="text-center py-6 border border-dashed border-slate-200 rounded-lg bg-slate-50/50">
+              <p className="text-xs text-slate-400 mb-2">No CRM links configured for this customer.</p>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleAddCustomerCrmLink}
+                className="text-xs h-7 border-slate-300 text-slate-700 hover:text-slate-900 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5 mr-1" /> Add First CRM Link
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {customerCrmLinks.map((crm, idx) => (
+                <div key={idx} className="flex items-center gap-2.5 bg-slate-50/80 border border-slate-200 p-2.5 rounded-lg">
+                  <div className="w-1/3">
+                    <Label className="text-[10px] text-slate-400 font-medium block mb-1">Display Name (e.g. Admissions CRM)</Label>
+                    <Input
+                      type="text"
+                      placeholder="e.g. Zoho Pipeline, Admissions Portal"
+                      value={crm.name}
+                      onChange={(e) => handleUpdateCustomerCrmLinkItem(idx, "name", e.target.value)}
+                      className="h-8 text-xs bg-white border-slate-200 font-medium"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <Label className="text-[10px] text-slate-400 font-medium block mb-1">Portal URL</Label>
+                    <Input
+                      type="url"
+                      placeholder="https://crm.example.com/..."
+                      value={crm.url}
+                      onChange={(e) => handleUpdateCustomerCrmLinkItem(idx, "url", e.target.value)}
+                      className="h-8 text-xs bg-white border-slate-200 font-mono"
+                    />
+                  </div>
+                  <div className="pt-4">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => handleRemoveCustomerCrmLink(idx)}
+                      className="h-8 w-8 text-slate-400 hover:text-rose-600 hover:bg-rose-50 cursor-pointer"
+                      title="Remove Link"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+              <div className="flex items-center justify-between pt-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={handleAddCustomerCrmLink}
+                  className="text-xs text-[#fe6905] hover:text-[#e55e04] hover:bg-orange-50/60 h-8 cursor-pointer flex items-center gap-1 font-medium"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Add another link
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handleSaveCustomerCrmLinks}
+                  disabled={customerCrmSaving}
+                  className={`h-8 text-xs font-semibold px-4 cursor-pointer text-white transition-all ${
+                    customerCrmSaved ? "bg-emerald-600 hover:bg-emerald-700" : "bg-[#fe6905] hover:bg-[#e55e04]"
+                  }`}
+                >
+                  {customerCrmSaving ? "Saving..." : customerCrmSaved ? "✓ Saved!" : "Save All CRM Links"}
+                </Button>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Agents */}
       <Card className="bg-white border border-slate-200/80 rounded-xl shadow-none">

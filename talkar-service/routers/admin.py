@@ -6,7 +6,7 @@ from db.models import Customer, Wallet, WalletTransaction, CallLog, Agent, Talka
 from services import razorpay_client, notification_service
 from services.admin_auth import get_current_admin, create_admin_access_token
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from config import CALL_BLOCK_THRESHOLD_PAISE
 
 router = APIRouter()
@@ -474,6 +474,34 @@ async def update_agent_crm_link(customer_id: int, agent_id: int, data: UpdateAge
     agent.crm_link = data.crm_link
     await db.commit()
     return {"status": "ok", "crm_link": agent.crm_link}
+
+class CrmLinkItem(BaseModel):
+    name: str = ""
+    url: str
+
+class UpdateCustomerCrmLinksRequest(BaseModel):
+    crm_links: List[CrmLinkItem]
+
+@router.patch("/customers/{customer_id}/crm-links")
+async def update_customer_crm_links(
+    customer_id: int,
+    data: UpdateCustomerCrmLinksRequest,
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin)
+):
+    result = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+    
+    clean_links = [
+        {"name": item.name.strip() or "CRM", "url": item.url.strip()}
+        for item in data.crm_links
+        if item.url.strip()
+    ]
+    customer.crm_links = clean_links
+    await db.commit()
+    return {"status": "ok", "crm_links": customer.crm_links}
 
 
 @router.post("/customers/{customer_id}/credit")
