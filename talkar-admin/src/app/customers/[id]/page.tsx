@@ -262,7 +262,19 @@ export default function CustomerDetailPage() {
   const handleSaveCustomerCrmLinks = async () => {
     setCustomerCrmSaving(true);
     try {
-      const validLinks = customerCrmLinks.filter(l => l.url && l.url.trim() !== "");
+      const validLinks = customerCrmLinks
+        .map(l => {
+          let u = (l.url || "").trim();
+          if (u && !u.startsWith("http://") && !u.startsWith("https://")) {
+            u = `https://${u}`;
+          }
+          return {
+            name: (l.name || "").trim() || "CRM",
+            url: u
+          };
+        })
+        .filter(l => l.url && l.url !== "https://");
+
       const res = await adminFetch(`/admin/customers/${id}/crm-links`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -864,7 +876,18 @@ export default function CustomerDetailPage() {
                       className="h-8 text-xs bg-white border-slate-200 font-mono"
                     />
                   </div>
-                  <div className="pt-4">
+                  <div className="pt-4 flex items-center gap-1">
+                    {crm.url && (
+                      <a
+                        href={crm.url.startsWith("http") ? crm.url : `https://${crm.url}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center justify-center h-8 w-8 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-md transition-colors cursor-pointer"
+                        title="Test link (Opens in new tab)"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                    )}
                     <Button
                       variant="ghost"
                       size="icon"

@@ -399,7 +399,18 @@ async def get_org_crm_links(dograh_org_id: int, db: AsyncSession = Depends(get_d
     
     links = getattr(customer, "crm_links", None)
     if links and isinstance(links, list) and len(links) > 0:
-        return links
+        cleaned = []
+        for l in links:
+            if isinstance(l, dict) and l.get("url"):
+                raw_url = str(l.get("url", "")).strip()
+                if not raw_url.startswith("http://") and not raw_url.startswith("https://"):
+                    raw_url = f"https://{raw_url}"
+                cleaned.append({
+                    "name": str(l.get("name") or "CRM").strip(),
+                    "url": raw_url
+                })
+        if cleaned:
+            return cleaned
     
     # Fallback to agent crm_link if customer-level list is empty
     from db.models import Agent
@@ -407,9 +418,12 @@ async def get_org_crm_links(dograh_org_id: int, db: AsyncSession = Depends(get_d
     fallback_links = []
     for ag in agents_res.scalars().all():
         if ag.crm_link:
+            raw_url = ag.crm_link.strip()
+            if not raw_url.startswith("http://") and not raw_url.startswith("https://"):
+                raw_url = f"https://{raw_url}"
             fallback_links.append({
                 "name": f"{ag.name} CRM",
-                "url": ag.crm_link
+                "url": raw_url
             })
     return fallback_links
 

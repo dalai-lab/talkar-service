@@ -494,12 +494,19 @@ async def update_customer_crm_links(
     if not customer:
         raise HTTPException(404, "Customer not found")
     
-    clean_links = [
-        {"name": item.name.strip() or "CRM", "url": item.url.strip()}
-        for item in data.crm_links
-        if item.url.strip()
-    ]
+    clean_links = []
+    for item in data.crm_links:
+        raw_url = (item.url or "").strip()
+        if not raw_url:
+            continue
+        if not raw_url.startswith("http://") and not raw_url.startswith("https://"):
+            raw_url = f"https://{raw_url}"
+        display_name = (item.name or "").strip() or "CRM"
+        clean_links.append({"name": display_name, "url": raw_url})
+
+    from sqlalchemy.orm.attributes import flag_modified
     customer.crm_links = clean_links
+    flag_modified(customer, "crm_links")
     await db.commit()
     return {"status": "ok", "crm_links": customer.crm_links}
 
