@@ -103,10 +103,6 @@ export function Sidebar() {
             </div>
             <div className="min-w-0">
               <p className="text-xs font-medium text-zinc-200 truncate leading-tight">Admin Console</p>
-              <p className="text-[10px] text-emerald-400 flex items-center gap-1 leading-tight mt-0.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                Console Active
-              </p>
             </div>
           </div>
         </div>
