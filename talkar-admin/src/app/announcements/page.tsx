@@ -377,13 +377,13 @@ export default function AnnouncementsPage() {
         <Table>
           <TableHeader>
             <TableRow className="bg-slate-50/70 border-b border-slate-200 text-[11px] text-slate-500 font-semibold uppercase">
-              <TableHead className="w-[300px]">Announcement</TableHead>
-              <TableHead>Category</TableHead>
-              <TableHead>Channels</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Delivery Date</TableHead>
-              <TableHead>Recipients</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
+              <TableHead className="w-[340px] max-w-[340px] pl-4">Announcement</TableHead>
+              <TableHead className="w-[120px]">Category</TableHead>
+              <TableHead className="w-[120px]">Channels</TableHead>
+              <TableHead className="w-[110px]">Status</TableHead>
+              <TableHead className="w-[160px]">Delivery Date</TableHead>
+              <TableHead className="w-[110px]">Recipients</TableHead>
+              <TableHead className="text-right pr-4">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -402,10 +402,10 @@ export default function AnnouncementsPage() {
             ) : (
               filteredAnnouncements.map((ann) => (
                 <TableRow key={ann.id} className="hover:bg-slate-50/60 border-b border-slate-100 text-xs">
-                  <TableCell>
-                    <div>
-                      <p className="font-semibold text-slate-900 text-xs">{ann.title}</p>
-                      <p className="text-[11px] text-slate-500 line-clamp-1 mt-0.5">{ann.body}</p>
+                  <TableCell className="max-w-[340px] pl-4 py-3">
+                    <div className="min-w-0 max-w-[320px]">
+                      <p className="font-semibold text-slate-900 text-xs truncate" title={ann.title}>{ann.title}</p>
+                      <p className="text-[11px] text-slate-500 truncate mt-0.5" title={ann.body}>{ann.body}</p>
                     </div>
                   </TableCell>
                   <TableCell>{getTypeBadge(ann.type)}</TableCell>
