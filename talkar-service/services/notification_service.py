@@ -874,33 +874,29 @@ async def send_organization_report(
     if is_test:
         subject = f"[PREVIEW] {subject}"
 
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-    import aiosmtplib
-
-    if not settings.SMTP_HOST or not settings.SMTP_USER:
+    if not settings.SMTP_HOST or not settings.SMTP_PASSWORD:
         logger.info(f"[REPORT EMAIL MOCK] To: {recipients} | Subject: {subject}")
         return True
+
+    def _send_sync(to_addr: str):
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = f"Talkar <{settings.FROM_EMAIL}>"
+        msg["To"] = to_addr
+        msg.attach(MIMEText("Please view this report in an HTML-compatible email client.", "plain"))
+        msg.attach(MIMEText(html_content, "html"))
+
+        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(settings.SMTP_EMAIL, settings.SMTP_PASSWORD)
+            server.sendmail(settings.FROM_EMAIL, to_addr, msg.as_string())
+            logger.info(f"Report email sent to {to_addr} (customer_id={customer.id})")
 
     success = True
     for to_email in recipients:
         try:
-            msg = MIMEMultipart("alternative")
-            msg["Subject"] = subject
-            msg["From"] = f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL}>"
-            msg["To"] = to_email
-            msg.attach(MIMEText(html_content, "html"))
-
-            await aiosmtplib.send(
-                msg,
-                hostname=settings.SMTP_HOST,
-                port=settings.SMTP_PORT,
-                username=settings.SMTP_USER,
-                password=settings.SMTP_PASSWORD,
-                use_tls=False,
-                start_tls=True,
-            )
-            logger.info(f"Report email successfully sent to {to_email} (customer_id={customer.id})")
+            await asyncio.to_thread(_send_sync, to_email)
         except Exception as e:
             logger.error(f"Failed to send report email to {to_email}: {e}")
             success = False
