@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 from sqlalchemy import select, update
 from sqlalchemy.sql import func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -113,11 +113,11 @@ async def deduct_for_run(run_id: int):
         result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
         customer = result.scalar_one_or_none()
         if not customer:
-            logger.warning(f"No customer found for org {org_id} — run {run_id} not billed")
+            logger.warning(f"No customer found for org {org_id} â€” run {run_id} not billed")
             return
             
         if customer.status != "active":
-            logger.warning(f"Customer {customer.id} is not active (status: {customer.status}) — run {run_id} not billed")
+            logger.warning(f"Customer {customer.id} is not active (status: {customer.status}) â€” run {run_id} not billed")
             return
             
         sub_result = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
@@ -136,7 +136,7 @@ async def deduct_for_run(run_id: int):
         # Calculate cost (with minimum billable guard)
         MIN_BILLABLE_SECONDS = 10
         if duration < MIN_BILLABLE_SECONDS:
-            logger.info(f"Run {run_id} too short ({duration}s) — logging as ₹0 cost")
+            logger.info(f"Run {run_id} too short ({duration}s) â€” logging as â‚¹0 cost")
             cost_paise = 0
         else:
             minutes = math.ceil(duration / 60.0)
@@ -144,7 +144,7 @@ async def deduct_for_run(run_id: int):
             rate = subscription.per_minute_rate_paise if subscription else TIER_CONFIG["starter"]["per_minute_rate_paise"]
             cost_paise = minutes * rate
         
-        # Insert call log — stamp plan+tts_provider at this moment so profitability
+        # Insert call log â€” stamp plan+tts_provider at this moment so profitability
         # always reflects what was active during the call, even after later plan switches.
         from config import TIER_CONFIG
         active_plan = subscription.plan if subscription else "starter"

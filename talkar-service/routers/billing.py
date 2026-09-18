@@ -37,18 +37,28 @@ async def create_topup_order(data: TopupRequest, db: AsyncSession = Depends(get_
     if not customer:
         raise HTTPException(404, "Customer not found")
 
+    if customer.status not in ("active", "suspended", "pending_deposit", "pending_plan_selection", "approved"):
+        raise HTTPException(400, "Account not eligible for top-up")
+
     sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
     sub = sub_res.scalar_one_or_none()
     
     from config import resolve_tier_config
     tier_cfg = resolve_tier_config(sub)
-    plan_min_rupees = tier_cfg.get("activation_deposit_paise", 600000) // 100
+    activation_min_paise = tier_cfg.get("activation_deposit_paise", 600000)
     
-    if data.amount_rupees < plan_min_rupees:
-        raise HTTPException(400, f"Minimum recharge for your plan is ₹{plan_min_rupees}. You cannot add less than this.")
-
-    if customer.status not in ("active", "suspended", "pending_deposit", "pending_plan_selection", "approved"):
-        raise HTTPException(400, "Account not eligible for top-up")
+    # Activation minimum only applies when the account is NOT yet active.
+    # Active/suspended customers can top up any amount >= ₹500 (small practical floor).
+    REGULAR_TOPUP_MIN_PAISE = 50000  # ₹500 minimum for regular top-ups
+    if customer.status in ("pending_deposit", "pending_plan_selection"):
+        # Must hit the plan activation threshold in total — enforce the full minimum
+        plan_min_rupees = activation_min_paise // 100
+        if data.amount_rupees < plan_min_rupees:
+            raise HTTPException(400, f"A minimum of ₹{plan_min_rupees} is required to activate your plan.")
+    else:
+        # Regular top-up — just enforce a small practical floor
+        if data.amount_rupees * 100 < REGULAR_TOPUP_MIN_PAISE:
+            raise HTTPException(400, f"Minimum top-up amount is ₹{REGULAR_TOPUP_MIN_PAISE // 100}.")
         
     amount_paise = data.amount_rupees * 100
     order = await razorpay_client.create_topup_order(amount_paise, f"topup_{customer.id}", customer.id)
@@ -483,38 +493,47 @@ async def check_quota(data: DograhQuotaRequest, db: AsyncSession = Depends(get_d
     sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == sub_customer_id))
     sub = sub_res.scalar_one_or_none()
     from config import resolve_tier_config
+    import math
     
     tier_cfg = resolve_tier_config(sub)
     rate = sub.per_minute_rate_paise if sub else tier_cfg["per_minute_rate_paise"]
     max_duration_secs = tier_cfg.get("max_call_duration_seconds", 900)
+    concurrent_call_limit = tier_cfg.get("concurrent_call_limit", 2)
     
-    # Require 5 minutes of funds to even start a call
-    minimum_reserve_paise = 5 * rate
-    if wallet.balance_paise < minimum_reserve_paise:
-        logger.warning(f"Org {data.organization_id} has balance {wallet.balance_paise} below minimum reserve {minimum_reserve_paise}")
+    # Cost of one worst-case call (max duration, ceil'd to minutes)
+    max_call_cost = math.ceil(max_duration_secs / 60) * rate
+    
+    # Must have enough to cover at least one full call before granting quota.
+    # Previously this was "5 * rate" (~₹30 starter) which was far too low and caused
+    # wallet to go negative when multiple concurrent calls all finished simultaneously.
+    if wallet.balance_paise < max_call_cost:
+        logger.warning(f"Org {data.organization_id} has balance {wallet.balance_paise} below one-call reserve {max_call_cost}")
         await check_and_trigger_auto_recharge(db, master_id)
         return {"has_quota": False}
         
     # 2. Billing Group Concurrency Cap (Risk 2)
-    import math
     from services import redis_client
     
-    max_call_cost = math.ceil(max_duration_secs / 60) * rate
     # How many simultaneous calls can the wallet afford if they all hit max duration?
     max_affordable_concurrent = math.floor(wallet.balance_paise / max_call_cost)
+    # Never exceed the plan's hard concurrent call limit either
+    max_concurrent = min(max_affordable_concurrent, concurrent_call_limit)
     
-    if max_affordable_concurrent <= 0:
+    if max_concurrent <= 0:
         return {"has_quota": False}
         
     current_active = await redis_client.get_active_calls(master_id)
     
-    if current_active >= max_affordable_concurrent:
-        logger.warning(f"Billing group {master_id} hit affordable concurrency cap ({current_active}/{max_affordable_concurrent})")
+    # Safety: if Redis is down (returns 0), fall back to plan's hard limit so we
+    # don't grant unlimited calls on a stale counter.
+    if current_active >= max_concurrent:
+        logger.warning(f"Billing group {master_id} hit concurrency cap ({current_active}/{max_concurrent})")
         return {"has_quota": False}
         
     # Grant quota -> increment Redis
     await redis_client.increment_active_calls(master_id, max_duration_secs)
     return {"has_quota": True}
+
 
 @router.post("/deduct")
 async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(get_db)):
@@ -575,6 +594,28 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
         return {"status": "zero_duration_logged"}
 
     # SOT line 281: cost = ceil(duration_seconds / 60) * per_minute_rate, always ceil, never floor
+    # Minimum billable: calls under 10 seconds (unanswered, instant hang-up) are FREE — same as cron path.
+    MIN_BILLABLE_SECONDS = 10
+    if data.duration_seconds < MIN_BILLABLE_SECONDS:
+        # Log the call with zero cost so it appears in history but doesn't charge anything.
+        call_log = CallLog(
+            customer_id=customer.id,
+            agent_id=None,
+            dograh_run_id=data.workflow_run_id,
+            duration_seconds=data.duration_seconds,
+            cost_to_customer_paise=0,
+            called_at=func.now(),
+            processed_at=func.now(),
+            plan=active_plan,
+            tts_provider=active_tts,
+        )
+        db.add(call_log)
+        await db.commit()
+        from services import redis_client
+        await redis_client.decrement_active_calls(customer.billing_org_id or customer.id)
+        logger.info(f"Sub-10s call for run {data.workflow_run_id} ({data.duration_seconds}s) — logged with ₹0 cost")
+        return {"status": "short_call_logged", "cost_paise": 0}
+
     minutes = math.ceil(data.duration_seconds / 60)
     cost_paise = minutes * rate
 

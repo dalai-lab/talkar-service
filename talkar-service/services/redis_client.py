@@ -1,4 +1,4 @@
-import redis.asyncio as redis
+﻿import redis.asyncio as redis
 from config import settings
 import logging
 
@@ -40,11 +40,17 @@ async def increment_active_calls(master_id: int, ttl_seconds: int):
         return
     try:
         key = f"billing_group_active:{master_id}"
-        # Use a transaction to incr and set TTL
+        # INCR first, then only set TTL if this is a fresh key (value == 1).
+        # This avoids resetting the TTL for pre-existing concurrent calls, which
+        # would cause the counter to expire before all calls decrement it.
         pipe = redis_client.pipeline()
         pipe.incr(key)
-        pipe.expire(key, ttl_seconds)
-        await pipe.execute()
+        results = await pipe.execute()
+        new_val = results[0]
+        if new_val == 1:
+            # First call in this group - set a generous TTL as a safety net.
+            # Add 60s buffer so the last decrement is not racing the expiry.
+            await redis_client.expire(key, ttl_seconds + 60)
     except Exception as e:
         logger.error(f"Redis INCR failed for billing_group_active:{master_id}: {e}")
 
