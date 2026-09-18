@@ -107,7 +107,9 @@ export default function WalletOverviewPage() {
                 ) : (
                   alerts.map((w) => (
                     <TableRow key={w.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors">
-                      <TableCell className="font-mono text-xs font-semibold text-slate-900">#{w.customer_id}</TableCell>
+                      <TableCell className="font-mono text-xs font-semibold text-slate-900">
+                        {w.company_name || w.contact_email || `#${w.customer_id}`}
+                      </TableCell>
                       <TableCell className="text-xs text-red-600 font-bold font-mono">
                         ₹{(w.balance_paise / 100).toFixed(2)}
                       </TableCell>

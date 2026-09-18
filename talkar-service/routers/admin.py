@@ -777,18 +777,28 @@ async def get_wallet_overview(db: AsyncSession = Depends(get_db), current_admin:
 async def get_wallet_alerts(db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
     # Yellow alert: balance < ₹500 (50000 paise) — low but not zero
     yellow_result = await db.execute(
-        select(Wallet).where(
+        select(Wallet, Customer).join(Customer, Wallet.customer_id == Customer.id).where(
             Wallet.balance_paise > 0,
             Wallet.balance_paise < 50000
         ).order_by(Wallet.balance_paise.asc())
     )
-    yellow = yellow_result.scalars().all()
+    yellow = []
+    for w, c in yellow_result.all():
+        d = {col.name: getattr(w, col.name) for col in w.__table__.columns}
+        d["company_name"] = c.company_name
+        d["contact_email"] = c.contact_email
+        yellow.append(d)
 
     # Red/urgent alert: balance = 0, calls blocked
     red_result = await db.execute(
-        select(Wallet).where(Wallet.balance_paise <= 0).order_by(Wallet.updated_at.asc())
+        select(Wallet, Customer).join(Customer, Wallet.customer_id == Customer.id).where(Wallet.balance_paise <= 0).order_by(Wallet.updated_at.asc())
     )
-    red = red_result.scalars().all()
+    red = []
+    for w, c in red_result.all():
+        d = {col.name: getattr(w, col.name) for col in w.__table__.columns}
+        d["company_name"] = c.company_name
+        d["contact_email"] = c.contact_email
+        red.append(d)
 
     return {"low_balance": yellow, "zero_balance": red}
 
