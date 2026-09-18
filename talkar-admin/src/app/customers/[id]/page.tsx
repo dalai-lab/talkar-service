@@ -214,42 +214,27 @@ export default function CustomerDetailPage() {
     }
   };
 
-  const handleUpdateRate = async (agentId: number, rateStr: string) => {
-    try {
-      const ratePaise = rateStr ? parseInt(rateStr) * 100 : null;
-      const res = await adminFetch(`/admin/customers/${id}/agents/${agentId}/rate`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ per_minute_rate_paise: ratePaise })
-      });
-      if (res.ok) {
-        alert("Rate updated successfully!");
-        fetchCustomer();
-      } else {
-        const err = await res.json().catch(() => ({}));
-        alert(`Failed to update rate: ${err.detail || "Unknown error"}`);
-      }
-    } catch (e) {
-      console.error(e);
-    }
-  };
 
-  const handleUpdateCrmLink = async (agentId: number, linkStr: string) => {
+  const [crmLinkInputs, setCrmLinkInputs] = React.useState<Record<number, string>>({});
+  const [crmSaving, setCrmSaving] = React.useState<Record<number, boolean>>({});
+
+  const handleUpdateCrmLink = async (agentId: number) => {
+    const linkStr = crmLinkInputs[agentId] ?? "";
+    setCrmSaving(prev => ({ ...prev, [agentId]: true }));
     try {
       const res = await adminFetch(`/admin/customers/${id}/agents/${agentId}/crm-link`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ crm_link: linkStr || null })
       });
-      if (res.ok) {
-        alert("CRM Link updated successfully!");
-        fetchCustomer();
-      } else {
+      if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         alert(`Failed to update CRM link: ${err.detail || "Unknown error"}`);
       }
     } catch (e) {
       console.error(e);
+    } finally {
+      setCrmSaving(prev => ({ ...prev, [agentId]: false }));
     }
   };
 
@@ -702,9 +687,9 @@ export default function CustomerDetailPage() {
         </Card>
       )}
 
-      {/* Agents & Billing Rates */}
+      {/* Agents */}
       <Card className="bg-white border border-slate-200/80 rounded-xl shadow-none">
-        <CardHeader className="p-4 pb-2 border-b border-slate-100"><CardTitle className="text-xs font-semibold text-slate-900 uppercase tracking-wider flex items-center gap-2"><Bot className="w-4 h-4 text-[#fe6905]" /> Agents & Billing Rates</CardTitle></CardHeader>
+        <CardHeader className="p-4 pb-2 border-b border-slate-100"><CardTitle className="text-xs font-semibold text-slate-900 uppercase tracking-wider flex items-center gap-2"><Bot className="w-4 h-4 text-[#fe6905]" /> Agents</CardTitle></CardHeader>
         <CardContent className="p-4 space-y-3">
           {agents.length === 0 ? (
             <p className="text-xs text-slate-400 py-2">No agents provisioned for this customer.</p>
@@ -720,27 +705,23 @@ export default function CustomerDetailPage() {
                       <Badge className="text-[10px] bg-emerald-50 text-emerald-700 border-emerald-200">{ag.status}</Badge>
                     </div>
                   </div>
-                  <div className="flex flex-col gap-2">
-                    <div className="flex items-center justify-between gap-2.5 bg-white p-2 rounded-lg border border-slate-200">
-                      <Label className="text-xs font-medium text-slate-600 whitespace-nowrap">Per-Minute Rate (paise)</Label>
-                      <Input 
-                        type="number" 
-                        placeholder={currentPlan === 'starter' ? '2500' : currentPlan === 'pro' ? '1800' : '1200'}
-                        defaultValue={ag.per_minute_rate_paise ?? ""}
-                        className="w-28 text-right font-mono text-xs h-8 bg-white border-slate-200"
-                        onBlur={(e) => handleUpdateRate(ag.id, e.target.value)}
-                      />
-                    </div>
-                    <div className="flex items-center justify-between gap-2.5 bg-white p-2 rounded-lg border border-slate-200">
-                      <Label className="text-xs font-medium text-slate-600 whitespace-nowrap">CRM Link</Label>
-                      <Input 
-                        type="url" 
-                        placeholder="https://crm.example.com/..."
-                        defaultValue={ag.crm_link ?? ""}
-                        className="w-48 text-right font-mono text-xs h-8 bg-white border-slate-200"
-                        onBlur={(e) => handleUpdateCrmLink(ag.id, e.target.value)}
-                      />
-                    </div>
+                  <div className="flex items-center gap-2 bg-white p-2 rounded-lg border border-slate-200">
+                    <Label className="text-xs font-medium text-slate-600 whitespace-nowrap">CRM Link</Label>
+                    <Input
+                      type="url"
+                      placeholder="https://crm.example.com/..."
+                      value={crmLinkInputs[ag.id] ?? (ag.crm_link || "")}
+                      onChange={(e) => setCrmLinkInputs(prev => ({ ...prev, [ag.id]: e.target.value }))}
+                      className="w-56 font-mono text-xs h-8 bg-white border-slate-200"
+                    />
+                    <Button
+                      size="sm"
+                      className="h-8 text-xs bg-[#fe6905] hover:bg-[#e55e04] text-white cursor-pointer"
+                      onClick={() => handleUpdateCrmLink(ag.id)}
+                      disabled={crmSaving[ag.id]}
+                    >
+                      {crmSaving[ag.id] ? "Saving..." : "Save"}
+                    </Button>
                   </div>
                 </div>
               ))}
