@@ -163,6 +163,13 @@ export default function CustomerDetailPage() {
       if (agentsRes.ok) {
         const aData = await agentsRes.json();
         setAgents(aData);
+        // Initialize crm link inputs from loaded agents so Save works without re-typing
+        setCrmLinkInputs(
+          aData.reduce((acc: Record<number, string>, a: { id: number; crm_link?: string }) => {
+            acc[a.id] = a.crm_link ?? "";
+            return acc;
+          }, {})
+        );
       }
     } catch (e) {
       console.error(e);
@@ -217,6 +224,7 @@ export default function CustomerDetailPage() {
 
   const [crmLinkInputs, setCrmLinkInputs] = React.useState<Record<number, string>>({});
   const [crmSaving, setCrmSaving] = React.useState<Record<number, boolean>>({});
+  const [crmSaved, setCrmSaved] = React.useState<Record<number, boolean>>({});
 
   const handleUpdateCrmLink = async (agentId: number) => {
     const linkStr = crmLinkInputs[agentId] ?? "";
@@ -227,12 +235,16 @@ export default function CustomerDetailPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ crm_link: linkStr || null })
       });
-      if (!res.ok) {
+      if (res.ok) {
+        setCrmSaved(prev => ({ ...prev, [agentId]: true }));
+        setTimeout(() => setCrmSaved(prev => ({ ...prev, [agentId]: false })), 2000);
+      } else {
         const err = await res.json().catch(() => ({}));
         alert(`Failed to update CRM link: ${err.detail || "Unknown error"}`);
       }
     } catch (e) {
       console.error(e);
+      alert("Network error saving CRM link.");
     } finally {
       setCrmSaving(prev => ({ ...prev, [agentId]: false }));
     }
