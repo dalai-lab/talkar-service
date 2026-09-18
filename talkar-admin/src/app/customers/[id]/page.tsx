@@ -28,7 +28,8 @@ import {
   ShieldAlert,
   Link2,
   Plus,
-  Trash2
+  Trash2,
+  Bell
 } from "lucide-react";
 
 const DocumentViewer = ({ title, dataUrl }: { title: string, dataUrl: string }) => {
@@ -123,6 +124,14 @@ export default function CustomerDetailPage() {
   const [plivoIdInput, setPlivoIdInput] = useState("");
   const [isAssigningPhone, setIsAssigningPhone] = useState(false);
   const [isImpersonating, setIsImpersonating] = useState(false);
+
+  // Test notification modal
+  const [isTestNotifOpen, setIsTestNotifOpen] = useState(false);
+  const [testNotifTitle, setTestNotifTitle] = useState("Test Notification");
+  const [testNotifBody, setTestNotifBody] = useState("This is a test notification from Talkar Admin to verify your alerts.");
+  const [testNotifType, setTestNotifType] = useState("info");
+  const [testNotifSendEmail, setTestNotifSendEmail] = useState(true);
+  const [isSendingNotif, setIsSendingNotif] = useState(false);
 
   useEffect(() => {
     fetchCustomer();
@@ -452,6 +461,34 @@ export default function CustomerDetailPage() {
     }
   };
 
+  const handleSendTestNotification = async () => {
+    setIsSendingNotif(true);
+    try {
+      const res = await adminFetch(`/admin/customers/${id}/test-notification`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: testNotifTitle,
+          body: testNotifBody,
+          type: testNotifType,
+          send_email: testNotifSendEmail
+        })
+      });
+      if (res.ok) {
+        alert("Test notification dispatched successfully!");
+        setIsTestNotifOpen(false);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Failed to send notification: ${err.detail || "Unknown error"}`);
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Network error sending notification.");
+    } finally {
+      setIsSendingNotif(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="py-24 text-center text-slate-400">
@@ -543,6 +580,14 @@ export default function CustomerDetailPage() {
             )}
             <Button variant="outline" size="sm" onClick={handleRetryProvisioning} className="h-8 text-xs border-slate-200 bg-white hover:bg-slate-50">
               <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Retry Sync
+            </Button>
+            <Button 
+              variant="outline" 
+              size="sm" 
+              onClick={() => setIsTestNotifOpen(true)} 
+              className="h-8 text-xs border-amber-200 bg-amber-50/50 hover:bg-amber-100 text-amber-800 cursor-pointer font-medium"
+            >
+              <Bell className="w-3.5 h-3.5 mr-1.5 text-amber-600" /> Test Notification
             </Button>
             <Button variant="outline" size="sm" onClick={handleSuspend} className="h-8 text-xs border-red-200 text-red-600 hover:bg-red-50">
               <Ban className="w-3.5 h-3.5 mr-1.5" /> Suspend
@@ -1125,6 +1170,80 @@ export default function CustomerDetailPage() {
             <Button variant="outline" size="sm" onClick={() => setIsCustomPlanOpen(false)} className="text-xs border-slate-200">Cancel</Button>
             <Button size="sm" onClick={handleSetCustomPricing} disabled={customPlanLoading} className="text-xs bg-[#fe6905] hover:bg-[#e55e04] text-white">
               {customPlanLoading ? "Deploying..." : "Deploy Custom Plan"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Test Notification Modal */}
+      <Dialog open={isTestNotifOpen} onOpenChange={setIsTestNotifOpen}>
+        <DialogContent className="max-w-md bg-white border-slate-200">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-semibold flex items-center gap-2">
+              <Bell className="w-4 h-4 text-amber-500" /> Send Test Notification
+            </DialogTitle>
+            <DialogDescription className="text-xs text-slate-500">
+              Dispatches an in-app alert to the customer's notification bell and optionally sends an email to {customer.contact_email}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3.5 py-2 text-xs">
+            <div>
+              <Label className="text-xs font-medium text-slate-700">Notification Title</Label>
+              <Input 
+                className="mt-1 text-xs h-8 bg-white border-slate-200"
+                value={testNotifTitle}
+                onChange={(e) => setTestNotifTitle(e.target.value)}
+                placeholder="e.g. System Alert, Maintenance Notice"
+              />
+            </div>
+            <div>
+              <Label className="text-xs font-medium text-slate-700">Message Body</Label>
+              <textarea 
+                className="mt-1 w-full text-xs p-2 rounded-md border border-slate-200 focus:outline-none focus:ring-1 focus:ring-slate-400 min-h-[75px] bg-white"
+                value={testNotifBody}
+                onChange={(e) => setTestNotifBody(e.target.value)}
+                placeholder="Enter the alert message to display to the customer..."
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3 items-end">
+              <div>
+                <Label className="text-xs font-medium text-slate-700">Notification Type</Label>
+                <Select value={testNotifType} onValueChange={setTestNotifType}>
+                  <SelectTrigger className="mt-1 h-8 text-xs bg-white border-slate-200">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="bg-white border-slate-200">
+                    <SelectItem value="info">Information (Blue)</SelectItem>
+                    <SelectItem value="success">Success (Green)</SelectItem>
+                    <SelectItem value="warning">Warning (Amber)</SelectItem>
+                    <SelectItem value="billing">Billing (Purple)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="pb-1">
+                <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none">
+                  <input 
+                    type="checkbox" 
+                    checked={testNotifSendEmail} 
+                    onChange={(e) => setTestNotifSendEmail(e.target.checked)}
+                    className="rounded border-slate-300 text-[#fe6905] focus:ring-[#fe6905]"
+                  />
+                  <span>Also send email</span>
+                </label>
+              </div>
+            </div>
+          </div>
+          <DialogFooter className="border-t pt-3">
+            <Button variant="outline" size="sm" onClick={() => setIsTestNotifOpen(false)} className="text-xs border-slate-200">
+              Cancel
+            </Button>
+            <Button 
+              size="sm" 
+              onClick={handleSendTestNotification} 
+              disabled={isSendingNotif} 
+              className="text-xs bg-[#fe6905] hover:bg-[#e55e04] text-white"
+            >
+              {isSendingNotif ? "Dispatching..." : "Send Notification"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -503,6 +503,51 @@ async def update_customer_crm_links(
     await db.commit()
     return {"status": "ok", "crm_links": customer.crm_links}
 
+class AdminTestNotificationRequest(BaseModel):
+    title: str = "Test Notification"
+    body: str = "This is a test notification from Talkar Admin to verify your alert delivery."
+    type: str = "info"  # "info" | "success" | "warning" | "billing"
+    send_email: bool = True
+
+@router.post("/customers/{customer_id}/test-notification")
+async def send_admin_test_notification(
+    customer_id: int,
+    data: AdminTestNotificationRequest,
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin)
+):
+    result = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+
+    title = data.title.strip() or "Test Notification"
+    body = data.body.strip() or "This is a test notification from Talkar Admin."
+    notif_type = data.type if data.type in ("info", "success", "warning", "billing") else "info"
+
+    # 1. Push in-app alert (appears in Dograh's NotificationBell)
+    await notification_service.push_notification(
+        customer_id=customer.id,
+        title=title,
+        body=body,
+        notification_type=notif_type
+    )
+
+    # 2. Optionally also dispatch email
+    if data.send_email and customer.contact_email:
+        await notification_service.send_email(
+            to_email=customer.contact_email,
+            subject=f"[Talkar Alert] {title}",
+            body=(
+                f"Hi {customer.contact_name or 'there'},\n\n"
+                f"{body}\n\n"
+                f"If you received this message, your Talkar notifications are working properly.\n\n"
+                f"The Talkar Team"
+            )
+        )
+
+    return {"status": "success", "message": "Notification dispatched successfully"}
+
 
 @router.post("/customers/{customer_id}/credit")
 async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
