@@ -516,12 +516,14 @@ async def get_support_requests(
         })
         
     for p in phone_items:
+        # Map 'denied' to 'rejected' for UI badge compatibility across existing and new dashboard versions
+        st = "rejected" if p.status == "denied" else p.status
         combined.append({
             "id": p.id,
             "type": "phone_number_request",
             "subject": f"Phone Number Request ({p.quantity}x {p.region})",
             "description": p.use_case,
-            "status": p.status,
+            "status": st,
             "admin_note": p.admin_note,
             "resolved_by": getattr(p, "resolved_by", None),
             "created_at": p.requested_at.isoformat() if p.requested_at else None,
