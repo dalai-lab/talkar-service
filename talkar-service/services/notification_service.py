@@ -544,13 +544,19 @@ async def notify_customer_tier_upgrade_denied(customer_id: int, requested_tier: 
 
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
-def format_report_duration(seconds: int) -> str:
+def format_report_duration(seconds: Any) -> str:
     """Format seconds into human-readable Xh Ym Zs."""
-    if not seconds or seconds <= 0:
+    if not seconds:
         return "0s"
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    rem_seconds = seconds % 60
+    try:
+        sec = int(seconds)
+    except (ValueError, TypeError):
+        return "0s"
+    if sec <= 0:
+        return "0s"
+    hours = sec // 3600
+    minutes = (sec % 3600) // 60
+    rem_seconds = sec % 60
     parts = []
     if hours > 0:
         parts.append(f"{hours}h")
@@ -560,11 +566,15 @@ def format_report_duration(seconds: int) -> str:
         parts.append(f"{rem_seconds}s")
     return " ".join(parts)
 
-def format_report_inr(paise: int) -> str:
-    """Format paise into INR currency display."""
+def format_report_inr(paise: Any) -> str:
+    """Format paise into INR currency display safely handling Decimal, float, int, None."""
     if paise is None:
-        paise = 0
-    return f"₹{paise / 100.0:,.2f}"
+        return "₹0.00"
+    try:
+        val = float(paise)
+        return f"₹{val / 100.0:,.2f}"
+    except (ValueError, TypeError):
+        return "₹0.00"
 
 def calculate_next_report_due_date(frequency: str, from_dt: Optional[datetime] = None) -> datetime:
     """Calculate next report delivery timestamp at 08:00 AM IST (02:30 UTC)."""
@@ -613,14 +623,14 @@ async def get_organization_report_data(
         "end_time": period_end
     })
     call_row = call_res.fetchone()
+
+    total_calls = int(call_row.total_calls or 0) if call_row else 0
+    completed_calls = int(call_row.completed_calls or 0) if call_row else 0
+    dropped_calls = int(call_row.dropped_calls or 0) if call_row else 0
+    total_duration_sec = int(call_row.total_duration_seconds or 0) if call_row else 0
+    total_cost_paise = int(call_row.total_cost_paise or 0) if call_row else 0
     
-    total_calls = call_row.total_calls if call_row else 0
-    completed_calls = call_row.completed_calls if call_row else 0
-    dropped_calls = call_row.dropped_calls if call_row else 0
-    total_duration_sec = call_row.total_duration_seconds if call_row else 0
-    total_cost_paise = call_row.total_cost_paise if call_row else 0
-    
-    completion_rate = (completed_calls / total_calls * 100) if total_calls > 0 else 0.0
+    completion_rate = (completed_calls / total_calls * 100.0) if total_calls > 0 else 0.0
     avg_call_duration_sec = (total_duration_sec // total_calls) if total_calls > 0 else 0
 
     # 2. Agent Breakdown
@@ -646,10 +656,10 @@ async def get_organization_report_data(
     agents_data = [
         {
             "name": r.agent_name,
-            "calls": r.calls,
-            "duration_seconds": r.duration_seconds,
+            "calls": int(r.calls or 0),
+            "duration_seconds": int(r.duration_seconds or 0),
             "formatted_duration": format_report_duration(r.duration_seconds),
-            "cost_paise": r.cost_paise,
+            "cost_paise": int(r.cost_paise or 0),
             "formatted_cost": format_report_inr(r.cost_paise)
         }
         for r in agent_res.fetchall()
@@ -658,7 +668,7 @@ async def get_organization_report_data(
     # 3. Wallet Balance
     from services.billing_service import get_billing_wallet
     wallet, _ = await get_billing_wallet(db, customer_id)
-    current_balance_paise = wallet.balance_paise if wallet else 0
+    current_balance_paise = int(wallet.balance_paise or 0) if wallet else 0
 
     return {
         "total_calls": total_calls,
@@ -849,8 +859,8 @@ async def send_organization_report(
 
     recipients = recipient_override
     if not recipients:
-        settings = customer.report_settings or {}
-        configured = settings.get("recipients", [])
+        rep_settings = customer.report_settings or {}
+        configured = rep_settings.get("recipients", []) if isinstance(rep_settings, dict) else []
         if configured and isinstance(configured, list) and len(configured) > 0:
             recipients = [r.strip() for r in configured if r.strip()]
         else:
