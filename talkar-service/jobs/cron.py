@@ -264,3 +264,33 @@ async def dispatch_scheduled_reports(ctx):
     logger.info("Scheduled organization reports check completed.")
 
 
+async def dispatch_scheduled_announcements(ctx):
+    """
+    Check for pending scheduled announcements whose scheduled_for time has arrived.
+    Runs periodically.
+    """
+    from datetime import datetime, timezone
+    from db.models import Announcement
+    from routers.announcements import execute_announcement_broadcast
+    
+    now_utc = datetime.now(timezone.utc)
+    logger.info("Checking for scheduled announcements to dispatch...")
+
+    async with AsyncSessionLocal() as db:
+        query = select(Announcement).where(
+            Announcement.status == "scheduled",
+            Announcement.scheduled_for <= now_utc
+        )
+        res = await db.execute(query)
+        due_announcements = res.scalars().all()
+
+        for ann in due_announcements:
+            try:
+                logger.info(f"Dispatching scheduled announcement #{ann.id}: '{ann.title}'")
+                await execute_announcement_broadcast(db, ann)
+            except Exception as e:
+                logger.error(f"Failed to broadcast scheduled announcement #{ann.id}: {e}")
+
+    logger.info("Scheduled announcements check completed.")
+
+

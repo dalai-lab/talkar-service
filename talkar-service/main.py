@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import health, customers, wallet, billing, provisioning, admin, notifications
+from routers import health, customers, wallet, billing, provisioning, admin, notifications, announcements
 from contextlib import asynccontextmanager
 from services import redis_client
 
@@ -38,6 +38,22 @@ async def lifespan(app: FastAPI):
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 );
             """))
+
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS announcements (
+                    id SERIAL PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    type TEXT NOT NULL DEFAULT 'general',
+                    channels JSONB DEFAULT '[]'::jsonb,
+                    status TEXT NOT NULL DEFAULT 'sent',
+                    scheduled_for TIMESTAMP WITH TIME ZONE,
+                    sent_at TIMESTAMP WITH TIME ZONE,
+                    sent_by INTEGER REFERENCES talkar_admins(id),
+                    recipients_count INTEGER DEFAULT 0,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
+            """))
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"Database migration / backfill skipped/failed: {e}")
@@ -70,6 +86,7 @@ app.include_router(billing.router, prefix="/billing", tags=["Billing"])
 app.include_router(provisioning.router, prefix="/provisioning", tags=["Provisioning"])
 app.include_router(admin.router, prefix="/admin", tags=["Admin"])
 app.include_router(notifications.router, prefix="/notifications", tags=["Notifications"])
+app.include_router(announcements.router)
 
 if __name__ == "__main__":
     import uvicorn

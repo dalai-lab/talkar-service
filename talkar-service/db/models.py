@@ -173,3 +173,18 @@ class Notification(Base):
     type = Column(Text, nullable=False)
     is_read = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class Announcement(Base):
+    __tablename__ = "announcements"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(Text, nullable=False)
+    body = Column(Text, nullable=False)
+    type = Column(Text, nullable=False, default="general")  # 'general' | 'update' | 'maintenance' | 'critical'
+    channels = Column(JSON, default=list)  # ["in_app", "email"]
+    status = Column(Text, nullable=False, default="sent")  # 'sent' | 'scheduled' | 'cancelled'
+    scheduled_for = Column(DateTime(timezone=True), nullable=True)
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+    sent_by = Column(Integer, ForeignKey("talkar_admins.id"), nullable=True)
+    recipients_count = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

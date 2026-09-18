@@ -14,12 +14,14 @@ import {
   Building,
   Phone,
   HelpCircle,
+  Megaphone,
 } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
 
 const NAV_ITEMS = [
   { title: "Applications", href: "/applications", icon: ListTodo, badge: null },
   { title: "Customers", href: "/customers", icon: Users, badge: null },
+  { title: "Announcements", href: "/announcements", icon: Megaphone, badge: null },
   { title: "Support Requests", href: "/support-requests", icon: HelpCircle, badge: null },
   { title: "Build Queue", href: "/build-queue", icon: Building, badge: null },
   { title: "Number Requests", href: "/phone-number-requests", icon: Phone, badge: null },
