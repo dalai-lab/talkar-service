@@ -345,17 +345,49 @@ async def get_org_agents(dograh_org_id: int, db: AsyncSession = Depends(get_db))
         raise HTTPException(status_code=404, detail="Customer not found for this org")
     
     from db.models import Agent
+    from services.dograh_client import DograhSessionLocal
+    from sqlalchemy import text
+    
+    # Sync from Dograh workflows
+    existing_res = await db.execute(select(Agent).where(Agent.customer_id == customer.id))
+    existing_agents = {a.dograh_workflow_id: a for a in existing_res.scalars().all() if a.dograh_workflow_id}
+    
+    try:
+        async with DograhSessionLocal() as ddb:
+            w_res = await ddb.execute(
+                text("SELECT id, name, status, created_at FROM workflows WHERE organization_id = :org_id"),
+                {"org_id": customer.dograh_org_id}
+            )
+            workflows = w_res.fetchall()
+            
+            for w in workflows:
+                if w.id not in existing_agents:
+                    new_ag = Agent(
+                        customer_id=customer.id,
+                        name=w.name,
+                        dograh_workflow_id=w.id,
+                        dograh_org_id=customer.dograh_org_id,
+                        status=w.status,
+                        built_at=w.created_at
+                    )
+                    db.add(new_ag)
+            await db.commit()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to sync workflows for customer {customer.id}: {e}")
+
+    # Re-fetch the now-synced agents
     agents_res = await db.execute(select(Agent).where(Agent.customer_id == customer.id))
     agents = agents_res.scalars().all()
     
     return [
         {
             "id": a.id,
-            "dograh_agent_id": a.dograh_agent_id,
+            "dograh_agent_id": a.dograh_workflow_id,
             "name": a.name,
             "crm_link": getattr(a, "crm_link", None)
         }
-        for a in agents if a.dograh_agent_id
+        for a in agents if a.dograh_workflow_id
     ]
 
 @router.post("/by-org/{dograh_org_id}/onboarding")

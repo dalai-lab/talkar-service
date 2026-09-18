@@ -398,6 +398,44 @@ class UpdateAgentRateRequest(BaseModel):
 
 @router.get("/customers/{customer_id}/agents")
 async def get_customer_agents(customer_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    # 1. Fetch customer to get dograh_org_id
+    res = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = res.scalar_one_or_none()
+    
+    if customer and customer.dograh_org_id:
+        from services.dograh_client import DograhSessionLocal
+        from sqlalchemy import text
+        
+        # 2. Get existing Talkar agents
+        existing_res = await db.execute(select(Agent).where(Agent.customer_id == customer_id))
+        existing_agents = {a.dograh_workflow_id: a for a in existing_res.scalars().all() if a.dograh_workflow_id}
+        
+        # 3. Sync from Dograh workflows
+        try:
+            async with DograhSessionLocal() as ddb:
+                w_res = await ddb.execute(
+                    text("SELECT id, name, status, created_at FROM workflows WHERE organization_id = :org_id"),
+                    {"org_id": customer.dograh_org_id}
+                )
+                workflows = w_res.fetchall()
+                
+                for w in workflows:
+                    if w.id not in existing_agents:
+                        new_ag = Agent(
+                            customer_id=customer.id,
+                            name=w.name,
+                            dograh_workflow_id=w.id,
+                            dograh_org_id=customer.dograh_org_id,
+                            status=w.status,
+                            built_at=w.created_at
+                        )
+                        db.add(new_ag)
+                await db.commit()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to sync workflows for customer {customer_id}: {e}")
+
+    # 4. Return the (now synced) agents
     result = await db.execute(select(Agent).where(Agent.customer_id == customer_id))
     return result.scalars().all()
 
