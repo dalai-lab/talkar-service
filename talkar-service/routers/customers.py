@@ -486,15 +486,24 @@ async def get_support_requests(
     if not customer:
         raise HTTPException(404, "Customer not found")
 
-    from db.models import SupportRequest
+    from db.models import SupportRequest, PhoneNumberRequest
     reqs = await db.execute(
         select(SupportRequest)
         .where(SupportRequest.customer_id == customer.id)
         .order_by(SupportRequest.created_at.desc())
     )
     items = reqs.scalars().all()
-    return [
-        {
+
+    phone_reqs = await db.execute(
+        select(PhoneNumberRequest)
+        .where(PhoneNumberRequest.customer_id == customer.id)
+        .order_by(PhoneNumberRequest.requested_at.desc())
+    )
+    phone_items = phone_reqs.scalars().all()
+
+    combined = []
+    for r in items:
+        combined.append({
             "id": r.id,
             "type": r.type,
             "subject": r.subject,
@@ -504,9 +513,23 @@ async def get_support_requests(
             "resolved_by": r.resolved_by,
             "created_at": r.created_at.isoformat() if r.created_at else None,
             "resolved_at": r.resolved_at.isoformat() if r.resolved_at else None,
-        }
-        for r in items
-    ]
+        })
+        
+    for p in phone_items:
+        combined.append({
+            "id": p.id,
+            "type": "phone_number_request",
+            "subject": f"Phone Number Request ({p.quantity}x {p.region})",
+            "description": p.use_case,
+            "status": p.status,
+            "admin_note": p.admin_note,
+            "resolved_by": p.resolved_by,
+            "created_at": p.requested_at.isoformat() if p.requested_at else None,
+            "resolved_at": p.resolved_at.isoformat() if p.resolved_at else None,
+        })
+        
+    combined.sort(key=lambda x: x["created_at"] or "", reverse=True)
+    return combined
 
 
 # Parameterized paths after static ones
