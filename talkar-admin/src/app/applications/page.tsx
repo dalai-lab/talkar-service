@@ -188,6 +188,10 @@ export default function ApplicationsPage() {
                         <Badge variant="secondary" className="bg-purple-100 text-purple-800 hover:bg-purple-100">
                           New Agent Brief
                         </Badge>
+                      ) : app.status === "info_requested" ? (
+                        <Badge variant="secondary" className="bg-sky-100 text-sky-800 hover:bg-sky-100">
+                          Info Requested
+                        </Badge>
                       ) : (
                         <Badge variant="secondary" className="bg-amber-100 text-amber-800 hover:bg-amber-100">
                           Under Review

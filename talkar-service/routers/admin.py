@@ -88,7 +88,7 @@ async def admin_login(data: AdminLoginRequest, db: AsyncSession = Depends(get_db
 async def get_applications(db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
     result = await db.execute(
         select(Customer)
-        .where(Customer.status.in_(["under_review", "pending_approval"]))
+        .where(Customer.status.in_(["under_review", "pending_approval", "info_requested"]))
         # Exclude auto-created sub-org placeholder records that have no brief form yet.
         # These are just workspace-hook artifacts — the customer hasn't submitted their
         # brief yet. Only show them once they have an onboarding form.
