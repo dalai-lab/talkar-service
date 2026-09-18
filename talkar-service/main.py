@@ -7,6 +7,23 @@ from services import redis_client
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await redis_client.init_redis()
+    try:
+        from db.session import engine
+        from sqlalchemy import text
+        async with engine.begin() as conn:
+            await conn.execute(text("""
+                UPDATE customers
+                SET company_name = COALESCE(
+                    NULLIF(TRIM(onboarding_form->>'businessName'), ''),
+                    NULLIF(TRIM(onboarding_form->>'company_name'), ''),
+                    NULLIF(TRIM(contact_name), ''),
+                    SPLIT_PART(contact_email, '@', 1)
+                )
+                WHERE company_name IS NULL OR TRIM(company_name) = '';
+            """))
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Company name backfill skipped/failed: {e}")
     yield
     await redis_client.close_redis()
 

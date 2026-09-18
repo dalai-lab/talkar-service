@@ -86,13 +86,17 @@ export default function CustomersPage() {
                   </TableCell>
                 </TableRow>
               ) : (
-                customers.filter(c => 
-                  c.company_name?.toLowerCase().includes(search.toLowerCase()) || 
-                  c.contact_email?.toLowerCase().includes(search.toLowerCase())
-                ).map((c) => (
+                customers.filter(c => {
+                  const comp = (c.company_name || c.onboarding_form?.businessName || c.onboarding_form?.company_name || c.contact_name || "").toLowerCase();
+                  const email = (c.contact_email || "").toLowerCase();
+                  const q = search.toLowerCase();
+                  return comp.includes(q) || email.includes(q);
+                }).map((c) => {
+                  const displayCompany = c.company_name?.trim() || c.onboarding_form?.businessName || c.onboarding_form?.company_name || c.contact_name || (c.contact_email ? c.contact_email.split("@")[0] : "—");
+                  return (
                   <TableRow key={c.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors">
                     <TableCell className="font-mono text-xs text-slate-400">#{c.id}</TableCell>
-                    <TableCell className="text-xs font-semibold text-slate-900">{c.company_name}</TableCell>
+                    <TableCell className="text-xs font-semibold text-slate-900">{displayCompany}</TableCell>
                     <TableCell className="text-xs">
                       <div className="text-slate-800 font-medium">{c.contact_name}</div>
                       <span className="text-[11px] text-slate-500">{c.contact_email}</span>
@@ -113,7 +117,8 @@ export default function CustomersPage() {
                       </Button>
                     </TableCell>
                   </TableRow>
-                ))
+                  );
+                })
               )}
             </TableBody>
           </Table>

@@ -414,7 +414,7 @@ export default function CustomerDetailPage() {
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-4 border-b border-slate-200/70">
           <div>
             <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold tracking-tight text-slate-900">{customer.company_name}</h1>
+              <h1 className="text-2xl font-bold tracking-tight text-slate-900">{customer.company_name?.trim() || customer.onboarding_form?.businessName || customer.onboarding_form?.company_name || customer.contact_name || "Customer Details"}</h1>
               <Badge variant="outline" className="text-xs font-mono bg-white">ID #{customer.id}</Badge>
               <Badge className={customer.status === 'active' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-700 border-slate-200'}>
                 {customer.status}

@@ -183,13 +183,29 @@ async def request_info(customer_id: int, data: RequestInfoRequest, db: AsyncSess
 @router.get("/customers")
 async def get_all_customers(db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
     result = await db.execute(select(Customer).order_by(Customer.created_at.desc()))
-    return result.scalars().all()
+    customers = result.scalars().all()
+    for c in customers:
+        if not c.company_name or not c.company_name.strip():
+            c.company_name = (
+                (c.onboarding_form.get("businessName") if c.onboarding_form else None)
+                or (c.onboarding_form.get("company_name") if c.onboarding_form else None)
+                or c.contact_name
+                or (c.contact_email.split("@")[0] if c.contact_email else "Customer")
+            )
+    return customers
 
 @router.get("/customers/{customer_id}")
 async def get_customer(customer_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
     result = await db.execute(select(Customer).where(Customer.id == customer_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
+    if not customer.company_name or not customer.company_name.strip():
+        customer.company_name = (
+            (customer.onboarding_form.get("businessName") if customer.onboarding_form else None)
+            or (customer.onboarding_form.get("company_name") if customer.onboarding_form else None)
+            or customer.contact_name
+            or (customer.contact_email.split("@")[0] if customer.contact_email else "Customer")
+        )
     return customer
 
 @router.post("/customers/{customer_id}/impersonate")

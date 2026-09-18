@@ -348,7 +348,18 @@ async def submit_onboarding_by_org(dograh_org_id: int, data: dict, db: AsyncSess
         # frontend doesn't break, but DO NOT overwrite status or form data.
         # Critically: do NOT allow agent_building/approved/active to be reset to under_review.
         return customer
-    customer.onboarding_form = data.get("form", {})
+    form_data = data.get("form", {})
+    customer.onboarding_form = form_data
+    if form_data.get("businessName"):
+        customer.company_name = form_data.get("businessName")
+    elif form_data.get("company_name"):
+        customer.company_name = form_data.get("company_name")
+    if form_data.get("industry"):
+        customer.industry = form_data.get("industry")
+    if form_data.get("pocName"):
+        customer.contact_name = form_data.get("pocName")
+    if form_data.get("pocPhone"):
+        customer.contact_phone = form_data.get("pocPhone")
     customer.documents = data.get("documents", [])
     customer.status = "under_review"
     await db.commit()
@@ -404,7 +415,18 @@ async def submit_onboarding_by_id(customer_id: int, data: dict, db: AsyncSession
         raise HTTPException(status_code=404, detail="Customer not found")
     if customer.status not in ("pending_approval", "info_requested"):
         return customer # D-14: Silent success if already processed
-    customer.onboarding_form = data.get("form", {})
+    form_data = data.get("form", {})
+    customer.onboarding_form = form_data
+    if form_data.get("businessName"):
+        customer.company_name = form_data.get("businessName")
+    elif form_data.get("company_name"):
+        customer.company_name = form_data.get("company_name")
+    if form_data.get("industry"):
+        customer.industry = form_data.get("industry")
+    if form_data.get("pocName"):
+        customer.contact_name = form_data.get("pocName")
+    if form_data.get("pocPhone"):
+        customer.contact_phone = form_data.get("pocPhone")
     customer.documents = data.get("documents", [])
     customer.status = "under_review"
     await db.commit()
