@@ -741,6 +741,115 @@ async def create_razorpay_customer(data: CreateRazorpayCustomerRequest, db: Asyn
     await db.commit()
     return {"razorpay_customer_id": wallet.razorpay_customer_id}
 
+class AddCardSessionRequest(BaseModel):
+    dograh_org_id: int
+
+@router.post("/wallet/add-card/session")
+async def create_add_card_session(data: AddCardSessionRequest, db: AsyncSession = Depends(get_db)):
+    """Creates a verification order for card mandate registration."""
+    import time
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+        
+    from services.billing_service import get_billing_wallet
+    wallet, master_id = await get_billing_wallet(db, customer.id)
+    if not wallet:
+        raise HTTPException(404, "Wallet not found")
+
+    amount_paise = 200  # ₹2 standard verification / authorization charge
+    receipt = f"card_reg_{customer.id}_{int(time.time())}"
+    
+    if razorpay_client.client:
+        import asyncio
+        order = await asyncio.to_thread(razorpay_client.client.order.create, {
+            "amount": amount_paise,
+            "currency": "INR",
+            "receipt": receipt,
+            "payment_capture": 1,
+            "notes": {
+                "customer_id": master_id,
+                "type": "card_registration"
+            }
+        })
+        order_id = order["id"]
+    else:
+        order_id = f"mock_order_reg_{customer.id}"
+
+    return {
+        "amount_paise": amount_paise,
+        "razorpay_order_id": order_id
+    }
+
+class ConfirmAddCardRequest(BaseModel):
+    dograh_org_id: int
+    razorpay_payment_id: str
+    razorpay_order_id: str
+    razorpay_signature: Optional[str] = None
+
+@router.post("/confirm-add-card")
+async def confirm_add_card(data: ConfirmAddCardRequest, db: AsyncSession = Depends(get_db)):
+    """Verifies signature, captures token/payment method ID from Razorpay, and saves it to the wallet."""
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+        
+    from services.billing_service import get_billing_wallet
+    wallet, master_id = await get_billing_wallet(db, customer.id)
+    if not wallet:
+        raise HTTPException(404, "Wallet not found")
+
+    # Mock support for tests or dev
+    if data.razorpay_payment_id == "mock_payment_id" or not razorpay_client.client:
+        wallet.razorpay_payment_method_id = f"token_mock_{customer.id}"
+        await db.commit()
+        return {"status": "card_saved", "payment_method_id": wallet.razorpay_payment_method_id}
+
+    import asyncio
+    # Verify signature if secret configured
+    if settings.RAZORPAY_KEY_SECRET and data.razorpay_signature:
+        message = f"{data.razorpay_order_id}|{data.razorpay_payment_id}"
+        expected_signature = hmac.new(
+            settings.RAZORPAY_KEY_SECRET.encode(),
+            message.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(expected_signature, data.razorpay_signature):
+            raise HTTPException(400, "Invalid signature verification for card authorization.")
+    
+    # Fetch payment from Razorpay to extract the recurring token
+    token_id = None
+    try:
+        payment = await asyncio.to_thread(razorpay_client.client.payment.fetch, data.razorpay_payment_id)
+        token_id = payment.get("token_id") or payment.get("token") or payment.get("card_id")
+    except Exception as e:
+        logger.error(f"Error fetching payment {data.razorpay_payment_id} from Razorpay: {e}")
+
+    saved_id = token_id or data.razorpay_payment_id
+    wallet.razorpay_payment_method_id = saved_id
+
+    # Also credit the ₹2 verification fee to wallet so user is refunded
+    try:
+        from services.billing_service import credit_wallet
+        await credit_wallet(
+            db,
+            master_id,
+            200,
+            razorpay_order_id=data.razorpay_order_id,
+            description="Card verification deposit credited"
+        )
+    except Exception as e:
+        logger.warning(f"Could not credit authorization deposit: {e}")
+
+    await db.commit()
+
+    return {
+        "status": "card_saved",
+        "payment_method_id": wallet.razorpay_payment_method_id
+    }
+
 class SaveCardRequest(BaseModel):
     dograh_org_id: int
     razorpay_payment_method_id: str

@@ -32,7 +32,7 @@ async def get_billing_wallet(db: AsyncSession, customer_id: int):
         
     return wallet, master_customer_id
 
-async def credit_wallet(db: AsyncSession, customer_id: int, amount_paise: int, razorpay_order_id: str = None) -> Wallet:
+async def credit_wallet(db: AsyncSession, customer_id: int, amount_paise: int, razorpay_order_id: str = None, description: str = "Wallet top-up via Razorpay") -> Wallet:
     """Safely adds balance to a customer's wallet and records the ledger entry."""
     wallet, master_id = await get_billing_wallet(db, customer_id)
     if not wallet:
@@ -54,7 +54,7 @@ async def credit_wallet(db: AsyncSession, customer_id: int, amount_paise: int, r
         customer_id=master_id,
         type="top_up",
         amount_paise=amount_paise,
-        description="Wallet top-up via Razorpay",
+        description=description,
         razorpay_order_id=razorpay_order_id
     )
     db.add(transaction)
@@ -83,8 +83,14 @@ async def check_and_trigger_auto_recharge(db: AsyncSession, customer_id: int):
                 payment_method_id=wallet.razorpay_payment_method_id,
                 amount_paise=wallet.auto_recharge_amount_paise,
             )
-            if charge.get("status") == "captured":
-                await credit_wallet(db, master_id, wallet.auto_recharge_amount_paise)
+            if charge.get("status") in ("captured", "authorized"):
+                await credit_wallet(
+                    db,
+                    master_id,
+                    wallet.auto_recharge_amount_paise,
+                    razorpay_order_id=charge.get("id"),
+                    description="Auto-recharge: Low balance top-up via saved card"
+                )
                 logger.info(f"Auto-recharge successful for customer {master_id}")
         except Exception as e:
             logger.error(f"Auto-recharge failed for customer {master_id}: {e}")
