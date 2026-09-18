@@ -558,7 +558,7 @@ export default function CustomerDetailPage() {
           <ArrowLeft className="w-3.5 h-3.5" /> Back to Customer Directory
         </Button>
 
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-4 border-b border-slate-200/70">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-200/70">
           <div>
             <div className="flex items-center gap-3">
               <h1 className="text-2xl font-bold tracking-tight text-slate-900">{customer.company_name?.trim() || customer.onboarding_form?.businessName || customer.onboarding_form?.company_name || customer.contact_name || "Customer Details"}</h1>
@@ -571,78 +571,161 @@ export default function CustomerDetailPage() {
               Contact: {customer.contact_name} ({customer.contact_email})
             </p>
           </div>
-
-          {/* Action Toolbar */}
-          <div className="flex flex-wrap items-center gap-2">
-            <Button 
-              size="sm" 
-              onClick={handleImpersonate} 
-              disabled={isImpersonating}
-              className="h-8 text-xs bg-[#fe6905] hover:bg-[#e55e04] text-white font-medium"
-            >
-              <UserCheck className="w-3.5 h-3.5 mr-1.5" />
-              {isImpersonating ? "Connecting..." : "Impersonate"}
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => setIsCreditOpen(true)} className="h-8 text-xs border-slate-200 bg-white hover:bg-slate-50">
-              <CreditCard className="w-3.5 h-3.5 mr-1.5 text-emerald-600" /> Credit
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => setIsDeductOpen(true)} className="h-8 text-xs border-slate-200 bg-white hover:bg-slate-50">
-              <MinusCircle className="w-3.5 h-3.5 mr-1.5 text-amber-600" /> Deduct
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => setIsPlanOpen(true)} className="h-8 text-xs border-slate-200 bg-white hover:bg-slate-50">
-              <Sliders className="w-3.5 h-3.5 mr-1.5 text-blue-600" /> Tier
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => setIsCustomPlanOpen(true)} className="h-8 text-xs border-purple-200 bg-purple-50/50 hover:bg-purple-100 text-purple-700">
-              <Settings2 className="w-3.5 h-3.5 mr-1.5" />
-              {subscription?.plan === "custom" ? "Edit Custom Plan" : "Set Custom Plan"}
-            </Button>
-            {subscription?.plan === "custom" && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 text-xs border-red-200 bg-red-50/50 hover:bg-red-100 text-red-600"
-                onClick={async () => {
-                  if (!confirm("Remove custom plan and revert to their current standard tier?")) return;
-                  const res = await adminFetch(`/admin/customers/${id}`, {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ tier: customer.onboarding_form?.approved_tier === "custom" ? "starter" : (customer.onboarding_form?.approved_tier || "starter") })
-                  });
-                  if (res.ok) { alert("Custom plan removed. Reverted to standard tier."); fetchCustomer(); }
-                  else { const e = await res.json().catch(()=>({})); alert(`Failed: ${e.detail}`); }
-                }}
-              >Remove Custom Plan</Button>
-            )}
-            <Button variant="outline" size="sm" onClick={handleRetryProvisioning} className="h-8 text-xs border-slate-200 bg-white hover:bg-slate-50">
-              <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Retry Sync
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setIsTestNotifOpen(true)}
-              className="h-8 text-xs border-amber-200 bg-amber-50/50 hover:bg-amber-100 text-amber-800 cursor-pointer font-medium"
-            >
-              <Bell className="w-3.5 h-3.5 mr-1.5 text-amber-600" /> Test Notification
-            </Button>
-            {customer?.status === "suspended" ? (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleUnsuspend}
-                disabled={isUnsuspending}
-                className="h-8 text-xs border-emerald-200 text-emerald-700 bg-emerald-50 hover:bg-emerald-100"
-              >
-                <ShieldAlert className="w-3.5 h-3.5 mr-1.5" />
-                {isUnsuspending ? "Restoring..." : "Unsuspend"}
-              </Button>
-            ) : (
-              <Button variant="outline" size="sm" onClick={() => setIsSuspendOpen(true)} className="h-8 text-xs border-red-200 text-red-600 hover:bg-red-50">
-                <Ban className="w-3.5 h-3.5 mr-1.5" /> Suspend
-              </Button>
-            )}
-          </div>
         </div>
       </div>
+
+      {/* Account Actions & Management Box */}
+      <Card className="bg-white border border-slate-200/80 rounded-xl shadow-none">
+        <CardHeader className="p-4 pb-2.5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+          <CardTitle className="text-xs font-semibold text-slate-900 uppercase tracking-wider flex items-center gap-2">
+            <Sliders className="w-4 h-4 text-[#fe6905]" /> Account Actions & Management
+          </CardTitle>
+          <span className="text-[11px] text-slate-400 font-normal">
+            Administrative controls for access, wallet, subscription, and system status
+          </span>
+        </CardHeader>
+        <CardContent className="p-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+            {/* Access & Testing */}
+            <div className="bg-slate-50/70 border border-slate-200/70 rounded-lg p-3 flex flex-col justify-between gap-2.5">
+              <div>
+                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Access & Support</p>
+                <p className="text-[11px] text-slate-500 leading-tight">Log in as customer or dispatch test notification alerts.</p>
+              </div>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <Button 
+                  size="sm" 
+                  onClick={handleImpersonate} 
+                  disabled={isImpersonating}
+                  className="h-8 text-xs bg-[#fe6905] hover:bg-[#e55e04] text-white font-medium cursor-pointer flex-1 min-w-[120px]"
+                >
+                  <UserCheck className="w-3.5 h-3.5 mr-1.5" />
+                  {isImpersonating ? "Connecting..." : "Impersonate"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsTestNotifOpen(true)}
+                  className="h-8 text-xs border-amber-200 bg-amber-50/60 hover:bg-amber-100 text-amber-800 cursor-pointer font-medium flex-1 min-w-[120px]"
+                >
+                  <Bell className="w-3.5 h-3.5 mr-1.5 text-amber-600" /> Test Notification
+                </Button>
+              </div>
+            </div>
+
+            {/* Wallet & Balance */}
+            <div className="bg-slate-50/70 border border-slate-200/70 rounded-lg p-3 flex flex-col justify-between gap-2.5">
+              <div>
+                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Wallet & Balance</p>
+                <p className="text-[11px] text-slate-500 leading-tight">Manually credit funds or deduct balance for services.</p>
+              </div>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => setIsCreditOpen(true)} 
+                  className="h-8 text-xs border-emerald-200 bg-emerald-50/60 hover:bg-emerald-100 text-emerald-700 font-medium cursor-pointer flex-1 min-w-[90px]"
+                >
+                  <CreditCard className="w-3.5 h-3.5 mr-1.5 text-emerald-600" /> Credit
+                </Button>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => setIsDeductOpen(true)} 
+                  className="h-8 text-xs border-amber-200 bg-amber-50/60 hover:bg-amber-100 text-amber-700 font-medium cursor-pointer flex-1 min-w-[90px]"
+                >
+                  <MinusCircle className="w-3.5 h-3.5 mr-1.5 text-amber-600" /> Deduct
+                </Button>
+              </div>
+            </div>
+
+            {/* Plan & Pricing */}
+            <div className="bg-slate-50/70 border border-slate-200/70 rounded-lg p-3 flex flex-col justify-between gap-2.5">
+              <div>
+                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Plan & Pricing</p>
+                <p className="text-[11px] text-slate-500 leading-tight">Change tier assignment or configure custom pricing limits.</p>
+              </div>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => setIsPlanOpen(true)} 
+                  className="h-8 text-xs border-slate-200 bg-white hover:bg-slate-100 text-slate-700 font-medium cursor-pointer"
+                >
+                  <Sliders className="w-3.5 h-3.5 mr-1.5 text-blue-600" /> Tier
+                </Button>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => setIsCustomPlanOpen(true)} 
+                  className="h-8 text-xs border-purple-200 bg-purple-50/60 hover:bg-purple-100 text-purple-700 font-medium cursor-pointer flex-1"
+                >
+                  <Settings2 className="w-3.5 h-3.5 mr-1.5" />
+                  {subscription?.plan === "custom" ? "Edit Plan" : "Set Custom Plan"}
+                </Button>
+                {subscription?.plan === "custom" && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs border-red-200 bg-red-50/50 hover:bg-red-100 text-red-600 cursor-pointer w-full"
+                    onClick={async () => {
+                      if (!confirm("Remove custom plan and revert to their current standard tier?")) return;
+                      const res = await adminFetch(`/admin/customers/${id}`, {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ tier: customer.onboarding_form?.approved_tier === "custom" ? "starter" : (customer.onboarding_form?.approved_tier || "starter") })
+                      });
+                      if (res.ok) { alert("Custom plan removed. Reverted to standard tier."); fetchCustomer(); }
+                      else { const e = await res.json().catch(()=>({})); alert(`Failed: ${e.detail}`); }
+                    }}
+                  >
+                    Remove Custom Plan
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            {/* Status & Provisioning */}
+            <div className="bg-slate-50/70 border border-slate-200/70 rounded-lg p-3 flex flex-col justify-between gap-2.5">
+              <div>
+                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Status & Provisioning</p>
+                <p className="text-[11px] text-slate-500 leading-tight">Sync Dograh org or manage account active/suspended status.</p>
+              </div>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={handleRetryProvisioning} 
+                  className="h-8 text-xs border-slate-200 bg-white hover:bg-slate-100 text-slate-700 font-medium cursor-pointer flex-1 min-w-[100px]"
+                >
+                  <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Retry Sync
+                </Button>
+                {customer?.status === "suspended" ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleUnsuspend}
+                    disabled={isUnsuspending}
+                    className="h-8 text-xs border-emerald-300 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 font-medium cursor-pointer flex-1 min-w-[110px]"
+                  >
+                    <ShieldAlert className="w-3.5 h-3.5 mr-1.5" />
+                    {isUnsuspending ? "Restoring..." : "Unsuspend"}
+                  </Button>
+                ) : (
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => setIsSuspendOpen(true)} 
+                    className="h-8 text-xs border-rose-200 text-rose-600 bg-rose-50/50 hover:bg-rose-100 font-medium cursor-pointer flex-1 min-w-[100px]"
+                  >
+                    <Ban className="w-3.5 h-3.5 mr-1.5" /> Suspend
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Upgrade Request Pending Alert */}
       {customer.onboarding_form?.tier_upgrade_requested && (
