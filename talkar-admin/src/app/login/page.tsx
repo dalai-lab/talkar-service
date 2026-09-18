@@ -6,7 +6,8 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter }
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
-import { Cpu, ShieldCheck, AlertCircle, ArrowRight, Loader2 } from "lucide-react";
+import { ShieldCheck, AlertCircle, ArrowRight, Loader2 } from "lucide-react";
+import { BrandLogo } from "@/components/BrandLogo";
 
 export default function AdminLoginPage() {
   const [email, setEmail] = useState("");
@@ -28,9 +29,7 @@ export default function AdminLoginPage() {
 
       if (res.ok) {
         const data = await res.json();
-        // Set cookie with SameSite=Lax
         document.cookie = `talkar_admin_token=${data.access_token}; path=/; max-age=86400; SameSite=Lax`;
-        // Use window.location.href to guarantee a fresh, authenticated browser transition (fixing the refresh bug!)
         window.location.href = "/applications";
       } else {
         const err = await res.json().catch(() => ({}));
@@ -44,27 +43,29 @@ export default function AdminLoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-[#f8fafc] p-4 antialiased">
-      {/* Background subtle decoration */}
-      <div className="absolute inset-0 bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:16px_16px] opacity-60 pointer-events-none" />
-
+    <div className="min-h-screen flex flex-col items-center justify-center bg-[#fafafa] p-4 antialiased selection:bg-[#fe6905]/15 selection:text-[#fe6905]">
       <div className="w-full max-w-md relative z-10">
         {/* Brand Header */}
         <div className="text-center mb-6">
-          <div className="inline-flex h-12 w-12 rounded-xl bg-indigo-600 items-center justify-center text-white shadow-sm mb-3">
-            <Cpu className="h-6 w-6" />
+          <div className="inline-flex h-12 w-12 rounded-2xl bg-zinc-900 border border-zinc-800 items-center justify-center shadow-inner mb-3 p-2">
+            <BrandLogo mark className="h-8 w-auto" />
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900">Talkar Admin</h1>
-          <p className="text-xs text-slate-500 mt-1">Internal Operations & Management Console</p>
+          <div className="flex items-center justify-center gap-1.5">
+            <h1 className="text-2xl font-bold tracking-tight text-zinc-900">Talkar</h1>
+            <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-[#fe6905]/15 text-[#fe6905] border border-[#fe6905]/30">
+              Admin
+            </span>
+          </div>
+          <p className="text-xs text-zinc-500 mt-1">Internal Operations & Management Console</p>
         </div>
 
-        <Card className="border border-slate-200/80 shadow-sm bg-white rounded-xl overflow-hidden">
-          <CardHeader className="p-6 pb-4 border-b border-slate-100">
-            <CardTitle className="text-base font-semibold text-slate-900 flex items-center gap-2">
-              <ShieldCheck className="w-4 h-4 text-indigo-600" />
-              Secure Authentication
+        <Card className="border border-zinc-200/90 shadow-sm bg-white rounded-xl overflow-hidden">
+          <CardHeader className="p-6 pb-4 border-b border-zinc-100">
+            <CardTitle className="text-base font-semibold text-zinc-900 flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-[#fe6905]" />
+              Secure Staff Authentication
             </CardTitle>
-            <CardDescription className="text-xs text-slate-500">
+            <CardDescription className="text-xs text-zinc-500">
               Enter your authorized staff credentials to continue.
             </CardDescription>
           </CardHeader>
@@ -79,22 +80,22 @@ export default function AdminLoginPage() {
               )}
 
               <div className="space-y-1.5">
-                <Label htmlFor="email" className="text-xs font-medium text-slate-700">
+                <Label htmlFor="email" className="text-xs font-medium text-zinc-700">
                   Admin Email
                 </Label>
                 <Input 
                   id="email" 
                   type="email" 
-                  placeholder="admin@talkar.ai" 
+                  placeholder="admin@talkar.in" 
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="h-10 text-sm bg-white border-slate-200"
+                  className="h-10 text-sm bg-white border-zinc-200 focus-visible:ring-[#fe6905]/20 focus-visible:border-[#fe6905]"
                   required
                 />
               </div>
 
               <div className="space-y-1.5">
-                <Label htmlFor="password" className="text-xs font-medium text-slate-700">
+                <Label htmlFor="password" className="text-xs font-medium text-zinc-700">
                   Password
                 </Label>
                 <Input 
@@ -103,7 +104,7 @@ export default function AdminLoginPage() {
                   placeholder="••••••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="h-10 text-sm bg-white border-slate-200"
+                  className="h-10 text-sm bg-white border-zinc-200 focus-visible:ring-[#fe6905]/20 focus-visible:border-[#fe6905]"
                   required
                 />
               </div>
@@ -113,7 +114,7 @@ export default function AdminLoginPage() {
               <Button 
                 type="submit" 
                 disabled={loading}
-                className="w-full h-10 text-sm font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors cursor-pointer"
+                className="w-full h-10 text-sm font-medium bg-[#fe6905] hover:bg-[#e55e04] text-white rounded-lg transition-colors cursor-pointer shadow-sm"
               >
                 {loading ? (
                   <span className="flex items-center gap-2">
@@ -132,7 +133,7 @@ export default function AdminLoginPage() {
         </Card>
 
         {/* Security badge footer */}
-        <p className="text-center text-[11px] text-slate-400 mt-6">
+        <p className="text-center text-[11px] text-zinc-400 mt-6">
           Authorized personnel only · All administrative activity is logged
         </p>
       </div>

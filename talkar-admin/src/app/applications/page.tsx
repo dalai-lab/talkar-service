@@ -36,7 +36,7 @@ const DocumentViewer = ({ title, dataUrl }: { title: string, dataUrl: string }) 
   return (
     <div className="flex items-center gap-2.5 bg-slate-50 p-2.5 px-3 rounded-lg border border-slate-200 text-xs">
       <Dialog>
-        <DialogTrigger render={<Button variant="link" className="p-0 h-auto text-xs text-indigo-600 font-medium hover:underline flex items-center gap-1.5" />}>
+        <DialogTrigger render={<Button variant="link" className="p-0 h-auto text-xs text-[#fe6905] font-medium hover:underline flex items-center gap-1.5" />}>
           <FileText className="w-3.5 h-3.5" /> {title} (View)
         </DialogTrigger>
         <DialogContent className="max-w-4xl w-full h-[80vh] flex flex-col bg-white border-slate-200">
@@ -147,9 +147,6 @@ export default function ApplicationsPage() {
       <div className="flex justify-between items-center pb-2 border-b border-slate-200/70">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2.5">
-            <div className="p-2 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-600">
-              <ListTodo className="w-5 h-5" />
-            </div>
             Applications Queue
           </h1>
           <p className="text-xs text-slate-500 mt-1">
@@ -174,7 +171,7 @@ export default function ApplicationsPage() {
               {loading ? (
                 <TableRow>
                   <TableCell colSpan={5} className="text-center py-12 text-slate-400 text-xs">
-                    <div className="w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+                    <div className="w-5 h-5 border-2 border-[#fe6905] border-t-transparent rounded-full animate-spin mx-auto mb-2" />
                     Loading applications...
                   </TableCell>
                 </TableRow>
@@ -246,7 +243,7 @@ export default function ApplicationsPage() {
                       </Button>
                       <Button 
                         size="sm"
-                        className="h-7 px-2.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-700 text-white shadow-none cursor-pointer"
+                        className="h-7 px-2.5 text-xs font-medium bg-[#fe6905] hover:bg-[#e55e04] text-white shadow-none cursor-pointer"
                         onClick={() => { setSelectedApp(app); setIsApproveOpen(true); }}
                       >
                         Review & Approve
@@ -305,7 +302,7 @@ export default function ApplicationsPage() {
               <div className="space-y-1.5">
                 <label className="text-slate-700 font-medium">Integration Description</label>
                 <textarea 
-                  className="w-full min-h-[80px] p-2.5 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none focus:border-indigo-500" 
+                  className="w-full min-h-[80px] p-2.5 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none focus:border-[#fe6905]" 
                   value={integrationDescription} 
                   onChange={(e: any) => setIntegrationDescription(e.target.value)} 
                   placeholder="E.g., HubSpot CRM webhook integration + Custom reporting pipeline..."
@@ -315,7 +312,7 @@ export default function ApplicationsPage() {
           </div>
           <DialogFooter className="border-t pt-3">
             <Button variant="outline" size="sm" onClick={() => setIsApproveOpen(false)} className="text-xs border-slate-200">Cancel</Button>
-            <Button size="sm" onClick={handleApprove} className="text-xs bg-indigo-600 hover:bg-indigo-700 text-white">Confirm Approval</Button>
+            <Button size="sm" onClick={handleApprove} className="text-xs bg-[#fe6905] hover:bg-[#e55e04] text-white">Confirm Approval</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -355,7 +352,7 @@ export default function ApplicationsPage() {
               What additional information do you need from <strong className="text-slate-900">{selectedApp?.company_name}</strong>?
             </p>
             <textarea 
-              className="w-full min-h-[100px] p-3 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none focus:border-indigo-500" 
+              className="w-full min-h-[100px] p-3 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none focus:border-[#fe6905]" 
               placeholder="e.g. Please clarify your use case for outbound calls..."
               value={requestInfoMessage}
               onChange={(e) => setRequestInfoMessage(e.target.value)}
@@ -365,7 +362,7 @@ export default function ApplicationsPage() {
             <Button variant="outline" size="sm" onClick={() => setIsRequestInfoOpen(false)} className="text-xs border-slate-200">Cancel</Button>
             <Button 
               size="sm"
-              className="text-xs bg-indigo-600 hover:bg-indigo-700 text-white"
+              className="text-xs bg-[#fe6905] hover:bg-[#e55e04] text-white"
               onClick={async () => {
                 if (!selectedApp || !requestInfoMessage.trim()) return;
                 try {
@@ -450,7 +447,7 @@ export default function ApplicationsPage() {
                           href={selectedApp.onboarding_form.websiteUrl.startsWith("http") ? selectedApp.onboarding_form.websiteUrl : `https://${selectedApp.onboarding_form.websiteUrl}`} 
                           target="_blank" 
                           rel="noreferrer"
-                          className="text-indigo-600 hover:underline"
+                          className="text-[#fe6905] hover:underline"
                         >
                           {selectedApp.onboarding_form.websiteUrl}
                         </a>
@@ -534,7 +531,7 @@ export default function ApplicationsPage() {
           )}
           <DialogFooter className="border-t pt-3">
             <Button variant="outline" size="sm" onClick={() => setIsDetailOpen(false)} className="text-xs border-slate-200">Close</Button>
-            <Button size="sm" onClick={() => { setIsDetailOpen(false); setIsApproveOpen(true); }} className="text-xs bg-indigo-600 hover:bg-indigo-700 text-white">Review & Approve</Button>
+            <Button size="sm" onClick={() => { setIsDetailOpen(false); setIsApproveOpen(true); }} className="text-xs bg-[#fe6905] hover:bg-[#e55e04] text-white">Review & Approve</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

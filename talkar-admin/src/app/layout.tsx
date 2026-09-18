@@ -18,6 +18,9 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "Talkar Admin Panel",
   description: "Internal administrative portal for Talkar operations.",
+  icons: {
+    icon: "/talkar-mark.svg",
+  },
 };
 
 export default function RootLayout({
@@ -27,7 +30,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`}>
-      <body className="font-sans antialiased bg-[#f8fafc] text-slate-900 min-h-screen">
+      <body className="font-sans antialiased bg-[#fafafa] text-zinc-900 min-h-screen">
         <AdminShell>{children}</AdminShell>
       </body>
     </html>

@@ -32,9 +32,6 @@ export default function CallActivityPage() {
       <div className="flex justify-between items-center pb-2 border-b border-slate-200/70">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2.5">
-            <div className="p-2 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-600">
-              <Activity className="w-5 h-5" />
-            </div>
             Live Call Activity
           </h1>
           <p className="text-xs text-slate-500 mt-1">

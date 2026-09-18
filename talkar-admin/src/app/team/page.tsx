@@ -76,9 +76,6 @@ export default function TeamPage() {
       <div className="flex justify-between items-center pb-2 border-b border-slate-200/70">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2.5">
-            <div className="p-2 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-600">
-              <Settings className="w-5 h-5" />
-            </div>
             Team Management
           </h1>
           <p className="text-xs text-slate-500 mt-1">
@@ -87,7 +84,7 @@ export default function TeamPage() {
         </div>
         <Button 
           onClick={() => setIsAddOpen(true)}
-          className="h-8 text-xs bg-indigo-600 hover:bg-indigo-700 text-white font-medium cursor-pointer"
+          className="h-8 text-xs bg-[#fe6905] hover:bg-[#e55e04] text-white font-medium cursor-pointer"
         >
           <UserPlus className="w-3.5 h-3.5 mr-1.5" />
           Add Admin
@@ -109,7 +106,7 @@ export default function TeamPage() {
               {loading ? (
                 <TableRow>
                   <TableCell colSpan={4} className="text-center py-12 text-slate-400 text-xs">
-                    <div className="w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+                    <div className="w-5 h-5 border-2 border-[#fe6905] border-t-transparent rounded-full animate-spin mx-auto mb-2" />
                     Loading team members...
                   </TableCell>
                 </TableRow>
@@ -185,7 +182,7 @@ export default function TeamPage() {
           </div>
           <DialogFooter className="border-t pt-3">
             <Button variant="outline" size="sm" onClick={() => setIsAddOpen(false)} className="text-xs border-slate-200">Cancel</Button>
-            <Button size="sm" onClick={handleAddAdmin} disabled={!newAdmin.name || !newAdmin.email || !newAdmin.password} className="text-xs bg-indigo-600 hover:bg-indigo-700 text-white">Save Admin</Button>
+            <Button size="sm" onClick={handleAddAdmin} disabled={!newAdmin.name || !newAdmin.email || !newAdmin.password} className="text-xs bg-[#fe6905] hover:bg-[#e55e04] text-white">Save Admin</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -44,7 +44,7 @@ const DocumentViewer = ({ title, dataUrl }: { title: string, dataUrl: string }) 
   return (
     <div className="flex items-center gap-2.5 bg-slate-50 p-2.5 px-3 rounded-lg border border-slate-200 text-xs">
       <Dialog>
-        <DialogTrigger render={<Button variant="link" className="p-0 h-auto text-xs text-indigo-600 font-medium hover:underline flex items-center gap-1.5" />}>
+        <DialogTrigger render={<Button variant="link" className="p-0 h-auto text-xs text-[#fe6905] font-medium hover:underline flex items-center gap-1.5" />}>
           <FileText className="w-3.5 h-3.5" /> {title} (View)
         </DialogTrigger>
         <DialogContent className="max-w-4xl w-full h-[80vh] flex flex-col bg-white border-slate-200">
@@ -380,7 +380,7 @@ export default function CustomerDetailPage() {
   if (loading) {
     return (
       <div className="py-24 text-center text-slate-400">
-        <div className="w-6 h-6 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+        <div className="w-6 h-6 border-2 border-[#fe6905] border-t-transparent rounded-full animate-spin mx-auto mb-3" />
         <p className="text-xs">Loading customer details...</p>
       </div>
     );
@@ -431,7 +431,7 @@ export default function CustomerDetailPage() {
               size="sm" 
               onClick={handleImpersonate} 
               disabled={isImpersonating}
-              className="h-8 text-xs bg-indigo-600 hover:bg-indigo-700 text-white font-medium"
+              className="h-8 text-xs bg-[#fe6905] hover:bg-[#e55e04] text-white font-medium"
             >
               <UserCheck className="w-3.5 h-3.5 mr-1.5" />
               {isImpersonating ? "Connecting..." : "Impersonate"}
@@ -561,7 +561,7 @@ export default function CustomerDetailPage() {
                     href={customer.onboarding_form.websiteUrl.startsWith("http") ? customer.onboarding_form.websiteUrl : `https://${customer.onboarding_form.websiteUrl}`}
                     target="_blank" 
                     rel="noreferrer" 
-                    className="text-indigo-600 hover:underline inline-flex items-center gap-1"
+                    className="text-[#fe6905] hover:underline inline-flex items-center gap-1"
                   >
                     {customer.onboarding_form.websiteUrl} <ExternalLink className="w-3 h-3" />
                   </a>
@@ -624,7 +624,7 @@ export default function CustomerDetailPage() {
               <div>
                 <Label className="text-slate-400 text-[11px] font-medium">Current Tier & Quotas</Label>
                 <div className="mt-1 flex items-center gap-2">
-                  <Badge className="bg-indigo-50 text-indigo-700 border-indigo-200 font-medium">{currentPlan}</Badge>
+                  <Badge className="bg-orange-50 text-orange-800 border-orange-200 font-medium">{currentPlan}</Badge>
                   {subscription?.plan === "custom" && subscription?.custom_plan_label && (
                     <Badge variant="outline" className="text-xs text-purple-700 border-purple-300">{subscription.custom_plan_label}</Badge>
                   )}
@@ -685,7 +685,7 @@ export default function CustomerDetailPage() {
 
       {/* Agents & Billing Rates */}
       <Card className="bg-white border border-slate-200/80 rounded-xl shadow-none">
-        <CardHeader className="p-4 pb-2 border-b border-slate-100"><CardTitle className="text-xs font-semibold text-slate-900 uppercase tracking-wider flex items-center gap-2"><Bot className="w-4 h-4 text-indigo-600" /> Agents & Billing Rates</CardTitle></CardHeader>
+        <CardHeader className="p-4 pb-2 border-b border-slate-100"><CardTitle className="text-xs font-semibold text-slate-900 uppercase tracking-wider flex items-center gap-2"><Bot className="w-4 h-4 text-[#fe6905]" /> Agents & Billing Rates</CardTitle></CardHeader>
         <CardContent className="p-4 space-y-3">
           {agents.length === 0 ? (
             <p className="text-xs text-slate-400 py-2">No agents provisioned for this customer.</p>
@@ -720,7 +720,7 @@ export default function CustomerDetailPage() {
 
       {/* Phone Numbers */}
       <Card className="bg-white border border-slate-200/80 rounded-xl shadow-none">
-        <CardHeader className="p-4 pb-2 border-b border-slate-100"><CardTitle className="text-xs font-semibold text-slate-900 uppercase tracking-wider flex items-center gap-2"><PhoneCall className="w-4 h-4 text-indigo-600" /> Assigned Phone Numbers</CardTitle></CardHeader>
+        <CardHeader className="p-4 pb-2 border-b border-slate-100"><CardTitle className="text-xs font-semibold text-slate-900 uppercase tracking-wider flex items-center gap-2"><PhoneCall className="w-4 h-4 text-[#fe6905]" /> Assigned Phone Numbers</CardTitle></CardHeader>
         <CardContent className="p-4 space-y-4">
           <div className="bg-slate-50/70 p-3.5 rounded-lg border border-slate-200 space-y-3">
             <h4 className="font-semibold text-xs text-slate-800">Assign New Telephony Number</h4>
@@ -733,7 +733,7 @@ export default function CustomerDetailPage() {
                 <Label className="text-[11px] text-slate-500 font-medium">Plivo / Twilio ID (optional)</Label>
                 <Input placeholder="e.g. 1234567890" value={plivoIdInput} onChange={e => setPlivoIdInput(e.target.value)} className="h-8 text-xs bg-white border-slate-200" />
               </div>
-              <Button onClick={handleAssignPhone} disabled={isAssigningPhone || !phoneNumberInput} className="h-8 text-xs bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer">
+              <Button onClick={handleAssignPhone} disabled={isAssigningPhone || !phoneNumberInput} className="h-8 text-xs bg-[#fe6905] hover:bg-[#e55e04] text-white cursor-pointer">
                 {isAssigningPhone ? "Assigning..." : "Assign Number"}
               </Button>
             </div>
@@ -778,7 +778,7 @@ export default function CustomerDetailPage() {
           </div>
           <DialogFooter className="border-t pt-3">
             <Button variant="outline" size="sm" onClick={() => setIsCreditOpen(false)} className="text-xs border-slate-200">Cancel</Button>
-            <Button size="sm" onClick={handleGrantCredit} disabled={!creditAmount || !creditDesc} className="text-xs bg-indigo-600 hover:bg-indigo-700 text-white">Grant Credit</Button>
+            <Button size="sm" onClick={handleGrantCredit} disabled={!creditAmount || !creditDesc} className="text-xs bg-[#fe6905] hover:bg-[#e55e04] text-white">Grant Credit</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -838,7 +838,7 @@ export default function CustomerDetailPage() {
           </div>
           <DialogFooter className="border-t pt-3">
             <Button variant="outline" size="sm" onClick={() => setIsPlanOpen(false)} className="text-xs border-slate-200">Cancel</Button>
-            <Button size="sm" onClick={handleUpgradePlan} disabled={!newPlan || planLoading} className="text-xs bg-indigo-600 hover:bg-indigo-700 text-white">
+            <Button size="sm" onClick={handleUpgradePlan} disabled={!newPlan || planLoading} className="text-xs bg-[#fe6905] hover:bg-[#e55e04] text-white">
               {planLoading ? "Updating..." : "Confirm Tier Change"}
             </Button>
           </DialogFooter>
@@ -942,7 +942,7 @@ export default function CustomerDetailPage() {
           </div>
           <DialogFooter className="border-t pt-3">
             <Button variant="outline" size="sm" onClick={() => setIsCustomPlanOpen(false)} className="text-xs border-slate-200">Cancel</Button>
-            <Button size="sm" onClick={handleSetCustomPricing} disabled={customPlanLoading} className="text-xs bg-indigo-600 hover:bg-indigo-700 text-white">
+            <Button size="sm" onClick={handleSetCustomPricing} disabled={customPlanLoading} className="text-xs bg-[#fe6905] hover:bg-[#e55e04] text-white">
               {customPlanLoading ? "Deploying..." : "Deploy Custom Plan"}
             </Button>
           </DialogFooter>

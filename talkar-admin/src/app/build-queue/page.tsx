@@ -36,7 +36,7 @@ const DocumentViewer = ({ title, dataUrl }: { title: string, dataUrl: string }) 
   return (
     <div className="flex items-center gap-2.5 bg-slate-50 p-2.5 px-3 rounded-lg border border-slate-200 text-xs">
       <Dialog>
-        <DialogTrigger render={<Button variant="link" className="p-0 h-auto text-xs text-indigo-600 font-medium hover:underline flex items-center gap-1.5" />}>
+        <DialogTrigger render={<Button variant="link" className="p-0 h-auto text-xs text-[#fe6905] font-medium hover:underline flex items-center gap-1.5" />}>
           <FileText className="w-3.5 h-3.5" /> {title} (View)
         </DialogTrigger>
         <DialogContent className="max-w-4xl w-full h-[80vh] flex flex-col bg-white border-slate-200">
@@ -153,9 +153,6 @@ export default function BuildQueuePage() {
       <div className="flex justify-between items-center pb-2 border-b border-slate-200/70">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2.5">
-            <div className="p-2 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-600">
-              <Building className="w-5 h-5" />
-            </div>
             Agent Build Queue
           </h1>
           <p className="text-xs text-slate-500 mt-1">
@@ -180,7 +177,7 @@ export default function BuildQueuePage() {
               {loading ? (
                 <TableRow>
                   <TableCell colSpan={5} className="text-center py-12 text-slate-400 text-xs">
-                    <div className="w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+                    <div className="w-5 h-5 border-2 border-[#fe6905] border-t-transparent rounded-full animate-spin mx-auto mb-2" />
                     Loading build queue...
                   </TableCell>
                 </TableRow>
@@ -246,7 +243,7 @@ export default function BuildQueuePage() {
                       </Button>
                       <Button 
                         size="sm"
-                        className="h-7 px-2.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-700 text-white shadow-none cursor-pointer"
+                        className="h-7 px-2.5 text-xs font-medium bg-[#fe6905] hover:bg-[#e55e04] text-white shadow-none cursor-pointer"
                         onClick={() => openReadyModal(c)}
                       >
                         Mark as Ready
@@ -319,7 +316,7 @@ export default function BuildQueuePage() {
                           href={selectedCustomer.onboarding_form.websiteUrl.startsWith("http") ? selectedCustomer.onboarding_form.websiteUrl : `https://${selectedCustomer.onboarding_form.websiteUrl}`} 
                           target="_blank" 
                           rel="noreferrer"
-                          className="text-indigo-600 hover:underline"
+                          className="text-[#fe6905] hover:underline"
                         >
                           {selectedCustomer.onboarding_form.websiteUrl}
                         </a>
@@ -472,7 +469,7 @@ export default function BuildQueuePage() {
                       }
                     }
                   }}
-                  className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                  className="h-4 w-4 rounded border-slate-300 text-[#fe6905] focus:ring-[#fe6905]/20 cursor-pointer"
                 />
                 <Label htmlFor="override-details-checkbox" className="text-xs font-medium text-slate-700 cursor-pointer select-none">
                   Customize agent name & phone number
@@ -481,7 +478,7 @@ export default function BuildQueuePage() {
 
               {/* Conditional Inputs */}
               {useCustomDetails && (
-                <div className="space-y-3 p-3.5 rounded-lg border border-indigo-100 bg-indigo-50/40">
+                <div className="space-y-3 p-3.5 rounded-lg border border-orange-100 bg-orange-50/40">
                   <div className="space-y-1">
                     <Label className="text-[11px] font-medium text-slate-700">Custom Agent Name</Label>
                     <Input 
@@ -515,7 +512,7 @@ export default function BuildQueuePage() {
                   value={customMessage}
                   onChange={(e) => setCustomMessage(e.target.value)}
                   rows={3}
-                  className="text-xs bg-white border-slate-200 focus:ring-indigo-500"
+                  className="text-xs bg-white border-slate-200 focus:ring-[#fe6905]/20"
                 />
                 <p className="text-[10px] text-slate-400">
                   Included in the notification email under &quot;Admin Note&quot;.
@@ -527,7 +524,7 @@ export default function BuildQueuePage() {
             <Button variant="outline" size="sm" onClick={() => setIsReadyModalOpen(false)} disabled={submittingReady} className="text-xs border-slate-200">
               Cancel
             </Button>
-            <Button size="sm" onClick={submitMarkReady} disabled={submittingReady} className="text-xs bg-indigo-600 hover:bg-indigo-700 text-white">
+            <Button size="sm" onClick={submitMarkReady} disabled={submittingReady} className="text-xs bg-[#fe6905] hover:bg-[#e55e04] text-white">
               {submittingReady ? "Sending Email..." : "Confirm & Send Email"}
             </Button>
           </DialogFooter>

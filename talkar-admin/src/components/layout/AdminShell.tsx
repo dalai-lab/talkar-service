@@ -22,7 +22,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   const isLoginPage = pathname === "/login";
 
   if (isLoginPage) {
-    return <div className="min-h-screen bg-slate-50">{children}</div>;
+    return <div className="min-h-screen bg-[#fafafa]">{children}</div>;
   }
 
   const currentTitle = ROUTE_NAMES[pathname] || (pathname.startsWith("/customers/") ? "Customer Details" : "Operations Console");
@@ -33,15 +33,15 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <div className="flex min-h-screen bg-[#f8fafc] text-slate-900 antialiased selection:bg-indigo-500/20">
+    <div className="flex min-h-screen bg-[#fafafa] text-zinc-900 antialiased selection:bg-[#fe6905]/15 selection:text-[#fe6905]">
       <Sidebar />
       <div className="flex-1 ml-64 flex flex-col min-w-0">
         {/* Minimal Modern Top Header */}
-        <header className="h-14 border-b border-slate-200/80 bg-white/80 backdrop-blur-md sticky top-0 z-30 px-8 flex items-center justify-between">
-          <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
-            <span className="text-slate-400 font-semibold tracking-wider uppercase text-[11px]">Talkar Admin</span>
-            <ChevronRight className="w-3.5 h-3.5 text-slate-300" />
-            <span className="text-slate-800 font-semibold">{currentTitle}</span>
+        <header className="h-14 border-b border-zinc-200/80 bg-white/90 backdrop-blur-md sticky top-0 z-30 px-8 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-xs font-medium text-zinc-500">
+            <span className="text-zinc-400 font-semibold tracking-wider uppercase text-[10px]">Talkar Admin</span>
+            <ChevronRight className="w-3.5 h-3.5 text-zinc-300" />
+            <span className="text-zinc-800 font-semibold">{currentTitle}</span>
           </div>
 
           <div className="flex items-center gap-4">
@@ -50,16 +50,16 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
               <span>Console Active</span>
             </div>
 
-            <div className="h-4 w-px bg-slate-200" />
+            <div className="h-4 w-px bg-zinc-200" />
 
-            <div className="flex items-center gap-2 text-xs text-slate-600">
-              <ShieldCheck className="w-4 h-4 text-indigo-500" />
+            <div className="flex items-center gap-2 text-xs text-zinc-600">
+              <ShieldCheck className="w-4 h-4 text-[#fe6905]" />
               <span className="font-medium hidden sm:inline">Admin Session</span>
             </div>
 
             <button
               onClick={handleLogout}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 transition-colors cursor-pointer"
               title="Sign out of admin session"
             >
               <LogOut className="w-3.5 h-3.5" />

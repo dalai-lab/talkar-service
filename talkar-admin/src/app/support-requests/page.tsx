@@ -149,9 +149,6 @@ export default function SupportRequestsPage() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-slate-200/70">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2.5">
-            <div className="p-2 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-600">
-              <MessageSquare className="w-5 h-5" />
-            </div>
             Support & Feature Requests
           </h1>
           <p className="text-xs text-slate-500 mt-1">
@@ -245,7 +242,7 @@ export default function SupportRequestsPage() {
               onClick={() => setTypeFilter("support")}
               className={`px-3 py-1 rounded-md transition-all font-medium cursor-pointer ${
                 typeFilter === "support"
-                  ? "bg-white text-indigo-700 shadow-sm font-semibold"
+                  ? "bg-white text-[#fe6905] shadow-sm font-semibold"
                   : "text-slate-600 hover:text-slate-900"
               }`}
             >
@@ -301,7 +298,7 @@ export default function SupportRequestsPage() {
               {loading ? (
                 <TableRow>
                   <TableCell colSpan={6} className="text-center py-12 text-slate-400">
-                    <div className="w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+                    <div className="w-5 h-5 border-2 border-[#fe6905] border-t-transparent rounded-full animate-spin mx-auto mb-2" />
                     <span className="text-xs">Loading requests...</span>
                   </TableCell>
                 </TableRow>
@@ -340,7 +337,7 @@ export default function SupportRequestsPage() {
                             <Sparkles className="w-2.5 h-2.5" /> Feature
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200">
+                          <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-orange-50 text-[#fe6905] border border-orange-200">
                             <HelpCircle className="w-2.5 h-2.5" /> Support
                           </span>
                         )}
@@ -358,7 +355,7 @@ export default function SupportRequestsPage() {
                     <TableCell className="max-w-xs text-xs">
                       {req.admin_note ? (
                         <div className="text-slate-700 line-clamp-2">
-                          <span className="text-indigo-600 font-medium">Replied: </span>
+                          <span className="text-[#fe6905] font-medium">Replied: </span>
                           {req.admin_note}
                         </div>
                       ) : (
@@ -404,7 +401,7 @@ export default function SupportRequestsPage() {
               {selectedReq?.type === "feature_request" ? (
                 <Badge className="bg-purple-50 text-purple-700 border-purple-200 text-xs">Feature Request</Badge>
               ) : (
-                <Badge className="bg-indigo-50 text-indigo-700 border-indigo-200 text-xs">Support Ticket</Badge>
+                <Badge className="bg-orange-50 text-orange-800 border-orange-200 text-xs">Support Ticket</Badge>
               )}
             </DialogTitle>
           </DialogHeader>
@@ -494,7 +491,7 @@ export default function SupportRequestsPage() {
               <select
                 value={status}
                 onChange={(e) => setStatus(e.target.value)}
-                className="w-full h-9 px-3 text-xs bg-white border border-slate-200 text-slate-800 rounded-lg focus:outline-none focus:border-indigo-500"
+                className="w-full h-9 px-3 text-xs bg-white border border-slate-200 text-slate-800 rounded-lg focus:outline-none focus:border-[#fe6905]"
               >
                 <option value="open">Open (Pending Review)</option>
                 <option value="in_progress">In Progress</option>
@@ -511,7 +508,7 @@ export default function SupportRequestsPage() {
                 <label className="text-slate-700 font-medium">
                   Admin Reply / Customer Note
                 </label>
-                <span className="text-[10px] text-indigo-600 font-medium">
+                <span className="text-[10px] text-[#fe6905] font-medium">
                   Visible to customer in their portal
                 </span>
               </div>
@@ -520,7 +517,7 @@ export default function SupportRequestsPage() {
                 onChange={(e) => setAdminNote(e.target.value)}
                 placeholder="Write your response, resolution notes, or ETA for this request..."
                 rows={4}
-                className="w-full p-3 text-xs bg-white border border-slate-200 text-slate-800 rounded-lg focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                className="w-full p-3 text-xs bg-white border border-slate-200 text-slate-800 rounded-lg focus:outline-none focus:border-[#fe6905] focus:ring-1 focus:ring-[#fe6905]/20"
               />
             </div>
           </div>
@@ -538,7 +535,7 @@ export default function SupportRequestsPage() {
               size="sm"
               onClick={handleUpdate}
               disabled={isSaving}
-              className="text-xs bg-indigo-600 hover:bg-indigo-700 text-white font-medium"
+              className="text-xs bg-[#fe6905] hover:bg-[#e55e04] text-white font-medium"
             >
               {isSaving ? "Saving..." : "Save Changes"}
             </Button>

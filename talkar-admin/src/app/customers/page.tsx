@@ -40,9 +40,6 @@ export default function CustomersPage() {
       <div className="flex justify-between items-center pb-2 border-b border-slate-200/70">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2.5">
-            <div className="p-2 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-600">
-              <Users className="w-5 h-5" />
-            </div>
             Customer Directory
           </h1>
           <p className="text-xs text-slate-500 mt-1">
@@ -78,7 +75,7 @@ export default function CustomersPage() {
               {loading ? (
                 <TableRow>
                   <TableCell colSpan={5} className="text-center py-12 text-slate-400 text-xs">
-                    <div className="w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+                    <div className="w-5 h-5 border-2 border-[#fe6905] border-t-transparent rounded-full animate-spin mx-auto mb-2" />
                     Loading customers...
                   </TableCell>
                 </TableRow>
