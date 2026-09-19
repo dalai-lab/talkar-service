@@ -30,7 +30,11 @@ import {
   Plus,
   Trash2,
   Bell,
-  AlertCircle
+  AlertCircle,
+  Save,
+  CheckCircle,
+  Activity,
+  X
 } from "lucide-react";
 
 const DocumentViewer = ({ title, dataUrl }: { title: string, dataUrl: string }) => {
@@ -133,6 +137,12 @@ export default function CustomerDetailPage() {
   const [testNotifType, setTestNotifType] = useState("info");
   const [testNotifSendEmail, setTestNotifSendEmail] = useState(true);
   const [isSendingNotif, setIsSendingNotif] = useState(false);
+
+  // Profitability & Test Account
+  const [isTestAccountLoading, setIsTestAccountLoading] = useState(false);
+  const [isOverridesOpen, setIsOverridesOpen] = useState(false);
+  const [overridesInput, setOverridesInput] = useState("");
+  const [overridesLoading, setOverridesLoading] = useState(false);
 
   // Suspend modal
   const [isSuspendOpen, setIsSuspendOpen] = useState(false);
@@ -685,6 +695,47 @@ export default function CustomerDetailPage() {
               </div>
             </div>
 
+            {/* Profitability Overrides & Test Account */}
+            <div className="bg-slate-50/70 border border-slate-200/70 rounded-lg p-3 flex flex-col justify-between gap-2.5">
+              <div>
+                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Profitability Settings</p>
+                <p className="text-[11px] text-slate-500 leading-tight">Exclude from global metrics or override costs.</p>
+              </div>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={async () => {
+                    if (!confirm(`Mark this account as ${customer.is_test_account ? "real" : "test"}?`)) return;
+                    setIsTestAccountLoading(true);
+                    const res = await adminFetch(`/admin/customers/${id}/test-account`, {
+                      method: "PUT", headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ is_test_account: !customer.is_test_account })
+                    });
+                    setIsTestAccountLoading(false);
+                    if (res.ok) fetchCustomer();
+                    else alert("Failed to update test account status.");
+                  }}
+                  disabled={isTestAccountLoading}
+                  className={`h-8 text-xs ${customer.is_test_account ? 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'} font-medium cursor-pointer flex-1 min-w-[100px]`}
+                >
+                  <Activity className="w-3.5 h-3.5 mr-1.5" /> 
+                  {customer.is_test_account ? "Test Account: ON" : "Test Account: OFF"}
+                </Button>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => {
+                    setOverridesInput(JSON.stringify(customer?.report_settings?.profitability_overrides || {}, null, 2));
+                    setIsOverridesOpen(true);
+                  }} 
+                  className="h-8 text-xs border-slate-200 bg-white hover:bg-slate-100 text-slate-700 font-medium cursor-pointer flex-1 min-w-[100px]"
+                >
+                  <Settings2 className="w-3.5 h-3.5 mr-1.5" /> Overrides
+                </Button>
+              </div>
+            </div>
+
             {/* Status & Provisioning */}
             <div className="bg-slate-50/70 border border-slate-200/70 rounded-lg p-3 flex flex-col justify-between gap-2.5">
               <div>
@@ -1222,6 +1273,65 @@ export default function CustomerDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Profitability Overrides Modal */}
+      {isOverridesOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold text-slate-900">Profitability Overrides</h3>
+                <p className="text-xs text-slate-500 mt-0.5">Override base costs for this customer</p>
+              </div>
+              <button onClick={() => setIsOverridesOpen(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700">JSON Overrides</label>
+                <textarea
+                  className="w-full h-32 border border-slate-200 rounded-md p-2 text-xs font-mono text-slate-700"
+                  value={overridesInput}
+                  onChange={(e) => setOverridesInput(e.target.value)}
+                  placeholder={'{\n  "telephony_cost_per_min_inr": 0\n}'}
+                />
+              </div>
+            </div>
+            <div className="px-5 py-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setIsOverridesOpen(false)} className="h-8 text-xs">
+                Cancel
+              </Button>
+              <Button 
+                onClick={async () => {
+                  try {
+                    const parsed = JSON.parse(overridesInput);
+                    setOverridesLoading(true);
+                    const res = await adminFetch(`/admin/customers/${id}/profitability-overrides`, {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ overrides: parsed })
+                    });
+                    setOverridesLoading(false);
+                    if (res.ok) {
+                      setIsOverridesOpen(false);
+                      fetchCustomer();
+                    } else {
+                      alert("Failed to save overrides.");
+                    }
+                  } catch (e) {
+                    alert("Invalid JSON format.");
+                  }
+                }} 
+                disabled={overridesLoading}
+                className="h-8 text-xs bg-slate-900 text-white"
+              >
+                {overridesLoading ? "Saving..." : "Save Overrides"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Custom Plan Modal */}
       <Dialog open={isCustomPlanOpen} onOpenChange={setIsCustomPlanOpen}>

@@ -1203,6 +1203,7 @@ def _estimate_call_cost_inr(
     tts_provider: str = "deepgram",
     stt_provider: str = "deepgram",
     llm_model: str = "gpt-4o-mini",
+    overrides: dict | None = None,
 ) -> dict:
     """
     Estimate the real AI+telephony cost for a single call in INR.
@@ -1210,9 +1211,13 @@ def _estimate_call_cost_inr(
     """
     minutes = duration_seconds / 60.0
     ui = usage_info or {}
+    overrides = overrides or {}
 
     # --- 1. Plivo telephony ---
-    plivo_inr = PLIVO_COST_PER_MIN_INR * minutes
+    plivo_rate_inr = overrides.get("telephony_cost_per_min_inr", PLIVO_COST_PER_MIN_INR)
+    if plivo_rate_inr is None or str(plivo_rate_inr) == "":
+        plivo_rate_inr = PLIVO_COST_PER_MIN_INR
+    plivo_inr = float(plivo_rate_inr) * minutes
 
     # --- 2. STT (Deepgram) ---
     stt_seconds = 0.0
@@ -1309,6 +1314,7 @@ async def get_profitability(
     import math
     from datetime import datetime, timedelta, timezone
     from sqlalchemy import text
+    from db.models import GlobalPlatformSettings
 
     # --- Date filter ---
     now = datetime.now(timezone.utc)
@@ -1353,8 +1359,13 @@ async def get_profitability(
     subs_res = await db.execute(select(Subscription))
     subs = {s.customer_id: s for s in subs_res.scalars().all()}
 
-    # --- Fetch customers (all statuses — call logs may exist for pending/suspended too) ---
-    cust_res = await db.execute(select(Customer))
+    # --- Fetch global platform settings ---
+    global_res = await db.execute(select(GlobalPlatformSettings).limit(1))
+    global_settings_row = global_res.scalar_one_or_none()
+    global_overrides = global_settings_row.settings.get("profitability_overrides", {}) if global_settings_row else {}
+
+    # --- Fetch non-test customers ---
+    cust_res = await db.execute(select(Customer).where(Customer.is_test_account == False))
     customers = {c.id: c for c in cust_res.scalars().all()}
 
     # --- Aggregate per customer AND per plan bucket ---
@@ -1375,6 +1386,15 @@ async def get_profitability(
 
     for row in call_rows:
         cid = row.customer_id
+        if cid not in customers:
+            continue
+        c_obj = customers[cid]
+        c_overrides = c_obj.report_settings.get("profitability_overrides", {})
+        
+        # Merge hierarchy: Base defaults -> Global Overrides -> Customer Overrides
+        effective_overrides = {}
+        effective_overrides.update(global_overrides)
+        effective_overrides.update(c_overrides)
 
         # Use the plan stamped on the call_log at billing time (accurate for mid-month
         # plan switches). Fall back to current subscription if column is NULL (old rows).
@@ -1383,8 +1403,12 @@ async def get_profitability(
 
         if stamped_plan and stamped_tts:
             tts_provider = stamped_tts
-            from config import TIER_CONFIG
-            tier_cfg = TIER_CONFIG.get(stamped_plan, {})
+            from config import TIER_CONFIG, resolve_tier_config
+            if stamped_plan == "custom":
+                sub = subs.get(cid)
+                tier_cfg = resolve_tier_config(sub) if sub else {}
+            else:
+                tier_cfg = TIER_CONFIG.get(stamped_plan, {})
             llm_model = tier_cfg.get("llm_model", "gpt-4o-mini")
             stt_provider = tier_cfg.get("stt_provider", "deepgram")
             active_plan = stamped_plan
@@ -1405,7 +1429,7 @@ async def get_profitability(
 
         usage_info = usage_map.get(row.dograh_run_id)
         cost_breakdown = _estimate_call_cost_inr(
-            row.duration_seconds, usage_info, tts_provider, stt_provider, llm_model
+            row.duration_seconds, usage_info, tts_provider, stt_provider, llm_model, effective_overrides
         )
         revenue_inr = row.cost_to_customer_paise / 100.0
 
@@ -1512,3 +1536,67 @@ async def get_profitability(
             "openai_rates": OPENAI_RATES,
         },
     }
+
+
+@router.put("/customers/{customer_id}/test-account")
+async def toggle_test_account(
+    customer_id: int,
+    data: dict,
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin)
+):
+    query = select(Customer).where(Customer.id == customer_id)
+    customer = (await db.execute(query)).scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+    
+    customer.is_test_account = data.get("is_test_account", False)
+    await db.commit()
+    return {"message": "Success", "is_test_account": customer.is_test_account}
+
+@router.put("/customers/{customer_id}/profitability-overrides")
+async def update_customer_profitability_overrides(
+    customer_id: int,
+    data: dict,
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin)
+):
+    query = select(Customer).where(Customer.id == customer_id)
+    customer = (await db.execute(query)).scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+    
+    settings = dict(customer.report_settings or {})
+    settings["profitability_overrides"] = data.get("overrides", {})
+    customer.report_settings = settings
+    await db.commit()
+    return {"message": "Success", "overrides": settings["profitability_overrides"]}
+
+@router.get("/platform-settings")
+async def get_platform_settings(
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin)
+):
+    from db.models import GlobalPlatformSettings
+    global_res = await db.execute(select(GlobalPlatformSettings).limit(1))
+    settings_row = global_res.scalar_one_or_none()
+    if not settings_row:
+        return {"settings": {}}
+    return {"settings": settings_row.settings}
+
+@router.put("/platform-settings")
+async def update_platform_settings(
+    data: dict,
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin)
+):
+    from db.models import GlobalPlatformSettings
+    global_res = await db.execute(select(GlobalPlatformSettings).limit(1))
+    settings_row = global_res.scalar_one_or_none()
+    if not settings_row:
+        settings_row = GlobalPlatformSettings(settings=data.get("settings", {}))
+        db.add(settings_row)
+    else:
+        settings_row.settings = data.get("settings", {})
+    await db.commit()
+    return {"message": "Success", "settings": settings_row.settings}

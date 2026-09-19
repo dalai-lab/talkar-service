@@ -29,12 +29,20 @@ class Customer(Base):
     setup_fee_order_id = Column(Text)
     crm_links = Column(JSON, default=list)
     report_settings = Column(JSON, default=dict)
+    is_test_account = Column(Boolean, default=False, server_default="false")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
         Index("uq_customers_email_org", "contact_email", "dograh_org_id", unique=True),
     )
+
+class GlobalPlatformSettings(Base):
+    __tablename__ = "global_platform_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    settings = Column(JSON, default=dict)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 class Subscription(Base):
     __tablename__ = "subscriptions"

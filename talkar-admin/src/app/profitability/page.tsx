@@ -13,6 +13,8 @@ import {
   ChevronDown,
   ChevronUp,
   RefreshCw,
+  Settings2,
+  X,
 } from "lucide-react";
 
 interface PlanBucket {
@@ -114,6 +116,65 @@ function CostBar({ breakdown, total }: { breakdown: CustomerRow["breakdown"]; to
           </span>
         ))}
       </div>
+      {/* Global Settings Modal */}
+      {isGlobalSettingsOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold text-slate-900">Global Profitability Settings</h3>
+                <p className="text-xs text-slate-500 mt-0.5">Override base costs platform-wide</p>
+              </div>
+              <button onClick={() => setIsGlobalSettingsOpen(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700">JSON Overrides</label>
+                <textarea
+                  className="w-full h-32 border border-slate-200 rounded-md p-2 text-xs font-mono text-slate-700"
+                  value={globalSettingsInput}
+                  onChange={(e) => setGlobalSettingsInput(e.target.value)}
+                  placeholder={'{\n  "telephony_cost_per_min_inr": 0\n}'}
+                />
+              </div>
+            </div>
+            <div className="px-5 py-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setIsGlobalSettingsOpen(false)} className="h-8 text-xs">
+                Cancel
+              </Button>
+              <Button 
+                onClick={async () => {
+                  try {
+                    const parsed = JSON.parse(globalSettingsInput);
+                    setGlobalSettingsLoading(true);
+                    const res = await adminFetch('/admin/platform-settings', {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ settings: { profitability_overrides: parsed } })
+                    });
+                    setGlobalSettingsLoading(false);
+                    if (res.ok) {
+                      setIsGlobalSettingsOpen(false);
+                      fetchData();
+                    } else {
+                      alert("Failed to save overrides.");
+                    }
+                  } catch (e) {
+                    alert("Invalid JSON format.");
+                  }
+                }} 
+                disabled={globalSettingsLoading}
+                className="h-8 text-xs bg-slate-900 text-white"
+              >
+                {globalSettingsLoading ? "Saving..." : "Save Settings"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
@@ -168,6 +229,65 @@ function PlanBucketRow({ b }: { b: PlanBucket }) {
           ))}
         </div>
       </div>
+      {/* Global Settings Modal */}
+      {isGlobalSettingsOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold text-slate-900">Global Profitability Settings</h3>
+                <p className="text-xs text-slate-500 mt-0.5">Override base costs platform-wide</p>
+              </div>
+              <button onClick={() => setIsGlobalSettingsOpen(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700">JSON Overrides</label>
+                <textarea
+                  className="w-full h-32 border border-slate-200 rounded-md p-2 text-xs font-mono text-slate-700"
+                  value={globalSettingsInput}
+                  onChange={(e) => setGlobalSettingsInput(e.target.value)}
+                  placeholder={'{\n  "telephony_cost_per_min_inr": 0\n}'}
+                />
+              </div>
+            </div>
+            <div className="px-5 py-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setIsGlobalSettingsOpen(false)} className="h-8 text-xs">
+                Cancel
+              </Button>
+              <Button 
+                onClick={async () => {
+                  try {
+                    const parsed = JSON.parse(globalSettingsInput);
+                    setGlobalSettingsLoading(true);
+                    const res = await adminFetch('/admin/platform-settings', {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ settings: { profitability_overrides: parsed } })
+                    });
+                    setGlobalSettingsLoading(false);
+                    if (res.ok) {
+                      setIsGlobalSettingsOpen(false);
+                      fetchData();
+                    } else {
+                      alert("Failed to save overrides.");
+                    }
+                  } catch (e) {
+                    alert("Invalid JSON format.");
+                  }
+                }} 
+                disabled={globalSettingsLoading}
+                className="h-8 text-xs bg-slate-900 text-white"
+              >
+                {globalSettingsLoading ? "Saving..." : "Save Settings"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
@@ -270,6 +390,65 @@ function CustomerRowCard({ c }: { c: CustomerRow }) {
           )}
         </div>
       )}
+      {/* Global Settings Modal */}
+      {isGlobalSettingsOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold text-slate-900">Global Profitability Settings</h3>
+                <p className="text-xs text-slate-500 mt-0.5">Override base costs platform-wide</p>
+              </div>
+              <button onClick={() => setIsGlobalSettingsOpen(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700">JSON Overrides</label>
+                <textarea
+                  className="w-full h-32 border border-slate-200 rounded-md p-2 text-xs font-mono text-slate-700"
+                  value={globalSettingsInput}
+                  onChange={(e) => setGlobalSettingsInput(e.target.value)}
+                  placeholder={'{\n  "telephony_cost_per_min_inr": 0\n}'}
+                />
+              </div>
+            </div>
+            <div className="px-5 py-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setIsGlobalSettingsOpen(false)} className="h-8 text-xs">
+                Cancel
+              </Button>
+              <Button 
+                onClick={async () => {
+                  try {
+                    const parsed = JSON.parse(globalSettingsInput);
+                    setGlobalSettingsLoading(true);
+                    const res = await adminFetch('/admin/platform-settings', {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ settings: { profitability_overrides: parsed } })
+                    });
+                    setGlobalSettingsLoading(false);
+                    if (res.ok) {
+                      setIsGlobalSettingsOpen(false);
+                      fetchData();
+                    } else {
+                      alert("Failed to save overrides.");
+                    }
+                  } catch (e) {
+                    alert("Invalid JSON format.");
+                  }
+                }} 
+                disabled={globalSettingsLoading}
+                className="h-8 text-xs bg-slate-900 text-white"
+              >
+                {globalSettingsLoading ? "Saving..." : "Save Settings"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
@@ -285,6 +464,9 @@ export default function ProfitabilityPage() {
   const [period, setPeriod] = useState("month");
   const [data, setData] = useState<ProfitData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isGlobalSettingsOpen, setIsGlobalSettingsOpen] = useState(false);
+  const [globalSettingsInput, setGlobalSettingsInput] = useState("");
+  const [globalSettingsLoading, setGlobalSettingsLoading] = useState(false);
 
   const fetchData = async (p: string) => {
     setLoading(true);
@@ -432,6 +614,65 @@ export default function ProfitabilityPage() {
           <div className="text-amber-700 font-medium">⚠️ Estimates based on aggregate call duration and provider pricing. Verify against actual upstream API invoices monthly.</div>
         </div>
       )}
+      {/* Global Settings Modal */}
+      {isGlobalSettingsOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold text-slate-900">Global Profitability Settings</h3>
+                <p className="text-xs text-slate-500 mt-0.5">Override base costs platform-wide</p>
+              </div>
+              <button onClick={() => setIsGlobalSettingsOpen(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700">JSON Overrides</label>
+                <textarea
+                  className="w-full h-32 border border-slate-200 rounded-md p-2 text-xs font-mono text-slate-700"
+                  value={globalSettingsInput}
+                  onChange={(e) => setGlobalSettingsInput(e.target.value)}
+                  placeholder={'{\n  "telephony_cost_per_min_inr": 0\n}'}
+                />
+              </div>
+            </div>
+            <div className="px-5 py-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setIsGlobalSettingsOpen(false)} className="h-8 text-xs">
+                Cancel
+              </Button>
+              <Button 
+                onClick={async () => {
+                  try {
+                    const parsed = JSON.parse(globalSettingsInput);
+                    setGlobalSettingsLoading(true);
+                    const res = await adminFetch('/admin/platform-settings', {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ settings: { profitability_overrides: parsed } })
+                    });
+                    setGlobalSettingsLoading(false);
+                    if (res.ok) {
+                      setIsGlobalSettingsOpen(false);
+                      fetchData();
+                    } else {
+                      alert("Failed to save overrides.");
+                    }
+                  } catch (e) {
+                    alert("Invalid JSON format.");
+                  }
+                }} 
+                disabled={globalSettingsLoading}
+                className="h-8 text-xs bg-slate-900 text-white"
+              >
+                {globalSettingsLoading ? "Saving..." : "Save Settings"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
