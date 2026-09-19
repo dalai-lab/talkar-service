@@ -362,7 +362,7 @@ export default function ProfitabilityPage() {
             onClick={async () => {
               try {
                 setGlobalSettingsLoading(true);
-                const res = await adminFetch("/admin/profitability/global-settings");
+                const res = await adminFetch("/admin/platform-settings");
                 if (res.ok) {
                   const data = await res.json();
                   const currentOverrides = data.settings?.profitability_overrides || {};
