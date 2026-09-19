@@ -482,7 +482,7 @@ export default function ProfitabilityPage() {
                     setGlobalSettingsLoading(false);
                     if (res.ok) {
                       setIsGlobalSettingsOpen(false);
-                      fetchData();
+                      fetchData(period);
                     } else {
                       alert("Failed to save overrides.");
                     }
