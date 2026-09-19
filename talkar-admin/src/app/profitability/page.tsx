@@ -352,6 +352,33 @@ export default function ProfitabilityPage() {
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
           </Button>
+          
+          <div className="h-4 w-px bg-slate-200 mx-1"></div>
+          
+          <span className="text-[10px] font-semibold text-slate-400 bg-slate-100 px-2 py-1 rounded-md uppercase tracking-wide whitespace-nowrap">Test Accounts Excluded</span>
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={async () => {
+              try {
+                setGlobalSettingsLoading(true);
+                const res = await adminFetch("/admin/profitability/global-settings");
+                if (res.ok) {
+                  const data = await res.json();
+                  const currentOverrides = data.settings?.profitability_overrides || {};
+                  setGlobalSettingsInput(JSON.stringify(currentOverrides, null, 2));
+                  setIsGlobalSettingsOpen(true);
+                }
+              } catch (e) {
+                console.error(e);
+              } finally {
+                setGlobalSettingsLoading(false);
+              }
+            }}
+            className="h-8 text-xs border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-medium cursor-pointer whitespace-nowrap"
+          >
+            <Settings2 className="w-3.5 h-3.5 mr-1.5" /> Global Overrides
+          </Button>
         </div>
       </div>
 
