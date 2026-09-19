@@ -144,6 +144,21 @@ export default function CustomerDetailPage() {
   const [overridesInput, setOverridesInput] = useState("");
   const [overridesLoading, setOverridesLoading] = useState(false);
 
+  const overrides = (() => {
+    try { return JSON.parse(overridesInput || "{}"); } catch { return {}; }
+  })();
+
+  const setOverride = (key: string, value: string) => {
+    const num = parseFloat(value);
+    const newOverrides = { ...overrides };
+    if (isNaN(num) || value === "") {
+      delete newOverrides[key];
+    } else {
+      newOverrides[key] = num;
+    }
+    setOverridesInput(JSON.stringify(newOverrides, null, 2));
+  };
+
   // Suspend modal
   const [isSuspendOpen, setIsSuspendOpen] = useState(false);
   const [suspendReason, setSuspendReason] = useState("zero_balance");
@@ -1287,15 +1302,110 @@ export default function CustomerDetailPage() {
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <div className="p-5 space-y-4">
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700">JSON Overrides</label>
-                <textarea
-                  className="w-full h-32 border border-slate-200 rounded-md p-2 text-xs font-mono text-slate-700"
-                  value={overridesInput}
-                  onChange={(e) => setOverridesInput(e.target.value)}
-                  placeholder={'{\n  "telephony_cost_per_min_inr": 0\n}'}
-                />
+            <div className="p-5 max-h-[60vh] overflow-y-auto space-y-6 bg-slate-50/50">
+              <div className="space-y-3">
+                <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-200 pb-1.5">Telephony & Global</h4>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-700 uppercase">Telephony Cost / Min (₹)</label>
+                    <input 
+                      type="number" step="0.01" placeholder="Platform Default"
+                      className="w-full h-8 px-2.5 mt-1.5 border border-slate-200 rounded text-xs bg-white focus:outline-none focus:border-slate-400 transition-colors shadow-sm"
+                      value={overrides.telephony_cost_per_min_inr ?? ""}
+                      onChange={(e) => setOverride("telephony_cost_per_min_inr", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-700 uppercase">USD to INR Rate</label>
+                    <input 
+                      type="number" step="0.1" placeholder="Platform Default"
+                      className="w-full h-8 px-2.5 mt-1.5 border border-slate-200 rounded text-xs bg-white focus:outline-none focus:border-slate-400 transition-colors shadow-sm"
+                      value={overrides.usd_to_inr ?? ""}
+                      onChange={(e) => setOverride("usd_to_inr", e.target.value)}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-200 pb-1.5">Speech-to-Text (STT) - $/min</h4>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-700 uppercase">Deepgram STT</label>
+                    <input 
+                      type="number" step="0.0001" placeholder="Platform Default"
+                      className="w-full h-8 px-2.5 mt-1.5 border border-slate-200 rounded text-xs bg-white focus:outline-none focus:border-slate-400 transition-colors shadow-sm"
+                      value={overrides.deepgram_stt_cost_per_min_usd ?? ""}
+                      onChange={(e) => setOverride("deepgram_stt_cost_per_min_usd", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-700 uppercase">Smallest AI STT</label>
+                    <input 
+                      type="number" step="0.0001" placeholder="Platform Default"
+                      className="w-full h-8 px-2.5 mt-1.5 border border-slate-200 rounded text-xs bg-white focus:outline-none focus:border-slate-400 transition-colors shadow-sm"
+                      value={overrides.smallest_stt_cost_per_min_usd ?? ""}
+                      onChange={(e) => setOverride("smallest_stt_cost_per_min_usd", e.target.value)}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-200 pb-1.5">Text-to-Speech (TTS) - $/1k chars</h4>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-700 uppercase">ElevenLabs</label>
+                    <input 
+                      type="number" step="0.001" placeholder="Platform Default"
+                      className="w-full h-8 px-2.5 mt-1.5 border border-slate-200 rounded text-xs bg-white focus:outline-none focus:border-slate-400 transition-colors shadow-sm"
+                      value={overrides.elevenlabs_tts_cost_per_1k_chars_usd ?? ""}
+                      onChange={(e) => setOverride("elevenlabs_tts_cost_per_1k_chars_usd", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-700 uppercase">Deepgram TTS</label>
+                    <input 
+                      type="number" step="0.001" placeholder="Platform Default"
+                      className="w-full h-8 px-2.5 mt-1.5 border border-slate-200 rounded text-xs bg-white focus:outline-none focus:border-slate-400 transition-colors shadow-sm"
+                      value={overrides.deepgram_tts_cost_per_1k_chars_usd ?? ""}
+                      onChange={(e) => setOverride("deepgram_tts_cost_per_1k_chars_usd", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-700 uppercase">Smallest AI TTS</label>
+                    <input 
+                      type="number" step="0.001" placeholder="Platform Default"
+                      className="w-full h-8 px-2.5 mt-1.5 border border-slate-200 rounded text-xs bg-white focus:outline-none focus:border-slate-400 transition-colors shadow-sm"
+                      value={overrides.smallest_tts_cost_per_1k_chars_usd ?? ""}
+                      onChange={(e) => setOverride("smallest_tts_cost_per_1k_chars_usd", e.target.value)}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-200 pb-1.5">LLM (OpenAI) - $/1M tokens</h4>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-700 uppercase">Input Tokens</label>
+                    <input 
+                      type="number" step="0.01" placeholder="Platform Default"
+                      className="w-full h-8 px-2.5 mt-1.5 border border-slate-200 rounded text-xs bg-white focus:outline-none focus:border-slate-400 transition-colors shadow-sm"
+                      value={overrides.llm_cost_per_1m_input_usd ?? ""}
+                      onChange={(e) => setOverride("llm_cost_per_1m_input_usd", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-700 uppercase">Output Tokens</label>
+                    <input 
+                      type="number" step="0.01" placeholder="Platform Default"
+                      className="w-full h-8 px-2.5 mt-1.5 border border-slate-200 rounded text-xs bg-white focus:outline-none focus:border-slate-400 transition-colors shadow-sm"
+                      value={overrides.llm_cost_per_1m_output_usd ?? ""}
+                      onChange={(e) => setOverride("llm_cost_per_1m_output_usd", e.target.value)}
+                    />
+                  </div>
+                </div>
               </div>
             </div>
             <div className="px-5 py-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-2">
