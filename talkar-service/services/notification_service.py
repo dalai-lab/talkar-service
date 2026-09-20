@@ -102,10 +102,18 @@ def format_body_to_html(body: str, subject: str) -> str:
     return html_content
 
 
-async def send_email(to_email: str, subject: str, body: str):
-    """Send email via ZeptoMail SMTP (aiosmtplib would be ideal, but smtplib works via thread)."""
+async def send_email(to_email: str, subject: str, body: str, cc: str | None = None):
+    """Send email via ZeptoMail SMTP.
+
+    Args:
+        to_email: Primary recipient.
+        subject:  Email subject line.
+        body:     Plain-text body (also rendered as HTML).
+        cc:       Optional CC address.  Existing callers that omit this
+                  argument are completely unaffected (defaults to None).
+    """
     if not settings.SMTP_PASSWORD:
-        logger.info(f"[EMAIL MOCK] To: {to_email} | Subject: {subject} | Body: {body[:120]}")
+        logger.info(f"[EMAIL MOCK] To: {to_email} | CC: {cc} | Subject: {subject} | Body: {body[:120]}")
         return
 
     def _send():
@@ -154,15 +162,18 @@ async def send_email(to_email: str, subject: str, body: str):
         msg["Subject"] = subject
         msg["From"] = f"Talkar <{settings.FROM_EMAIL}>"
         msg["To"] = to_email
+        if cc:
+            msg["Cc"] = cc
         msg.attach(MIMEText(body, "plain"))
         msg.attach(MIMEText(html_body, "html"))
 
+        recipients = [to_email, cc] if cc else [to_email]
         with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
             server.ehlo()
             server.starttls()
             server.login(settings.SMTP_EMAIL, settings.SMTP_PASSWORD)
-            server.sendmail(settings.FROM_EMAIL, to_email, msg.as_string())
-            logger.info(f"Email sent to {to_email} | Subject: {subject}")
+            server.sendmail(settings.FROM_EMAIL, recipients, msg.as_string())
+            logger.info(f"Email sent to {to_email}{f' (CC: {cc})' if cc else ''} | Subject: {subject}")
 
     try:
         await asyncio.to_thread(_send)
@@ -186,9 +197,9 @@ async def push_notification(customer_id: int, title: str, body: str, notificatio
     except Exception as e:
         logger.error(f"Failed to push notification for customer {customer_id}: {e}")
 
-async def send_email_and_push(customer_id: int, to_email: str, subject: str, body: str, notification_type: str = "info", push_body: str | None = None):
+async def send_email_and_push(customer_id: int, to_email: str, subject: str, body: str, notification_type: str = "info", push_body: str | None = None, cc: str | None = None):
     """Helper to send an email AND push an in-app notification simultaneously."""
-    await send_email(to_email, subject, body)
+    await send_email(to_email, subject, body, cc=cc)
     
     # Generate a plain text push body if none provided (strip formatting, keep it short)
     pb = push_body
@@ -198,6 +209,7 @@ async def send_email_and_push(customer_id: int, to_email: str, subject: str, bod
         pb = lines[0] if lines else subject
         
     await push_notification(customer_id, subject, pb, notification_type)
+
 
 
 async def _get_customer_email(customer_id: int) -> tuple[str, str] | None:
@@ -324,6 +336,27 @@ async def notify_customer_low_balance(customer_id: int, balance_paise: int):
     if not info:
         return
     email, name = info
+
+    # Check customer's notification preferences from report_settings
+    from db.models import Customer as _Customer
+    cc_email: str | None = None
+    async with AsyncSessionLocal() as _db:
+        _res = await _db.execute(select(_Customer).where(_Customer.id == customer_id))
+        _cust = _res.scalar_one_or_none()
+        if _cust:
+            _rep = _cust.report_settings or {}
+            # Respect email mute preference — skip email but still push in-app alert
+            if not _rep.get("email_notifications_enabled", True):
+                balance_rs = balance_paise / 100
+                await push_notification(
+                    customer_id=customer_id,
+                    title="Low Balance Warning: Talkar Wallet",
+                    body=f"Low balance: ₹{balance_rs:.2f}. Please add credits.",
+                    notification_type="warning"
+                )
+                return
+            cc_email = (_rep.get("cc_email") or "").strip() or None
+
     balance_rs = balance_paise / 100
     await send_email_and_push(
         customer_id=customer_id,
@@ -336,7 +369,8 @@ async def notify_customer_low_balance(customer_id: int, balance_paise: int):
             f"The Talkar Team"
         ),
         notification_type="warning",
-        push_body=f"Low balance: ₹{balance_rs:.2f}. Please add credits."
+        push_body=f"Low balance: ₹{balance_rs:.2f}. Please add credits.",
+        cc=cc_email,
     )
 
 
@@ -366,6 +400,17 @@ async def notify_customer_topup_successful(customer_id: int, amount_paise: int, 
     email, name = info
     amount_rs = amount_paise / 100
     balance_rs = new_balance_paise / 100
+
+    # Pick up CC email from notification preferences for billing confirmations
+    from db.models import Customer as _Customer
+    cc_email: str | None = None
+    async with AsyncSessionLocal() as _db:
+        _res = await _db.execute(select(_Customer).where(_Customer.id == customer_id))
+        _cust = _res.scalar_one_or_none()
+        if _cust:
+            _rep = _cust.report_settings or {}
+            cc_email = (_rep.get("cc_email") or "").strip() or None
+
     await send_email_and_push(
         customer_id=customer_id,
         to_email=email,
@@ -378,7 +423,8 @@ async def notify_customer_topup_successful(customer_id: int, amount_paise: int, 
             f"The Talkar Team"
         ),
         notification_type="billing",
-        push_body=f"Payment of ₹{amount_rs:,.2f} processed. Balance: ₹{balance_rs:,.2f}"
+        push_body=f"Payment of ₹{amount_rs:,.2f} processed. Balance: ₹{balance_rs:,.2f}",
+        cc=cc_email,
     )
 
 async def notify_customer_tier_upgraded(customer_id: int, new_tier: str):

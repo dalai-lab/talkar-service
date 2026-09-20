@@ -946,8 +946,167 @@ class UpdateVoiceRequest(BaseModel):
     voice_id: str
     provider: str
 
+
+# ---------------------------------------------------------------------------
+# Customer self-serve: profile update
+# ---------------------------------------------------------------------------
+
+class UpdateProfileRequest(BaseModel):
+    company_name: str
+    contact_name: str
+    contact_phone: Optional[str] = None
+
+@router.patch("/by-org/{dograh_org_id}/profile")
+async def update_customer_profile(
+    dograh_org_id: int,
+    data: UpdateProfileRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Allows an active customer to update their own company name, contact name,
+    and contact phone.  Email is intentionally NOT editable — it is the auth
+    identity used for login and all notification delivery.
+
+    Blocked for customers still in pre-activation statuses to avoid overwriting
+    data that the admin is currently reviewing.
+    """
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found for this org")
+
+    # Guard: don't allow edits while the admin is reviewing the application.
+    LOCKED_STATUSES = {"pending_approval", "under_review", "info_requested", "rejected"}
+    if customer.status in LOCKED_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Profile cannot be updated while account is in '{customer.status}' status."
+        )
+
+    # Validate inputs
+    company = data.company_name.strip()
+    name = data.contact_name.strip()
+    phone = (data.contact_phone or "").strip() or None
+
+    if len(company) < 2:
+        raise HTTPException(status_code=422, detail="Company name must be at least 2 characters.")
+    if len(name) < 2:
+        raise HTTPException(status_code=422, detail="Contact name must be at least 2 characters.")
+    if phone:
+        import re
+        # Accept E.164 (+91XXXXXXXXXX) or a bare 10-digit number
+        if not re.match(r"^\+?\d{10,15}$", phone):
+            raise HTTPException(status_code=422, detail="Phone must be a valid number (e.g. +919876543210 or 9876543210).")
+
+    customer.company_name = company
+    customer.contact_name = name
+    customer.contact_phone = phone
+    await db.commit()
+    await db.refresh(customer)
+    return {
+        "status": "ok",
+        "company_name": customer.company_name,
+        "contact_name": customer.contact_name,
+        "contact_phone": customer.contact_phone,
+        "contact_email": customer.contact_email,  # returned read-only for UI display
+    }
+
+
+# ---------------------------------------------------------------------------
+# Customer self-serve: notification preferences
+# ---------------------------------------------------------------------------
+
+NOTIF_DEFAULT_THRESHOLD_PAISE = 150000   # ₹1,500 — matches cron default
+NOTIF_MIN_THRESHOLD_PAISE = 50000        # ₹500  — CALL_BLOCK_THRESHOLD
+NOTIF_MAX_THRESHOLD_PAISE = 5000000      # ₹50,000
+
+class UpdateNotificationSettingsRequest(BaseModel):
+    low_balance_alert_paise: Optional[int] = None
+    cc_email: Optional[str] = None          # empty string = clear CC
+    email_notifications_enabled: Optional[bool] = None
+
+@router.get("/by-org/{dograh_org_id}/notification-settings")
+async def get_notification_settings(dograh_org_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found for this org")
+
+    rep = customer.report_settings or {}
+    return {
+        "low_balance_alert_paise": rep.get("low_balance_alert_paise", NOTIF_DEFAULT_THRESHOLD_PAISE),
+        "cc_email": rep.get("cc_email") or None,
+        "email_notifications_enabled": rep.get("email_notifications_enabled", True),
+    }
+
+@router.patch("/by-org/{dograh_org_id}/notification-settings")
+async def update_notification_settings(
+    dograh_org_id: int,
+    data: UpdateNotificationSettingsRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Merges notification preferences into the existing report_settings JSON.
+    Preserves all other keys (enabled, frequency, recipients, profitability_overrides, etc.).
+    """
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found for this org")
+
+    # Validate low balance threshold
+    if data.low_balance_alert_paise is not None:
+        if data.low_balance_alert_paise < NOTIF_MIN_THRESHOLD_PAISE:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Threshold cannot be below ₹{NOTIF_MIN_THRESHOLD_PAISE // 100} (calls are paused below this level)."
+            )
+        if data.low_balance_alert_paise > NOTIF_MAX_THRESHOLD_PAISE:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Threshold cannot exceed ₹{NOTIF_MAX_THRESHOLD_PAISE // 100}."
+            )
+
+    # Validate CC email if provided (empty string = intentional clear)
+    cc_email_value = None  # sentinel: not in payload
+    if data.cc_email is not None:
+        cc = data.cc_email.strip()
+        if cc == "":
+            cc_email_value = ""  # explicit clear
+        else:
+            import re
+            if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", cc):
+                raise HTTPException(status_code=422, detail="CC email is not a valid email address.")
+            if customer.contact_email and cc.lower() == customer.contact_email.lower():
+                raise HTTPException(status_code=422, detail="CC email cannot be the same as your primary email.")
+            cc_email_value = cc
+
+    # Merge — read-modify-write the JSON to avoid clobbering other keys
+    from sqlalchemy.orm.attributes import flag_modified
+    current = dict(customer.report_settings or {})
+
+    if data.low_balance_alert_paise is not None:
+        current["low_balance_alert_paise"] = data.low_balance_alert_paise
+    if cc_email_value is not None:
+        current["cc_email"] = cc_email_value if cc_email_value else None
+    if data.email_notifications_enabled is not None:
+        current["email_notifications_enabled"] = data.email_notifications_enabled
+
+    customer.report_settings = current
+    flag_modified(customer, "report_settings")
+    await db.commit()
+
+    return {
+        "status": "ok",
+        "low_balance_alert_paise": current.get("low_balance_alert_paise", NOTIF_DEFAULT_THRESHOLD_PAISE),
+        "cc_email": current.get("cc_email") or None,
+        "email_notifications_enabled": current.get("email_notifications_enabled", True),
+    }
+
+
 @router.patch("/by-org/{org_id}/voice")
 async def update_customer_voice(org_id: int, data: UpdateVoiceRequest, db: AsyncSession = Depends(get_db)):
+
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")

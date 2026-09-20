@@ -41,29 +41,61 @@ async def check_low_balances(ctx):
     """
     8B - Notify customers when wallet is getting low.
     Runs every hour.
+
+    Respects per-customer settings stored in report_settings:
+      - low_balance_alert_paise  : custom threshold (default ₹1,500)
+      - email_notifications_enabled : if False, skip email (in-app still fires)
     """
     logger.info("Checking for low balances...")
+    MAX_THRESHOLD_PAISE = 5000000  # ₹50,000 — max a customer can configure
+    DEFAULT_THRESHOLD_PAISE = 150000  # ₹1,500
+
     async with AsyncSessionLocal() as db:
+        # Fetch all active wallets that MIGHT be below anyone's configured threshold.
+        # We use MAX_THRESHOLD_PAISE as the upper bound so we don't miss customers
+        # who have set a higher-than-default threshold.  Per-row filtering happens below.
         query = text("""
-            SELECT w.customer_id, w.balance_paise, w.low_balance_alerted_at, c.contact_email
+            SELECT w.customer_id, w.balance_paise, w.low_balance_alerted_at,
+                   c.contact_email, c.report_settings
             FROM wallets w JOIN customers c ON c.id = w.customer_id
             WHERE c.status = 'active'
-              AND w.balance_paise < 150000
+              AND w.balance_paise < :max_threshold
               AND w.balance_paise >= 50000
               AND (w.low_balance_alerted_at IS NULL
                    OR w.low_balance_alerted_at < now() - interval '24 hours')
         """)
-        result = await db.execute(query)
+        result = await db.execute(query, {"max_threshold": MAX_THRESHOLD_PAISE})
         wallets = result.fetchall()
         
         for wallet in wallets:
-            # Send alert
-            await notification_service.send_email(
-                to_email=wallet.contact_email,
-                subject="Low Balance Alert",
-                body=f"Your wallet balance is getting low: ₹{wallet.balance_paise / 100:.2f}. Please top up to keep your agents active."
-            )
-            logger.info(f"Sent low balance alert to customer {wallet.customer_id}")
+            rep = wallet.report_settings or {}
+            threshold = rep.get("low_balance_alert_paise", DEFAULT_THRESHOLD_PAISE)
+
+            # Only alert if this customer's wallet is actually below their threshold
+            if wallet.balance_paise >= threshold:
+                continue
+
+            # Respect email mute preference
+            emails_enabled = rep.get("email_notifications_enabled", True)
+            cc_email = (rep.get("cc_email") or "").strip() or None
+
+            if emails_enabled:
+                await notification_service.send_email(
+                    to_email=wallet.contact_email,
+                    subject="Low Balance Alert",
+                    body=f"Your wallet balance is getting low: ₹{wallet.balance_paise / 100:.2f}. Please top up to keep your agents active.",
+                    cc=cc_email,
+                )
+            else:
+                # Still send the in-app push even when emails are muted
+                await notification_service.push_notification(
+                    customer_id=wallet.customer_id,
+                    title="Low Balance Alert",
+                    body=f"Low balance: ₹{wallet.balance_paise / 100:.2f}. Please top up.",
+                    notification_type="warning"
+                )
+
+            logger.info(f"Sent low balance alert to customer {wallet.customer_id} (threshold: ₹{threshold//100}, email: {emails_enabled})")
             
             # Update alerted_at
             await db.execute(
@@ -73,6 +105,7 @@ async def check_low_balances(ctx):
             )
         await db.commit()
     logger.info("Low balance check completed.")
+
 
 async def check_suspensions(ctx):
     """
