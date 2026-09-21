@@ -1,4 +1,4 @@
-﻿import hashlib
+import hashlib
 import json
 import logging
 from datetime import datetime, timezone
@@ -26,7 +26,7 @@ def verify_automation_key(
         db: AsyncSession = Depends(get_db)
     ) -> AutomationApiKey:
         # Enforce HTTPS
-        if request.url.scheme != 'https' and not request.url.hostname.startswith('localhost'):
+        if request.headers.get('x-forwarded-proto', request.url.scheme) != 'https' and not request.url.hostname.startswith('localhost'):
             raise AutomationAuthException(400, 'Automation API requires HTTPS')
 
         if not api_key_header:

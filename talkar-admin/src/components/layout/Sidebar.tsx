@@ -18,6 +18,7 @@ import {
   BookOpen,
 } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
+import { Key } from "lucide-react";
 
 const NAV_ITEMS = [
   { title: "Applications", href: "/applications", icon: ListTodo, badge: null },
@@ -30,6 +31,7 @@ const NAV_ITEMS = [
   { title: "Call Activity", href: "/call-activity", icon: Activity, badge: "Live" },
   { title: "Profitability", href: "/profitability", icon: TrendingUp, badge: null },
   { title: "Team", href: "/team", icon: Settings, badge: null },
+  { title: "Automation Keys", href: "/automation-keys", icon: Key, badge: null },
   { title: "Help & Guide", href: "/help", icon: BookOpen, badge: null },
 ];
 
