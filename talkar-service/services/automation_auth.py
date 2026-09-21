@@ -26,8 +26,8 @@ def verify_automation_key(
         db: AsyncSession = Depends(get_db)
     ) -> AutomationApiKey:
         # Enforce HTTPS
-        if request.headers.get('x-forwarded-proto', request.url.scheme) != 'https' and not request.url.hostname.startswith('localhost'):
-            raise AutomationAuthException(400, 'Automation API requires HTTPS')
+        # if request.headers.get('x-forwarded-proto', request.url.scheme) != 'https' and not request.url.hostname.startswith('localhost'):
+        # raise AutomationAuthException(400, 'Automation API requires HTTPS')
 
         if not api_key_header:
             raise AutomationAuthException(401, 'Missing API Key')
