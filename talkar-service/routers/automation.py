@@ -480,6 +480,7 @@ class NotificationRequest(BaseModel):
 
 @router.post('/customers/{dograh_org_id}/notify')
 async def notify_customer(
+    request: Request,
     dograh_org_id: int,
     data: NotificationRequest,
     db: AsyncSession = Depends(get_db),
@@ -490,8 +491,7 @@ async def notify_customer(
     if not customer:
         raise HTTPException(404, "Customer not found")
         
-    from services.notification_service import _is_building_stage, send_email_and_push, push_notification, send_email, _get_customer_email
-    import asyncio
+    from services.notification_service import _is_building_stage, _get_customer_email
     
     # Safely drop communications for pre-live customers
     if await _is_building_stage(customer.id):
@@ -499,27 +499,35 @@ async def notify_customer(
         
     info = await _get_customer_email(customer.id)
     email = info[0] if info else None
+    arq = getattr(request.app.state, 'arq_pool', None)
+    if not arq:
+        import logging
+        logging.getLogger(__name__).error("ARQ pool not initialized.")
+        raise HTTPException(500, "Internal queue error")
     
     if data.delivery.send_email and data.delivery.in_app_notification and email:
-        asyncio.create_task(send_email_and_push(
+        await arq.enqueue_job(
+            "send_email_and_push_task",
             customer_id=customer.id,
             to_email=email,
             subject=data.content.title,
             body=data.content.body,
             notification_type=data.content.alert_type
-        ))
+        )
     elif data.delivery.send_email and email:
-        asyncio.create_task(send_email(
+        await arq.enqueue_job(
+            "send_email_task",
             to_email=email,
             subject=data.content.title,
             body=data.content.body
-        ))
+        )
     elif data.delivery.in_app_notification:
-        asyncio.create_task(push_notification(
+        await arq.enqueue_job(
+            "push_notification_task",
             customer_id=customer.id,
             title=data.content.title,
             body=data.content.body,
             notification_type=data.content.alert_type
-        ))
+        )
         
-    return {"status": "success", "message": "Notification dispatched asynchronously"}
+    return {"status": "success", "message": "Notification queued safely via ARQ"}

@@ -23,8 +23,21 @@ async def shutdown(ctx):
     print("Worker shutting down...")
     await engine.dispose()
 
+async def send_email_and_push_task(ctx, customer_id: int, to_email: str, subject: str, body: str, notification_type: str = "info", push_body: str | None = None, cc: str | None = None):
+    from services.notification_service import send_email_and_push
+    await send_email_and_push(customer_id, to_email, subject, body, notification_type, push_body, cc)
+
+async def send_email_task(ctx, to_email: str, subject: str, body: str, cc: str | None = None):
+    from services.notification_service import send_email
+    await send_email(to_email, subject, body, cc)
+
+async def push_notification_task(ctx, customer_id: int, title: str, body: str, notification_type: str = "info"):
+    from services.notification_service import push_notification
+    await push_notification(customer_id, title, body, notification_type)
+
 class WorkerSettings:
-    functions = []
+    functions = [send_email_and_push_task, send_email_task, push_notification_task]
+    max_jobs = 10
     cron_jobs = [
         # 8A: Nightly reconciliation (2:00 AM IST)
         # Note: ARQ cron uses UTC by default, but you can set timezone or do math.

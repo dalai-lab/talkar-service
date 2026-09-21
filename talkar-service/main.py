@@ -7,6 +7,10 @@ from services import redis_client
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await redis_client.init_redis()
+    from arq import create_pool
+    from arq.connections import RedisSettings
+    from config import settings
+    app.state.arq_pool = await create_pool(RedisSettings.from_dsn(settings.REDIS_URL))
     try:
         from db.session import engine
         from sqlalchemy import text
@@ -58,6 +62,8 @@ async def lifespan(app: FastAPI):
         import logging
         logging.getLogger(__name__).warning(f"Database migration / backfill skipped/failed: {e}")
     yield
+    if hasattr(app.state, 'arq_pool'):
+        await app.state.arq_pool.close()
     await redis_client.close_redis()
 
 app = FastAPI(title="Talkar Service API", lifespan=lifespan)
