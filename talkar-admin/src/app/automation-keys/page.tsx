@@ -27,6 +27,7 @@ const AVAILABLE_SCOPES = [
   { id: "suspend", label: "Suspend", desc: "Suspend/Unsuspend accounts" },
   { id: "customer_read", label: "Customer Read", desc: "View customer details" },
   { id: "stats_read", label: "Stats Read", desc: "View call stats and alerts" },
+  { id: "notify", label: "Notifications", desc: "Dispatch emails and in-app alerts" },
 ];
 
 export default function AutomationKeysPage() {

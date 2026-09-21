@@ -464,3 +464,62 @@ async def list_customers(
         })
         
     return {"customers": result, "limit": limit, "offset": offset}
+
+class ContentConfig(BaseModel):
+    title: str
+    body: str
+    alert_type: str = "info" # "info", "warning", "error", "success"
+    
+class DeliveryConfig(BaseModel):
+    in_app_notification: bool = True
+    send_email: bool = False
+
+class NotificationRequest(BaseModel):
+    content: ContentConfig
+    delivery: DeliveryConfig
+
+@router.post('/customers/{dograh_org_id}/notify')
+async def notify_customer(
+    dograh_org_id: int,
+    data: NotificationRequest,
+    db: AsyncSession = Depends(get_db),
+    api_key: AutomationApiKey = Depends(verify_automation_key(['notify']))
+):
+    customer_res = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
+    customer = customer_res.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+        
+    from services.notification_service import _is_building_stage, send_email_and_push, push_notification, send_email, _get_customer_email
+    import asyncio
+    
+    # Safely drop communications for pre-live customers
+    if await _is_building_stage(customer.id):
+        return {"status": "skipped", "message": "Customer is in a pre-live building stage. Notification dropped to avoid confusion."}
+        
+    info = await _get_customer_email(customer.id)
+    email = info[0] if info else None
+    
+    if data.delivery.send_email and data.delivery.in_app_notification and email:
+        asyncio.create_task(send_email_and_push(
+            customer_id=customer.id,
+            to_email=email,
+            subject=data.content.title,
+            body=data.content.body,
+            notification_type=data.content.alert_type
+        ))
+    elif data.delivery.send_email and email:
+        asyncio.create_task(send_email(
+            to_email=email,
+            subject=data.content.title,
+            body=data.content.body
+        ))
+    elif data.delivery.in_app_notification:
+        asyncio.create_task(push_notification(
+            customer_id=customer.id,
+            title=data.content.title,
+            body=data.content.body,
+            notification_type=data.content.alert_type
+        ))
+        
+    return {"status": "success", "message": "Notification dispatched asynchronously"}
