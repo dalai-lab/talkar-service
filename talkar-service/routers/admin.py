@@ -603,6 +603,62 @@ async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: As
     
     await db.commit()
     
+    # --- Auto-activate / restore calls (mirrors topup webhook logic) ---
+    # Re-fetch wallet after commit to get fresh balance
+    wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == master_id))
+    wallet = wallet_res.scalar_one_or_none()
+
+    customer_res = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = customer_res.scalar_one_or_none()
+
+    if customer and wallet:
+        sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == master_id))
+        sub = sub_res.scalar_one_or_none()
+        from config import resolve_tier_config
+        tier_cfg = resolve_tier_config(sub)
+        activation_threshold = tier_cfg.get("activation_deposit_paise", 600000)
+
+        from services import dograh_client
+        from services.provisioning_service import run_provisioning
+
+        if customer.status == "pending_deposit" and wallet.balance_paise >= activation_threshold:
+            customer.status = "active"
+            await db.commit()
+            try:
+                await run_provisioning(customer.id, None, db)
+            except Exception as e:
+                import logging; logging.getLogger(__name__).error(f"[AdminCredit] Provisioning failed for customer {customer.id}: {e}")
+            if customer.dograh_org_id:
+                try:
+                    tier = sub.plan if sub else "starter"
+                    concurrent_limit = resolve_tier_config(sub).get("concurrent_call_limit")
+                    await dograh_client.restore_org_calls(customer.dograh_org_id, tier, concurrent_limit)
+                except Exception as e:
+                    import logging; logging.getLogger(__name__).error(f"[AdminCredit] Failed to restore calls for org {customer.dograh_org_id}: {e}")
+
+        elif customer.status == "suspended" and wallet.balance_paise >= activation_threshold:
+            customer.status = "active"
+            await db.commit()
+            try:
+                await run_provisioning(customer.id, None, db)
+            except Exception as e:
+                import logging; logging.getLogger(__name__).error(f"[AdminCredit] Re-provisioning failed for customer {customer.id}: {e}")
+            if customer.dograh_org_id:
+                try:
+                    tier = sub.plan if sub else "starter"
+                    concurrent_limit = resolve_tier_config(sub).get("concurrent_call_limit")
+                    await dograh_client.restore_org_calls(customer.dograh_org_id, tier, concurrent_limit)
+                except Exception as e:
+                    import logging; logging.getLogger(__name__).error(f"[AdminCredit] Failed to restore calls for org {customer.dograh_org_id}: {e}")
+
+        elif customer.status == "pending_deposit" and wallet.balance_paise < activation_threshold:
+            # Balance still insufficient — ensure calls remain blocked
+            if customer.dograh_org_id:
+                try:
+                    await dograh_client.block_org_calls(customer.dograh_org_id)
+                except Exception as e:
+                    import logging; logging.getLogger(__name__).error(f"[AdminCredit] Failed to block calls for org {customer.dograh_org_id}: {e}")
+
     # Notify customer of manual credit grant
     import asyncio
     asyncio.create_task(notification_service.notify_customer_credit_granted(
@@ -611,7 +667,7 @@ async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: As
         description=data.description
     ))
     
-    return {"status": "success", "new_balance_paise": wallet.balance_paise}
+    return {"status": "success", "new_balance_paise": wallet.balance_paise if wallet else None}
 
 class AdminDeductRequest(BaseModel):
     amount_paise: int
