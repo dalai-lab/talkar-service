@@ -123,7 +123,7 @@ async def credit_customer(
     txn = WalletTransaction(
         customer_id=master_id,
         type='credit',
-        amount_paise=amount_paise,
+        amount_paise=-amount_paise,
         description=f"[Auto] {data.description}"
     )
     db.add(txn)
@@ -172,7 +172,7 @@ async def credit_customer(
     import asyncio
     asyncio.create_task(notification_service.notify_customer_credit_granted(
         customer_id=customer.id,
-        amount_paise=amount_paise,
+        amount_paise=-amount_paise,
         description=f"[Automated] {data.description}"
     ))
 
@@ -212,8 +212,8 @@ async def deduct_customer(
     txn = WalletTransaction(
         customer_id=master_id,
         type='deduction',
-        amount_paise=amount_paise,
-        description=f"[Auto Deduction] {data.reason}"
+        amount_paise=-amount_paise,
+        description=data.reason
     )
     db.add(txn)
     await db.commit()
