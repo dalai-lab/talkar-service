@@ -32,6 +32,7 @@ const NAV_ITEMS = [
   { title: "Profitability", href: "/profitability", icon: TrendingUp, badge: null },
   { title: "Team", href: "/team", icon: Settings, badge: null },
   { title: "Automation Keys", href: "/automation-keys", icon: Key, badge: null },
+  { title: "API Documentation", href: "/automation-keys/docs", icon: BookOpen, badge: null },
   { title: "Help & Guide", href: "/help", icon: BookOpen, badge: null },
 ];
 
