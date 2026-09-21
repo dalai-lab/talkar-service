@@ -205,3 +205,30 @@ class Announcement(Base):
     sent_by = Column(Integer, ForeignKey("talkar_admins.id"), nullable=True)
     recipients_count = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class AutomationApiKey(Base):
+    __tablename__ = "automation_api_keys"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key_hash = Column(Text, unique=True, nullable=False, index=True)
+    name = Column(Text, nullable=False)
+    created_by_admin_id = Column(Integer, ForeignKey("talkar_admins.id"))
+    scopes = Column(JSON, default=list)
+    rate_limit_per_minute = Column(Integer, default=60)
+    last_used_at = Column(DateTime(timezone=True))
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    expires_at = Column(DateTime(timezone=True))
+
+class AutomationAuditLog(Base):
+    __tablename__ = "automation_audit_log"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    api_key_id = Column(Integer, ForeignKey("automation_api_keys.id"), index=True)
+    endpoint = Column(Text, nullable=False)
+    customer_id = Column(Integer, index=True)
+    dograh_org_id = Column(Text, index=True)
+    payload = Column(JSON)
+    response_status = Column(Integer)
+    ip_address = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

@@ -1656,3 +1656,97 @@ async def update_platform_settings(
         settings_row.settings = data.get("settings", {})
     await db.commit()
     return {"message": "Success", "settings": settings_row.settings}
+
+# --- AUTOMATION API KEY MANAGEMENT ---
+
+class CreateAutomationKeyRequest(BaseModel):
+    name: str
+    scopes: List[str] = []
+    rate_limit_per_minute: int = 60
+
+@router.post('/automation-keys')
+async def create_automation_key(
+    data: CreateAutomationKeyRequest,
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin)
+):
+    import secrets
+    import hashlib
+    
+    raw_key = "tkr_auto_" + secrets.token_urlsafe(32)
+    key_hash = hashlib.sha256(raw_key.encode('utf-8')).hexdigest()
+    
+    from db.models import AutomationApiKey
+    api_key = AutomationApiKey(
+        key_hash=key_hash,
+        name=data.name,
+        created_by_admin_id=current_admin.id,
+        scopes=data.scopes,
+        rate_limit_per_minute=data.rate_limit_per_minute
+    )
+    db.add(api_key)
+    await db.commit()
+    
+    return {
+        "status": "success",
+        "key_id": api_key.id,
+        "raw_key": raw_key,
+        "message": "Store this raw_key immediately. It will never be shown again."
+    }
+
+@router.get('/automation-keys')
+async def list_automation_keys(
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin)
+):
+    from db.models import AutomationApiKey
+    res = await db.execute(select(AutomationApiKey).order_by(AutomationApiKey.created_at.desc()))
+    keys = res.scalars().all()
+    
+    return [{
+        "id": k.id,
+        "name": k.name,
+        "scopes": k.scopes,
+        "rate_limit_per_minute": k.rate_limit_per_minute,
+        "is_active": k.is_active,
+        "created_at": k.created_at,
+        "last_used_at": k.last_used_at
+    } for k in keys]
+
+@router.delete('/automation-keys/{key_id}')
+async def delete_automation_key(
+    key_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin)
+):
+    from db.models import AutomationApiKey
+    res = await db.execute(select(AutomationApiKey).where(AutomationApiKey.id == key_id))
+    k = res.scalar_one_or_none()
+    if not k:
+        raise HTTPException(404, "Key not found")
+        
+    await db.delete(k)
+    await db.commit()
+    return {"status": "deleted"}
+
+@router.patch('/automation-keys/{key_id}')
+async def update_automation_key(
+    key_id: int,
+    is_active: Optional[bool] = None,
+    scopes: Optional[List[str]] = None,
+    rate_limit_per_minute: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin)
+):
+    from db.models import AutomationApiKey
+    res = await db.execute(select(AutomationApiKey).where(AutomationApiKey.id == key_id))
+    k = res.scalar_one_or_none()
+    if not k:
+        raise HTTPException(404, "Key not found")
+        
+    if is_active is not None: k.is_active = is_active
+    if scopes is not None: k.scopes = scopes
+    if rate_limit_per_minute is not None: k.rate_limit_per_minute = rate_limit_per_minute
+    
+    await db.commit()
+    return {"status": "updated"}

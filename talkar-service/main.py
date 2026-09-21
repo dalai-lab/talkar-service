@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import health, customers, wallet, billing, provisioning, admin, notifications, announcements
+from routers import health, customers, wallet, billing, provisioning, admin, notifications, announcements, automation
 from contextlib import asynccontextmanager
 from services import redis_client
 
@@ -87,6 +87,7 @@ app.include_router(provisioning.router, prefix="/provisioning", tags=["Provision
 app.include_router(admin.router, prefix="/admin", tags=["Admin"])
 app.include_router(notifications.router, prefix="/notifications", tags=["Notifications"])
 app.include_router(announcements.router)
+app.include_router(automation.router, prefix="/automation/v1", tags=["Automation"])
 
 if __name__ == "__main__":
     import uvicorn
