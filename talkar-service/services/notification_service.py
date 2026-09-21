@@ -12,6 +12,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
+# Statuses where the agent is still being built / account not yet live.
+# Customer-facing notifications (tier change, credit grants, etc.) should
+# be suppressed during these stages — the customer does not have a live
+# agent yet, so emailing them about billing events is premature and confusing.
+_BUILDING_STATUSES = frozenset({
+    "under_review",
+    "pending_approval",
+    "info_requested",
+    "approved",
+    "agent_building",
+})
+
+async def _is_building_stage(customer_id: int) -> bool:
+    """Return True if the customer's account is in a pre-live building stage."""
+    from db.models import Customer as _Customer
+    async with AsyncSessionLocal() as _db:
+        _res = await _db.execute(select(_Customer).where(_Customer.id == customer_id))
+        _cust = _res.scalar_one_or_none()
+        return _cust is not None and _cust.status in _BUILDING_STATUSES
+
+
 
 def format_body_to_html(body: str, subject: str) -> str:
     lines = body.strip().split('\n')
@@ -428,6 +449,10 @@ async def notify_customer_topup_successful(customer_id: int, amount_paise: int, 
     )
 
 async def notify_customer_tier_upgraded(customer_id: int, new_tier: str):
+    # Don't notify customers while their agent is still being built — confusing
+    if await _is_building_stage(customer_id):
+        logger.info(f"[notify_customer_tier_upgraded] Suppressed for customer {customer_id} (building stage)")
+        return
     info = await _get_customer_email(customer_id)
     if not info: return
     email, name = info
@@ -559,6 +584,10 @@ async def notify_customer_suspended(customer_id: int, reason: str = "zero_balanc
     )
 
 async def notify_customer_credit_granted(customer_id: int, amount_paise: int, description: str):
+    # Don't notify customers while their agent is still being built
+    if await _is_building_stage(customer_id):
+        logger.info(f"[notify_customer_credit_granted] Suppressed for customer {customer_id} (building stage)")
+        return
     info = await _get_customer_email(customer_id)
     if not info: return
     email, name = info
