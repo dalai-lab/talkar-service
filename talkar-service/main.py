@@ -87,6 +87,7 @@ app.include_router(provisioning.router, prefix="/provisioning", tags=["Provision
 app.include_router(admin.router, prefix="/admin", tags=["Admin"])
 app.include_router(notifications.router, prefix="/notifications", tags=["Notifications"])
 app.include_router(announcements.router)
+app.middleware("http")(automation.audit_log_middleware)
 app.include_router(automation.router, prefix="/automation/v1", tags=["Automation"])
 
 if __name__ == "__main__":

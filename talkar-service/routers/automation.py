@@ -13,7 +13,7 @@ from config import resolve_tier_config
 router = APIRouter()
 
 # --- AUDIT LOGGING MIDDLEWARE FOR THIS ROUTER ---
-@router.middleware('http')
+
 async def audit_log_middleware(request: Request, call_next):
     if not request.url.path.startswith('/automation/v1/'):
         return await call_next(request)
