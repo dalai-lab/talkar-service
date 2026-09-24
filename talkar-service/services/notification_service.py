@@ -436,7 +436,7 @@ async def notify_customer_topup_successful(customer_id: int, amount_paise: int, 
         _inv_res = await _db.execute(select(_Invoice).where(_Invoice.customer_id == customer_id).order_by(_Invoice.created_at.desc()).limit(1))
         _inv = _inv_res.scalar_one_or_none()
         if _inv:
-            invoice_link = f"\n\nYou can view and download your invoice receipt here:\nhttps://app.talkar.in/invoice/{_inv.id}"
+            invoice_link = f"\n\nYou can view and download your invoice receipt here:\nhttps://talkar.in/invoice/{_inv.id}"
 
     await send_email_and_push(
         customer_id=customer_id,
