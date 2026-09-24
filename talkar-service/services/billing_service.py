@@ -235,7 +235,7 @@ async def deduct_for_run(run_id: int):
                 
                 if wallet and wallet.balance_paise < 0:
                     logger.warning(f"Customer {customer.id} wallet went negative: {wallet.balance_paise}")
-                    await notification_service.notify_customer_negative_balance(customer.id)
+                    await notification_service.notify_customer_service_paused(customer.id)
                 
             await db.commit()
             

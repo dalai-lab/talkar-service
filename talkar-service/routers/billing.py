@@ -710,7 +710,7 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
         # SOT line 658: if balance went negative, email customer AND block future calls
         if wallet and wallet.balance_paise <= CALL_BLOCK_THRESHOLD_PAISE:
             logger.warning(f"Customer {customer.id} wallet negative: {wallet.balance_paise} paise")
-            await notification_service.notify_customer_negative_balance(customer.id)
+            await notification_service.notify_customer_service_paused(customer.id)
             # Block calls in Dograh immediately so the next call can't start.
             # We block on the master org (the one that owns the wallet).
             master_res = await db.execute(select(Customer).where(Customer.id == master_id))
