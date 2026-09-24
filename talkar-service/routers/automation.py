@@ -147,11 +147,7 @@ async def credit_customer(
             await run_provisioning(customer.id, None, db)
         except Exception:
             pass
-        if customer.dograh_org_id:
-            tier = sub.plan if sub else "starter"
-            concurrent_limit = tier_cfg.get("concurrent_call_limit")
-            await dograh_client.restore_org_calls(customer.dograh_org_id, tier, concurrent_limit)
-            
+
     elif customer.status == "suspended" and wallet.balance_paise >= activation_threshold:
         customer.status = "active"
         await db.commit()
@@ -159,14 +155,10 @@ async def credit_customer(
             await run_provisioning(customer.id, None, db)
         except Exception:
             pass
-        if customer.dograh_org_id:
-            tier = sub.plan if sub else "starter"
-            concurrent_limit = tier_cfg.get("concurrent_call_limit")
-            await dograh_client.restore_org_calls(customer.dograh_org_id, tier, concurrent_limit)
 
-    elif customer.status == "pending_deposit" and wallet.balance_paise < activation_threshold:
-        if customer.dograh_org_id:
-            await dograh_client.block_org_calls(customer.dograh_org_id)
+    # Synchronize wallet block policy
+    from services.billing_service import sync_wallet_block_policy
+    await sync_wallet_block_policy(db, customer.id)
             
     from services import notification_service
     import asyncio
@@ -282,12 +274,8 @@ async def suspend_customer(
     customer.onboarding_form = existing_form
     await db.commit()
     
-    from services import dograh_client
-    try:
-        await dograh_client.block_org_calls(customer.dograh_org_id)
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Failed to block calls: {e}")
+    from services.billing_service import sync_wallet_block_policy
+    await sync_wallet_block_policy(db, customer.id)
 
     from services import notification_service
     import asyncio
@@ -326,14 +314,8 @@ async def unsuspend_customer(
     customer.onboarding_form = existing_form
     await db.commit()
     
-    from services import dograh_client
-    try:
-        tier = sub.plan if sub else "starter"
-        concurrent_limit = tier_cfg.get("concurrent_call_limit", 2)
-        await dograh_client.restore_org_calls(customer.dograh_org_id, tier, concurrent_limit)
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Failed to restore calls: {e}")
+    from services.billing_service import sync_wallet_block_policy
+    await sync_wallet_block_policy(db, customer.id)
 
     return {"status": "active"}
 

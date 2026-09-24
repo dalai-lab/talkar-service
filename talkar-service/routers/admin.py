@@ -618,8 +618,8 @@ async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: As
         tier_cfg = resolve_tier_config(sub)
         activation_threshold = tier_cfg.get("activation_deposit_paise", 600000)
 
-        from services import dograh_client
         from services.provisioning_service import run_provisioning
+        from services.billing_service import sync_wallet_block_policy
 
         if customer.status == "pending_deposit" and wallet.balance_paise >= activation_threshold:
             customer.status = "active"
@@ -628,17 +628,6 @@ async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: As
                 await run_provisioning(customer.id, None, db)
             except Exception as e:
                 import logging; logging.getLogger(__name__).error(f"[AdminCredit] Provisioning failed for customer {customer.id}: {e}")
-            if customer.dograh_org_id:
-                try:
-                    tier = sub.plan if sub else "starter"
-                    concurrent_limit = resolve_tier_config(sub).get("concurrent_call_limit")
-                    await dograh_client.restore_org_calls(customer.dograh_org_id, tier, concurrent_limit)
-                    sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
-                    for sub_org in sub_orgs_res.scalars().all():
-                        if sub_org.dograh_org_id:
-                            await dograh_client.restore_org_calls(sub_org.dograh_org_id, tier, concurrent_limit)
-                except Exception as e:
-                    import logging; logging.getLogger(__name__).error(f"[AdminCredit] Failed to restore calls for org {customer.dograh_org_id}: {e}")
 
         elif customer.status == "suspended" and wallet.balance_paise >= activation_threshold:
             customer.status = "active"
@@ -647,41 +636,9 @@ async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: As
                 await run_provisioning(customer.id, None, db)
             except Exception as e:
                 import logging; logging.getLogger(__name__).error(f"[AdminCredit] Re-provisioning failed for customer {customer.id}: {e}")
-            if customer.dograh_org_id:
-                try:
-                    tier = sub.plan if sub else "starter"
-                    concurrent_limit = resolve_tier_config(sub).get("concurrent_call_limit")
-                    await dograh_client.restore_org_calls(customer.dograh_org_id, tier, concurrent_limit)
-                    sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
-                    for sub_org in sub_orgs_res.scalars().all():
-                        if sub_org.dograh_org_id:
-                            await dograh_client.restore_org_calls(sub_org.dograh_org_id, tier, concurrent_limit)
-                except Exception as e:
-                    import logging; logging.getLogger(__name__).error(f"[AdminCredit] Failed to restore calls for org {customer.dograh_org_id}: {e}")
 
-        elif customer.status == "pending_deposit" and wallet.balance_paise < activation_threshold:
-            # Balance still insufficient — ensure calls remain blocked
-            if customer.dograh_org_id:
-                try:
-                    await dograh_client.block_org_calls(customer.dograh_org_id)
-                except Exception as e:
-                    import logging; logging.getLogger(__name__).error(f"[AdminCredit] Failed to block calls for org {customer.dograh_org_id}: {e}")
-
-        # If customer is active and balance now exceeds block threshold, restore calls (and sub-orgs)
-        from config import CALL_BLOCK_THRESHOLD_PAISE
-        if customer.status == "active" and wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE:
-            if customer.dograh_org_id:
-                try:
-                    tier = sub.plan if sub else "starter"
-                    concurrent_limit = resolve_tier_config(sub).get("concurrent_call_limit")
-                    await dograh_client.restore_org_calls(customer.dograh_org_id, tier, concurrent_limit)
-                    # Also restore sub-orgs billing under this master
-                    sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
-                    for sub_org in sub_orgs_res.scalars().all():
-                        if sub_org.dograh_org_id:
-                            await dograh_client.restore_org_calls(sub_org.dograh_org_id, tier, concurrent_limit)
-                except Exception as e:
-                    import logging; logging.getLogger(__name__).error(f"[AdminCredit] Failed to restore calls for active org {customer.dograh_org_id}: {e}")
+        # Synchronize wallet block policy
+        await sync_wallet_block_policy(db, customer.id)
 
     # Notify customer of manual credit grant
     import asyncio
@@ -767,40 +724,8 @@ async def admin_set_balance(customer_id: int, data: AdminSetBalanceRequest, db: 
     await db.commit()
 
     # ── Enforce Dograh call blocking based on new balance ─────────────────────
-    from config import CALL_BLOCK_THRESHOLD_PAISE
-    from services import dograh_client
-    from sqlalchemy import select as _select
-    master_res = await db.execute(_select(Customer).where(Customer.id == master_id))
-    master_customer = master_res.scalar_one_or_none()
-    if master_customer and master_customer.dograh_org_id:
-        try:
-            if wallet.balance_paise <= CALL_BLOCK_THRESHOLD_PAISE:
-                # Balance at/below threshold — block all calls immediately
-                await dograh_client.block_org_calls(master_customer.dograh_org_id)
-                sub_orgs = await db.execute(_select(Customer).where(Customer.billing_org_id == master_id))
-                for sub in sub_orgs.scalars().all():
-                    if sub.dograh_org_id:
-                        await dograh_client.block_org_calls(sub.dograh_org_id)
-                import logging
-                logging.getLogger(__name__).warning(
-                    f"Admin set balance to {wallet.balance_paise} paise for customer {customer_id} — below threshold, calls blocked"
-                )
-            else:
-                # Balance above threshold — restore calls (in case they were blocked before)
-                from db.models import Subscription
-                from config import resolve_tier_config
-                sub_res = await db.execute(_select(Subscription).where(Subscription.customer_id == master_id))
-                sub = sub_res.scalar_one_or_none()
-                concurrent_limit = resolve_tier_config(sub).get("concurrent_call_limit")
-                tier = sub.plan if sub else "starter"
-                await dograh_client.restore_org_calls(master_customer.dograh_org_id, tier, concurrent_limit)
-                sub_orgs = await db.execute(_select(Customer).where(Customer.billing_org_id == master_id))
-                for sub_org in sub_orgs.scalars().all():
-                    if sub_org.dograh_org_id:
-                        await dograh_client.restore_org_calls(sub_org.dograh_org_id, tier, concurrent_limit)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f"Failed to sync Dograh call limit after set-balance for customer {customer_id}: {e}")
+    from services.billing_service import sync_wallet_block_policy
+    await sync_wallet_block_policy(db, customer_id)
     # ──────────────────────────────────────────────────────────────────────────
 
     return {"status": "success", "new_balance_paise": wallet.balance_paise}

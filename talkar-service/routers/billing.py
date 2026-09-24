@@ -280,30 +280,9 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
             await run_provisioning(customer.id, None, db)
         except Exception as e:
             logger.error(f"Failed to re-provision after reactivating customer {customer.id}: {e}")
-        # Lift the CONCURRENT_CALL_LIMIT=0 block set during suspension
-        if customer.dograh_org_id:
-            try:
-                tier = sub.plan if sub else "starter"
-                concurrent_limit = resolve_tier_config(sub).get("concurrent_call_limit")
-                await dograh_client.restore_org_calls(customer.dograh_org_id, tier, concurrent_limit)
-            except Exception as e:
-                logger.error(f"Failed to restore calls for org {customer.dograh_org_id}: {e}")
-    elif customer.status == "active" and wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE:
-        # Customer was active but hit block threshold — block_org_calls was called then.
-        # Now they've topped up above block threshold: restore the concurrent call limit.
-        from services import dograh_client
-        if customer.dograh_org_id:
-            try:
-                tier = sub.plan if sub else "starter"
-                concurrent_limit = resolve_tier_config(sub).get("concurrent_call_limit")
-                await dograh_client.restore_org_calls(customer.dograh_org_id, tier, concurrent_limit)
-                # Also restore sub-orgs billing under this master
-                sub_orgs_res2 = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
-                for sub_org in sub_orgs_res2.scalars().all():
-                    if sub_org.dograh_org_id:
-                        await dograh_client.restore_org_calls(sub_org.dograh_org_id, tier, concurrent_limit)
-            except Exception as e:
-                logger.error(f"Failed to restore calls after topup for active customer {customer.id}: {e}")
+        # Synchronize wallet block policy
+        from services.billing_service import sync_wallet_block_policy
+        await sync_wallet_block_policy(db, customer.id)
 
     from services.notification_service import notify_customer_topup_successful
     await notify_customer_topup_successful(customer.id, data.amount_paise, wallet.balance_paise)
@@ -623,18 +602,8 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
         wallet_check, short_master_id = await get_billing_wallet(db, customer.id)
         if wallet_check and wallet_check.balance_paise <= CALL_BLOCK_THRESHOLD_PAISE:
             logger.warning(f"Customer {customer.id} balance ({wallet_check.balance_paise}) at/below block threshold — blocking calls after sub-10s call")
-            master_res = await db.execute(select(Customer).where(Customer.id == short_master_id))
-            master_customer = master_res.scalar_one_or_none()
-            if master_customer and master_customer.dograh_org_id:
-                from services import dograh_client
-                try:
-                    await dograh_client.block_org_calls(master_customer.dograh_org_id)
-                    sub_orgs = await db.execute(select(Customer).where(Customer.billing_org_id == short_master_id))
-                    for sub in sub_orgs.scalars().all():
-                        if sub.dograh_org_id:
-                            await dograh_client.block_org_calls(sub.dograh_org_id)
-                except Exception as e:
-                    logger.error(f"Failed to block calls after sub-10s call for customer {short_master_id}: {e}")
+            from services.billing_service import sync_wallet_block_policy
+            await sync_wallet_block_policy(db, customer.id)
         # ──────────────────────────────────────────────────────────────────────
 
         return {"status": "short_call_logged", "cost_paise": 0}
@@ -712,20 +681,8 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
             logger.warning(f"Customer {customer.id} wallet negative: {wallet.balance_paise} paise")
             await notification_service.notify_customer_service_paused(customer.id)
             # Block calls in Dograh immediately so the next call can't start.
-            # We block on the master org (the one that owns the wallet).
-            master_res = await db.execute(select(Customer).where(Customer.id == master_id))
-            master_customer = master_res.scalar_one_or_none()
-            if master_customer and master_customer.dograh_org_id:
-                from services import dograh_client
-                try:
-                    await dograh_client.block_org_calls(master_customer.dograh_org_id)
-                    # Also block all sub-orgs billing under this master
-                    sub_res = await db.execute(select(Customer).where(Customer.billing_org_id == master_id))
-                    for sub in sub_res.scalars().all():
-                        if sub.dograh_org_id:
-                            await dograh_client.block_org_calls(sub.dograh_org_id)
-                except Exception as e:
-                    logger.error(f"Failed to block calls after negative balance for customer {master_id}: {e}")
+            from services.billing_service import sync_wallet_block_policy
+            await sync_wallet_block_policy(db, customer.id)
             
     finally:
         from services import redis_client

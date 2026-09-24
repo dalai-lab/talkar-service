@@ -244,3 +244,50 @@ async def deduct_for_run(run_id: int):
                 await check_and_trigger_auto_recharge(db, customer.id)
         finally:
             await redis_client.decrement_active_calls(master_id)
+
+async def sync_wallet_block_policy(db: AsyncSession, customer_id: int):
+    """
+    Unified function to enforce call block rules across master and all sub-orgs.
+    Checks the master's balance and status, and updates Dograh CONCURRENT_CALL_LIMIT accordingly.
+    """
+    from services import dograh_client
+    from config import CALL_BLOCK_THRESHOLD_PAISE, resolve_tier_config
+    from db.models import Subscription, Customer
+    
+    wallet, master_id = await get_billing_wallet(db, customer_id)
+    if not wallet: return
+
+    master_res = await db.execute(select(Customer).where(Customer.id == master_id))
+    master = master_res.scalar_one_or_none()
+    if not master: return
+
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == master_id))
+    sub = sub_res.scalar_one_or_none()
+    
+    should_block = False
+    if master.status not in ("active", "agent_building"):
+        should_block = True
+    elif wallet.balance_paise <= CALL_BLOCK_THRESHOLD_PAISE:
+        should_block = True
+
+    tier = sub.plan if sub else "starter"
+    concurrent_limit = resolve_tier_config(sub).get("concurrent_call_limit")
+
+    # Gather orgs to update
+    org_ids_to_update = []
+    if master.dograh_org_id:
+        org_ids_to_update.append(master.dograh_org_id)
+    
+    sub_orgs = await db.execute(select(Customer).where(Customer.billing_org_id == master_id))
+    for sub_org in sub_orgs.scalars().all():
+        if sub_org.dograh_org_id:
+            org_ids_to_update.append(sub_org.dograh_org_id)
+
+    for org_id in org_ids_to_update:
+        try:
+            if should_block:
+                await dograh_client.block_org_calls(org_id)
+            else:
+                await dograh_client.restore_org_calls(org_id, tier, concurrent_limit)
+        except Exception as e:
+            logger.error(f"Failed to sync Dograh call limit for org {org_id}: {e}")
