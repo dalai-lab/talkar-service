@@ -70,7 +70,7 @@ TIER_CONFIG = {
         "llm_model": "gpt-4o-mini",
         "tts_provider": "smallest_ai",  # Indian-optimised low-latency TTS
         "stt_provider": "deepgram",     # STT stays on Deepgram
-        "default_voice_id": "meera",    # Default Smallest AI voice
+        "default_voice_id": "mishka",    # Default Smallest AI voice
         "free_phone_numbers": 1,
         "activation_deposit_paise": 600000,  # ₹6,000 min to activate
     },
