@@ -423,14 +423,20 @@ async def notify_customer_topup_successful(customer_id: int, amount_paise: int, 
     balance_rs = new_balance_paise / 100
 
     # Pick up CC email from notification preferences for billing confirmations
-    from db.models import Customer as _Customer
+    from db.models import Customer as _Customer, Invoice as _Invoice
     cc_email: str | None = None
+    invoice_link = ""
     async with AsyncSessionLocal() as _db:
         _res = await _db.execute(select(_Customer).where(_Customer.id == customer_id))
         _cust = _res.scalar_one_or_none()
         if _cust:
             _rep = _cust.report_settings or {}
             cc_email = (_rep.get("cc_email") or "").strip() or None
+            
+        _inv_res = await _db.execute(select(_Invoice).where(_Invoice.customer_id == customer_id).order_by(_Invoice.created_at.desc()).limit(1))
+        _inv = _inv_res.scalar_one_or_none()
+        if _inv:
+            invoice_link = f"\n\nYou can view and download your invoice receipt here:\nhttps://app.talkar.in/invoice/{_inv.id}"
 
     await send_email_and_push(
         customer_id=customer_id,
@@ -439,7 +445,7 @@ async def notify_customer_topup_successful(customer_id: int, amount_paise: int, 
         body=(
             f"Hi {name},\n\n"
             f"Your payment of ₹{amount_rs:,.2f} was processed successfully.\n\n"
-            f"Your updated wallet balance is ₹{balance_rs:,.2f}.\n\n"
+            f"Your updated wallet balance is ₹{balance_rs:,.2f}.{invoice_link}\n\n"
             f"Thank you for partnering with us.\n\n"
             f"The Talkar Team"
         ),
