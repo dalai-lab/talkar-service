@@ -211,35 +211,36 @@ async def deduct_for_run(run_id: int):
         
         wallet, master_id = await get_billing_wallet(db, customer.id)
         
-        if cost_paise > 0:
-            # Deduct wallet
-            result = await db.execute(
-                update(Wallet)
-                .where(Wallet.customer_id == master_id)
-                .values(balance_paise=Wallet.balance_paise - cost_paise)
-                .returning(Wallet)
-            )
-            wallet = result.scalar_one_or_none()
-            
-            # Record transaction
-            transaction = WalletTransaction(
-                customer_id=customer.id,
-                type="call_deduction",  # Must match SOT schema: 'top_up' | 'call_deduction' | 'refund' | 'grant'
-                amount_paise=-cost_paise,
-                description=f"Call deduction for run {run_id}",
-                dograh_run_id=run_id
-            )
-            db.add(transaction)
-            
-            if wallet and wallet.balance_paise < 0:
-                logger.warning(f"Customer {customer.id} wallet went negative: {wallet.balance_paise}")
-                await notification_service.notify_customer_negative_balance(customer.id)
-            
         from services import redis_client
-        await redis_client.decrement_active_calls(master_id)
+        try:
+            if cost_paise > 0:
+                # Deduct wallet
+                result = await db.execute(
+                    update(Wallet)
+                    .where(Wallet.customer_id == master_id)
+                    .values(balance_paise=Wallet.balance_paise - cost_paise)
+                    .returning(Wallet)
+                )
+                wallet = result.scalar_one_or_none()
+                
+                # Record transaction
+                transaction = WalletTransaction(
+                    customer_id=customer.id,
+                    type="call_deduction",  # Must match SOT schema: 'top_up' | 'call_deduction' | 'refund' | 'grant'
+                    amount_paise=-cost_paise,
+                    description=f"Call deduction for run {run_id}",
+                    dograh_run_id=run_id
+                )
+                db.add(transaction)
+                
+                if wallet and wallet.balance_paise < 0:
+                    logger.warning(f"Customer {customer.id} wallet went negative: {wallet.balance_paise}")
+                    await notification_service.notify_customer_negative_balance(customer.id)
+                
+            await db.commit()
             
-        await db.commit()
-        
-        # Trigger auto-recharge hook
-        if cost_paise > 0:
-            await check_and_trigger_auto_recharge(db, customer.id)
+            # Trigger auto-recharge hook
+            if cost_paise > 0:
+                await check_and_trigger_auto_recharge(db, customer.id)
+        finally:
+            await redis_client.decrement_active_calls(master_id)

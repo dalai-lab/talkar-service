@@ -123,7 +123,7 @@ async def credit_customer(
     txn = WalletTransaction(
         customer_id=master_id,
         type='credit',
-        amount_paise=-amount_paise,
+        amount_paise=amount_paise,
         description=f"[Auto] {data.description}"
     )
     db.add(txn)

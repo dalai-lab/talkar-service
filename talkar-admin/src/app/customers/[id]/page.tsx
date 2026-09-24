@@ -101,6 +101,11 @@ export default function CustomerDetailPage() {
   const [deductAmount, setDeductAmount] = useState("");
   const [deductReason, setDeductReason] = useState("");
 
+  // Set Balance modal
+  const [isSetBalanceOpen, setIsSetBalanceOpen] = useState(false);
+  const [setBalanceAmount, setSetBalanceAmount] = useState("");
+  const [setBalanceReason, setSetBalanceReason] = useState("");
+
   // Plan upgrade modal
   const [isPlanOpen, setIsPlanOpen] = useState(false);
   const [newPlan, setNewPlan] = useState("");
@@ -264,6 +269,29 @@ export default function CustomerDetailPage() {
       } else {
         const err = await res.json().catch(() => ({}));
         alert(`Failed to deduct: ${err.detail || "Unknown error"}`);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleSetBalance = async () => {
+    try {
+      const amountPaise = parseInt(setBalanceAmount) * 100;
+      const res = await adminFetch(`/admin/customers/${id}/set-balance`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount_paise: amountPaise, reason: setBalanceReason || "Admin manual override" })
+      });
+      if (res.ok) {
+        setIsSetBalanceOpen(false);
+        setSetBalanceAmount("");
+        setSetBalanceReason("");
+        alert("Balance set successfully!");
+        fetchCustomer();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Failed to set balance: ${err.detail || "Unknown error"}`);
       }
     } catch (e) {
       console.error(e);
@@ -695,6 +723,14 @@ export default function CustomerDetailPage() {
                   className="h-8 text-xs border-amber-200 bg-amber-50/60 hover:bg-amber-100 text-amber-700 font-medium cursor-pointer flex-1 min-w-[90px]"
                 >
                   <MinusCircle className="w-3.5 h-3.5 mr-1.5 text-amber-600" /> Deduct
+                </Button>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => setIsSetBalanceOpen(true)} 
+                  className="h-8 text-xs border-blue-200 bg-blue-50/60 hover:bg-blue-100 text-blue-700 font-medium cursor-pointer flex-1 min-w-[90px]"
+                >
+                  <Sliders className="w-3.5 h-3.5 mr-1.5 text-blue-600" /> Set Bal
                 </Button>
               </div>
             </div>
@@ -1298,6 +1334,29 @@ export default function CustomerDetailPage() {
           <DialogFooter className="border-t pt-3">
             <Button variant="outline" size="sm" onClick={() => setIsDeductOpen(false)} className="text-xs border-slate-200">Cancel</Button>
             <Button size="sm" variant="destructive" onClick={handleDeduct} disabled={!deductAmount || !deductReason} className="text-xs">Deduct</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Set Balance Modal */}
+      <Dialog open={isSetBalanceOpen} onOpenChange={setIsSetBalanceOpen}>
+        <DialogContent className="bg-white border-slate-200 text-slate-900 rounded-xl">
+          <DialogHeader>
+            <DialogTitle className="text-base font-semibold border-b pb-3 text-blue-600">Set Balance</DialogTitle>
+          </DialogHeader>
+          <div className="py-3 space-y-3 text-xs">
+            <div className="space-y-1.5">
+              <Label className="text-slate-700 font-medium">Target Balance (INR)</Label>
+              <Input type="number" placeholder="e.g. 1000" value={setBalanceAmount} onChange={e => setSetBalanceAmount(e.target.value)} className="h-9 text-xs bg-white border-slate-200" />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-slate-700 font-medium">Reason (Optional)</Label>
+              <Input placeholder="e.g. Correction for billing error" value={setBalanceReason} onChange={e => setSetBalanceReason(e.target.value)} className="h-9 text-xs bg-white border-slate-200" />
+            </div>
+          </div>
+          <DialogFooter className="border-t pt-3">
+            <Button variant="outline" size="sm" onClick={() => setIsSetBalanceOpen(false)} className="text-xs border-slate-200">Cancel</Button>
+            <Button size="sm" onClick={handleSetBalance} disabled={!setBalanceAmount} className="text-xs bg-blue-600 hover:bg-blue-700 text-white">Set Balance</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -709,6 +709,41 @@ async def admin_deduct_customer(customer_id: int, data: AdminDeductRequest, db: 
 
     return {"status": "success", "new_balance_paise": wallet.balance_paise}
 
+class AdminSetBalanceRequest(BaseModel):
+    amount_paise: int
+    reason: str = "Admin manual override"
+
+@router.post("/customers/{customer_id}/set-balance")
+async def admin_set_balance(customer_id: int, data: AdminSetBalanceRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    result = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = result.scalar_one_or_none()
+    if not customer: raise HTTPException(404, "Customer not found")
+    
+    from services.billing_service import get_billing_wallet
+    wallet, master_id = await get_billing_wallet(db, customer_id)
+    if not wallet: raise HTTPException(404, "Wallet not found")
+    
+    diff = data.amount_paise - wallet.balance_paise
+    
+    result = await db.execute(
+        update(Wallet)
+        .where(Wallet.customer_id == master_id)
+        .values(balance_paise=data.amount_paise)
+        .returning(Wallet)
+    )
+    wallet = result.scalar_one_or_none()
+    
+    transaction = WalletTransaction(
+        customer_id=master_id,
+        type="manual_set_balance",
+        amount_paise=diff,
+        description=f"Admin set balance: {data.reason} (by {current_admin.email})"
+    )
+    db.add(transaction)
+    await db.commit()
+
+    return {"status": "success", "new_balance_paise": wallet.balance_paise}
+
 @router.post("/customers/{customer_id}/deny-tier-upgrade")
 async def deny_tier_upgrade(customer_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
     result = await db.execute(select(Customer).where(Customer.id == customer_id))
@@ -1876,6 +1911,16 @@ async def factory_reset_logs(
         results["notifications_deleted"] = r.rowcount
 
         await db.commit()
+        
+        # Step 8: Suspend and block calls
+        if customer.dograh_org_id:
+            try:
+                from services import dograh_client
+                await dograh_client.block_org_calls(customer.dograh_org_id)
+                results["calls_blocked"] = True
+            except Exception as e:
+                logger.error(f"[FactoryReset] block_org_calls failed: {e}")
+                results["calls_blocked"] = False
     except Exception as e:
         await db.rollback()
         logger.error(f"[FactoryReset] Talkar DB wipe failed for customer {customer_id}: {e}")

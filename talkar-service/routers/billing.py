@@ -633,77 +633,79 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
     )
     db.add(call_log)
 
-    # SOT line 282: atomic deduction — UPDATE...RETURNING to get new balance
-    from services.billing_service import get_billing_wallet
-    wallet, master_id = await get_billing_wallet(db, customer.id)
-    
-    result2 = await db.execute(
-        update(Wallet)
-        .where(Wallet.customer_id == master_id)
-        .values(balance_paise=Wallet.balance_paise - cost_paise)
-        .returning(Wallet)
-    )
-    wallet = result2.scalar_one_or_none()
-
-    # Add usage stats to wallet transaction description for ledger transparency
-    description = f"Call deduction for run {data.workflow_run_id} ({data.duration_seconds}s)"
-    
-    txn = WalletTransaction(
-        customer_id=master_id,
-        amount_paise=-cost_paise,
-        type="call_deduction",
-        description=description,
-        dograh_run_id=data.workflow_run_id
-    )
-    db.add(txn)
-    
-    # Send low balance alert if dropped below threshold (₹1500)
-    # Check if we should alert (cooldown of 24h to prevent spam)
-    LOW_BALANCE_THRESHOLD_PAISE = 150000
-    if wallet.balance_paise < LOW_BALANCE_THRESHOLD_PAISE:
-        from datetime import timezone
-        import datetime
-        now = datetime.datetime.now(timezone.utc)
+    try:
+        # SOT line 282: atomic deduction — UPDATE...RETURNING to get new balance
+        from services.billing_service import get_billing_wallet
+        wallet, master_id = await get_billing_wallet(db, customer.id)
         
-        should_alert = True
-        if wallet.low_balance_alerted_at:
-            # Check if 24h passed
-            if (now - wallet.low_balance_alerted_at).total_seconds() < 86400:
-                should_alert = False
-                
-        if should_alert:
-            wallet.low_balance_alerted_at = now
-            # Fire in background so we don't block Dograh
-            import asyncio
-            asyncio.create_task(notification_service.notify_customer_low_balance(wallet.customer_id, wallet.balance_paise))
+        result2 = await db.execute(
+            update(Wallet)
+            .where(Wallet.customer_id == master_id)
+            .values(balance_paise=Wallet.balance_paise - cost_paise)
+            .returning(Wallet)
+        )
+        wallet = result2.scalar_one_or_none()
 
-    await db.commit()
-
-    # SOT line 284-285: check auto-recharge, then check low balance
-    await check_and_trigger_auto_recharge(db, customer.id)
-
-    # SOT line 658: if balance went negative, email customer AND block future calls
-    if wallet and wallet.balance_paise <= CALL_BLOCK_THRESHOLD_PAISE:
-        logger.warning(f"Customer {customer.id} wallet negative: {wallet.balance_paise} paise")
-        await notification_service.notify_customer_negative_balance(customer.id)
-        # Block calls in Dograh immediately so the next call can't start.
-        # We block on the master org (the one that owns the wallet).
-        master_res = await db.execute(select(Customer).where(Customer.id == master_id))
-        master_customer = master_res.scalar_one_or_none()
-        if master_customer and master_customer.dograh_org_id:
-            from services import dograh_client
-            try:
-                await dograh_client.block_org_calls(master_customer.dograh_org_id)
-                # Also block all sub-orgs billing under this master
-                sub_res = await db.execute(select(Customer).where(Customer.billing_org_id == master_id))
-                for sub in sub_res.scalars().all():
-                    if sub.dograh_org_id:
-                        await dograh_client.block_org_calls(sub.dograh_org_id)
-            except Exception as e:
-                logger.error(f"Failed to block calls after negative balance for customer {master_id}: {e}")
+        # Add usage stats to wallet transaction description for ledger transparency
+        description = f"Call deduction for run {data.workflow_run_id} ({data.duration_seconds}s)"
         
-    from services import redis_client
-    await redis_client.decrement_active_calls(master_id)
+        txn = WalletTransaction(
+            customer_id=master_id,
+            amount_paise=-cost_paise,
+            type="call_deduction",
+            description=description,
+            dograh_run_id=data.workflow_run_id
+        )
+        db.add(txn)
+        
+        # Send low balance alert if dropped below threshold (₹1500)
+        # Check if we should alert (cooldown of 24h to prevent spam)
+        LOW_BALANCE_THRESHOLD_PAISE = 150000
+        if wallet.balance_paise < LOW_BALANCE_THRESHOLD_PAISE:
+            from datetime import timezone
+            import datetime
+            now = datetime.datetime.now(timezone.utc)
+            
+            should_alert = True
+            if wallet.low_balance_alerted_at:
+                # Check if 24h passed
+                if (now - wallet.low_balance_alerted_at).total_seconds() < 86400:
+                    should_alert = False
+                    
+            if should_alert:
+                wallet.low_balance_alerted_at = now
+                # Fire in background so we don't block Dograh
+                import asyncio
+                asyncio.create_task(notification_service.notify_customer_low_balance(wallet.customer_id, wallet.balance_paise))
+
+        await db.commit()
+
+        # SOT line 284-285: check auto-recharge, then check low balance
+        await check_and_trigger_auto_recharge(db, customer.id)
+
+        # SOT line 658: if balance went negative, email customer AND block future calls
+        if wallet and wallet.balance_paise <= CALL_BLOCK_THRESHOLD_PAISE:
+            logger.warning(f"Customer {customer.id} wallet negative: {wallet.balance_paise} paise")
+            await notification_service.notify_customer_negative_balance(customer.id)
+            # Block calls in Dograh immediately so the next call can't start.
+            # We block on the master org (the one that owns the wallet).
+            master_res = await db.execute(select(Customer).where(Customer.id == master_id))
+            master_customer = master_res.scalar_one_or_none()
+            if master_customer and master_customer.dograh_org_id:
+                from services import dograh_client
+                try:
+                    await dograh_client.block_org_calls(master_customer.dograh_org_id)
+                    # Also block all sub-orgs billing under this master
+                    sub_res = await db.execute(select(Customer).where(Customer.billing_org_id == master_id))
+                    for sub in sub_res.scalars().all():
+                        if sub.dograh_org_id:
+                            await dograh_client.block_org_calls(sub.dograh_org_id)
+                except Exception as e:
+                    logger.error(f"Failed to block calls after negative balance for customer {master_id}: {e}")
+            
+    finally:
+        from services import redis_client
+        await redis_client.decrement_active_calls(master_id)
 
     return {"status": "ok", "cost_paise": cost_paise, "new_balance_paise": wallet.balance_paise if wallet else None}
 
