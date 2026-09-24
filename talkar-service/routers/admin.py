@@ -633,6 +633,10 @@ async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: As
                     tier = sub.plan if sub else "starter"
                     concurrent_limit = resolve_tier_config(sub).get("concurrent_call_limit")
                     await dograh_client.restore_org_calls(customer.dograh_org_id, tier, concurrent_limit)
+                    sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
+                    for sub_org in sub_orgs_res.scalars().all():
+                        if sub_org.dograh_org_id:
+                            await dograh_client.restore_org_calls(sub_org.dograh_org_id, tier, concurrent_limit)
                 except Exception as e:
                     import logging; logging.getLogger(__name__).error(f"[AdminCredit] Failed to restore calls for org {customer.dograh_org_id}: {e}")
 
@@ -648,6 +652,10 @@ async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: As
                     tier = sub.plan if sub else "starter"
                     concurrent_limit = resolve_tier_config(sub).get("concurrent_call_limit")
                     await dograh_client.restore_org_calls(customer.dograh_org_id, tier, concurrent_limit)
+                    sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
+                    for sub_org in sub_orgs_res.scalars().all():
+                        if sub_org.dograh_org_id:
+                            await dograh_client.restore_org_calls(sub_org.dograh_org_id, tier, concurrent_limit)
                 except Exception as e:
                     import logging; logging.getLogger(__name__).error(f"[AdminCredit] Failed to restore calls for org {customer.dograh_org_id}: {e}")
 
@@ -658,6 +666,22 @@ async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: As
                     await dograh_client.block_org_calls(customer.dograh_org_id)
                 except Exception as e:
                     import logging; logging.getLogger(__name__).error(f"[AdminCredit] Failed to block calls for org {customer.dograh_org_id}: {e}")
+
+        # If customer is active and balance now exceeds block threshold, restore calls (and sub-orgs)
+        from config import CALL_BLOCK_THRESHOLD_PAISE
+        if customer.status == "active" and wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE:
+            if customer.dograh_org_id:
+                try:
+                    tier = sub.plan if sub else "starter"
+                    concurrent_limit = resolve_tier_config(sub).get("concurrent_call_limit")
+                    await dograh_client.restore_org_calls(customer.dograh_org_id, tier, concurrent_limit)
+                    # Also restore sub-orgs billing under this master
+                    sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
+                    for sub_org in sub_orgs_res.scalars().all():
+                        if sub_org.dograh_org_id:
+                            await dograh_client.restore_org_calls(sub_org.dograh_org_id, tier, concurrent_limit)
+                except Exception as e:
+                    import logging; logging.getLogger(__name__).error(f"[AdminCredit] Failed to restore calls for active org {customer.dograh_org_id}: {e}")
 
     # Notify customer of manual credit grant
     import asyncio
