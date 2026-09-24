@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 from sqlalchemy import select, update
 from sqlalchemy.sql import func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,6 +58,22 @@ async def credit_wallet(db: AsyncSession, customer_id: int, amount_paise: int, r
         razorpay_order_id=razorpay_order_id
     )
     db.add(transaction)
+    
+    if tx_type == "top_up":
+        from db.models import Invoice
+        import datetime
+        import uuid
+        await db.flush() # flush to get transaction.id
+        invoice_number = f"INV-{datetime.datetime.now().year}-{uuid.uuid4().hex[:6].upper()}"
+        invoice = Invoice(
+            customer_id=master_id,
+            wallet_transaction_id=transaction.id,
+            invoice_number=invoice_number,
+            amount_paise=amount_paise,
+            status="paid"
+        )
+        db.add(invoice)
+
     await db.commit()
     
     return wallet

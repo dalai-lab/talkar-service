@@ -232,3 +232,15 @@ class AutomationAuditLog(Base):
     response_status = Column(Integer)
     ip_address = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class Invoice(Base):
+    __tablename__ = "invoices"
+
+    id = Column(Integer, primary_key=True, index=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False, index=True)
+    wallet_transaction_id = Column(Integer, ForeignKey("wallet_transactions.id"), unique=True)
+    invoice_number = Column(Text, nullable=False, unique=True)
+    amount_paise = Column(BigInteger, nullable=False)
+    status = Column(Text, nullable=False, default="paid")
+    pdf_url = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
