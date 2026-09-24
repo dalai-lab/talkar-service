@@ -167,13 +167,13 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
             pass # Explicitly allow dev mock bypass even if secret is loaded locally
         else:
             msg = f"{data.razorpay_order_id}|{data.razorpay_payment_id}"
-        expected = hmac.new(
-            settings.RAZORPAY_KEY_SECRET.encode(),
-            msg.encode(),
-            hashlib.sha256
-        ).hexdigest()
-        if not hmac.compare_digest(expected, data.razorpay_signature):
-            raise HTTPException(400, "Invalid payment signature")
+            expected = hmac.new(
+                settings.RAZORPAY_KEY_SECRET.encode(),
+                msg.encode(),
+                hashlib.sha256
+            ).hexdigest()
+            if not hmac.compare_digest(expected, data.razorpay_signature):
+                raise HTTPException(400, "Invalid payment signature")
     
     # 2. Find customer
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id))
