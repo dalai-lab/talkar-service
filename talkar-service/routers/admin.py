@@ -1792,28 +1792,47 @@ async def factory_reset_logs(
         try:
             from services.dograh_client import DograhSessionLocal
             async with DograhSessionLocal() as ddb:
-                # Step 1: WorkflowRunModel (cascades child rows automatically)
+                # Step 1: WorkflowRunModel
+                # workflow_runs has no organization_id — it links via workflow_id → workflows.organization_id
                 r = await ddb.execute(
-                    text("DELETE FROM workflow_runs WHERE organization_id = :org_id"),
+                    text("""
+                        DELETE FROM workflow_runs
+                        WHERE workflow_id IN (
+                            SELECT id FROM workflows WHERE organization_id = :org_id
+                        )
+                    """),
                     {"org_id": dograh_org_id}
                 )
                 results["workflow_runs_deleted"] = r.rowcount
 
                 # Step 2: Child QueuedRuns (parent_queued_run_id IS NOT NULL)
+                # queued_runs has no organization_id — links via campaign_id → campaigns.organization_id
                 r = await ddb.execute(
-                    text("DELETE FROM queued_runs WHERE organization_id = :org_id AND parent_queued_run_id IS NOT NULL"),
+                    text("""
+                        DELETE FROM queued_runs
+                        WHERE campaign_id IN (
+                            SELECT id FROM campaigns WHERE organization_id = :org_id
+                        )
+                        AND parent_queued_run_id IS NOT NULL
+                    """),
                     {"org_id": dograh_org_id}
                 )
                 results["child_queued_runs_deleted"] = r.rowcount
 
                 # Step 3: Parent QueuedRuns
                 r = await ddb.execute(
-                    text("DELETE FROM queued_runs WHERE organization_id = :org_id AND parent_queued_run_id IS NULL"),
+                    text("""
+                        DELETE FROM queued_runs
+                        WHERE campaign_id IN (
+                            SELECT id FROM campaigns WHERE organization_id = :org_id
+                        )
+                        AND parent_queued_run_id IS NULL
+                    """),
                     {"org_id": dograh_org_id}
                 )
                 results["parent_queued_runs_deleted"] = r.rowcount
 
-                # Step 4: Campaigns
+                # Step 4: Campaigns — campaigns DOES have organization_id directly
                 r = await ddb.execute(
                     text("DELETE FROM campaigns WHERE organization_id = :org_id"),
                     {"org_id": dograh_org_id}
