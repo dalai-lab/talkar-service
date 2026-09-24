@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, func
+from sqlalchemy import select, update, func, text, delete
 from db.session import get_db
-from db.models import Customer, Wallet, WalletTransaction, CallLog, Agent, TalkarAdmin, Subscription
+from db.models import Customer, Wallet, WalletTransaction, CallLog, Agent, TalkarAdmin, Subscription, Notification
 from services import razorpay_client, notification_service
 from services.admin_auth import get_current_admin, create_admin_access_token
 from pydantic import BaseModel
@@ -1750,3 +1750,120 @@ async def update_automation_key(
     
     await db.commit()
     return {"status": "updated"}
+
+# --- FACTORY RESET ---
+
+@router.post("/customers/{customer_id}/factory-reset-logs")
+async def factory_reset_logs(
+    customer_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin)
+):
+    """
+    Factory-reset call logs and wallet data for a single customer/org.
+    
+    Talkar DB (steps 5 & 6):
+      - Deletes all CallLog rows for this customer.
+      - Deletes all WalletTransaction rows for this customer.
+      - Resets Wallet.balance_paise to 0.
+
+    Voice Agent / Dograh DB (steps 1-4):
+      - Deletes WorkflowRunModel (cascades webhooks, embed sessions, run text sessions).
+      - Deletes child QueuedRunModel rows (parent_queued_run_id IS NOT NULL).
+      - Deletes parent QueuedRunModel rows.
+      - Deletes CampaignModel rows.
+    
+    All operations are scoped strictly to this customer's dograh_org_id.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # 1. Load customer
+    res = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = res.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+
+    dograh_org_id = customer.dograh_org_id
+    results = {}
+
+    # ── VOICE AGENT DB (Dograh) ──────────────────────────────────────
+    if dograh_org_id:
+        try:
+            from services.dograh_client import DograhSessionLocal
+            async with DograhSessionLocal() as ddb:
+                # Step 1: WorkflowRunModel (cascades child rows automatically)
+                r = await ddb.execute(
+                    text("DELETE FROM workflow_runs WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                results["workflow_runs_deleted"] = r.rowcount
+
+                # Step 2: Child QueuedRuns (parent_queued_run_id IS NOT NULL)
+                r = await ddb.execute(
+                    text("DELETE FROM queued_runs WHERE organization_id = :org_id AND parent_queued_run_id IS NOT NULL"),
+                    {"org_id": dograh_org_id}
+                )
+                results["child_queued_runs_deleted"] = r.rowcount
+
+                # Step 3: Parent QueuedRuns
+                r = await ddb.execute(
+                    text("DELETE FROM queued_runs WHERE organization_id = :org_id AND parent_queued_run_id IS NULL"),
+                    {"org_id": dograh_org_id}
+                )
+                results["parent_queued_runs_deleted"] = r.rowcount
+
+                # Step 4: Campaigns
+                r = await ddb.execute(
+                    text("DELETE FROM campaigns WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                results["campaigns_deleted"] = r.rowcount
+
+                await ddb.commit()
+        except Exception as e:
+            logger.error(f"[FactoryReset] Voice Agent DB wipe failed for org {dograh_org_id}: {e}")
+            raise HTTPException(500, f"Voice Agent DB reset failed: {str(e)}")
+    else:
+        results["voice_agent_db"] = "skipped — no dograh_org_id"
+
+    # ── TALKAR DB ─────────────────────────────────────────────────────
+    try:
+        # Step 5: Call Logs
+        r = await db.execute(
+            delete(CallLog).where(CallLog.customer_id == customer_id)
+        )
+        results["call_logs_deleted"] = r.rowcount
+
+        # Step 6a: Wallet Transactions
+        r = await db.execute(
+            delete(WalletTransaction).where(WalletTransaction.customer_id == customer_id)
+        )
+        results["wallet_transactions_deleted"] = r.rowcount
+
+        # Step 6b: Reset wallet balance to 0
+        wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer_id))
+        wallet = wallet_res.scalar_one_or_none()
+        if wallet:
+            wallet.balance_paise = 0
+            results["wallet_balance_reset"] = True
+        else:
+            results["wallet_balance_reset"] = False
+
+        # Step 7: Clear notifications
+        r = await db.execute(
+            delete(Notification).where(Notification.customer_id == customer_id)
+        )
+        results["notifications_deleted"] = r.rowcount
+
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"[FactoryReset] Talkar DB wipe failed for customer {customer_id}: {e}")
+        raise HTTPException(500, f"Talkar DB reset failed: {str(e)}")
+
+    logger.warning(
+        f"[FactoryReset] Admin '{current_admin.email}' wiped logs for customer {customer_id} "
+        f"(org={dograh_org_id}). Results: {results}"
+    )
+    return {"status": "reset_complete", "customer_id": customer_id, "dograh_org_id": dograh_org_id, **results}

@@ -165,6 +165,7 @@ export default function CustomerDetailPage() {
   const [suspendMessage, setSuspendMessage] = useState("");
   const [isSuspending, setIsSuspending] = useState(false);
   const [isUnsuspending, setIsUnsuspending] = useState(false);
+  const [isResettingLogs, setIsResettingLogs] = useState(false);
 
   useEffect(() => {
     fetchCustomer();
@@ -446,6 +447,37 @@ export default function CustomerDetailPage() {
     } catch (e) { console.error(e); }
     finally { setIsUnsuspending(false); }
   };
+
+  const handleFactoryResetLogs = async () => {
+    const ok1 = confirm(
+      `⚠️ FACTORY RESET LOGS\n\nThis will permanently delete ALL call logs, wallet transactions, and reset the wallet balance to ₹0 for:\n\n"${customer?.company_name || id}"\n\nIt will also wipe all WorkflowRuns, QueuedRuns, and Campaigns from the Voice Agent DB for this org.\n\nThis CANNOT be undone. Are you absolutely sure?`
+    );
+    if (!ok1) return;
+    const ok2 = confirm(`SECOND CONFIRMATION:\n\nYou are wiping logs for customer ID ${id}. Press OK to confirm.`);
+    if (!ok2) return;
+    setIsResettingLogs(true);
+    try {
+      const res = await adminFetch(`/admin/customers/${id}/factory-reset-logs`, { method: "POST" });
+      if (!res.ok) { const e = await res.json().catch(() => ({})); alert(`Reset failed: ${e.detail || res.statusText}`); return; }
+      const data = await res.json();
+      alert(
+        `✅ Factory Reset Complete!\n\n` +
+        `- Call logs deleted: ${data.call_logs_deleted ?? 0}\n` +
+        `- Wallet transactions deleted: ${data.wallet_transactions_deleted ?? 0}\n` +
+        `- Wallet balance reset: ${data.wallet_balance_reset ? "Yes" : "No"}\n` +
+        `- Notifications cleared: ${data.notifications_deleted ?? 0}\n` +
+        `- Workflow runs deleted: ${data.workflow_runs_deleted ?? "N/A"}\n` +
+        `- Campaigns deleted: ${data.campaigns_deleted ?? "N/A"}`
+      );
+      fetchCustomer();
+    } catch (e) {
+      alert(`Network error: ${e}`);
+    } finally {
+      setIsResettingLogs(false);
+    }
+  };
+
+
 
   const handleDenyUpgrade = async () => {
     if (!confirm("Are you sure you want to deny this upgrade request?")) return;
@@ -791,6 +823,23 @@ export default function CustomerDetailPage() {
                   </Button>
                 )}
               </div>
+            </div>
+
+            {/* Danger Zone */}
+            <div className="border-t border-red-100 pt-3 mt-1">
+              <p className="text-[10px] font-semibold text-red-400 uppercase tracking-wider mb-1">Danger Zone</p>
+              <p className="text-[11px] text-slate-500 leading-tight mb-2">
+                Permanently delete all call logs, wallet transactions, and Voice Agent run history for this org. Irreversible.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleFactoryResetLogs}
+                disabled={isResettingLogs}
+                className="h-8 text-xs border-red-300 text-red-600 bg-red-50/50 hover:bg-red-100 font-semibold cursor-pointer w-full"
+              >
+                {isResettingLogs ? "Resetting..." : "🗑️ Factory Reset Logs"}
+              </Button>
             </div>
           </div>
         </CardContent>
