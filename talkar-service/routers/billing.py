@@ -612,9 +612,33 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
         db.add(call_log)
         await db.commit()
         from services import redis_client
-        await redis_client.decrement_active_calls(customer.billing_org_id or customer.id)
+        master_id_short = customer.billing_org_id or customer.id
+        await redis_client.decrement_active_calls(master_id_short)
         logger.info(f"Sub-10s call for run {data.workflow_run_id} ({data.duration_seconds}s) — logged with ₹0 cost")
+
+        # ── Still enforce balance block even on free calls ─────────────────────
+        # Without this, a customer at ₹0 can loop short calls forever since no
+        # deduction is triggered and block_org_calls is never called.
+        from services.billing_service import get_billing_wallet
+        wallet_check, short_master_id = await get_billing_wallet(db, customer.id)
+        if wallet_check and wallet_check.balance_paise <= CALL_BLOCK_THRESHOLD_PAISE:
+            logger.warning(f"Customer {customer.id} balance ({wallet_check.balance_paise}) at/below block threshold — blocking calls after sub-10s call")
+            master_res = await db.execute(select(Customer).where(Customer.id == short_master_id))
+            master_customer = master_res.scalar_one_or_none()
+            if master_customer and master_customer.dograh_org_id:
+                from services import dograh_client
+                try:
+                    await dograh_client.block_org_calls(master_customer.dograh_org_id)
+                    sub_orgs = await db.execute(select(Customer).where(Customer.billing_org_id == short_master_id))
+                    for sub in sub_orgs.scalars().all():
+                        if sub.dograh_org_id:
+                            await dograh_client.block_org_calls(sub.dograh_org_id)
+                except Exception as e:
+                    logger.error(f"Failed to block calls after sub-10s call for customer {short_master_id}: {e}")
+        # ──────────────────────────────────────────────────────────────────────
+
         return {"status": "short_call_logged", "cost_paise": 0}
+
 
     minutes = math.ceil(data.duration_seconds / 60)
     cost_paise = minutes * rate

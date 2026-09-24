@@ -742,6 +742,43 @@ async def admin_set_balance(customer_id: int, data: AdminSetBalanceRequest, db: 
     db.add(transaction)
     await db.commit()
 
+    # ── Enforce Dograh call blocking based on new balance ─────────────────────
+    from config import CALL_BLOCK_THRESHOLD_PAISE
+    from services import dograh_client
+    from sqlalchemy import select as _select
+    master_res = await db.execute(_select(Customer).where(Customer.id == master_id))
+    master_customer = master_res.scalar_one_or_none()
+    if master_customer and master_customer.dograh_org_id:
+        try:
+            if wallet.balance_paise <= CALL_BLOCK_THRESHOLD_PAISE:
+                # Balance at/below threshold — block all calls immediately
+                await dograh_client.block_org_calls(master_customer.dograh_org_id)
+                sub_orgs = await db.execute(_select(Customer).where(Customer.billing_org_id == master_id))
+                for sub in sub_orgs.scalars().all():
+                    if sub.dograh_org_id:
+                        await dograh_client.block_org_calls(sub.dograh_org_id)
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Admin set balance to {wallet.balance_paise} paise for customer {customer_id} — below threshold, calls blocked"
+                )
+            else:
+                # Balance above threshold — restore calls (in case they were blocked before)
+                from db.models import Subscription
+                from config import resolve_tier_config
+                sub_res = await db.execute(_select(Subscription).where(Subscription.customer_id == master_id))
+                sub = sub_res.scalar_one_or_none()
+                concurrent_limit = resolve_tier_config(sub).get("concurrent_call_limit")
+                tier = sub.plan if sub else "starter"
+                await dograh_client.restore_org_calls(master_customer.dograh_org_id, tier, concurrent_limit)
+                sub_orgs = await db.execute(_select(Customer).where(Customer.billing_org_id == master_id))
+                for sub_org in sub_orgs.scalars().all():
+                    if sub_org.dograh_org_id:
+                        await dograh_client.restore_org_calls(sub_org.dograh_org_id, tier, concurrent_limit)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to sync Dograh call limit after set-balance for customer {customer_id}: {e}")
+    # ──────────────────────────────────────────────────────────────────────────
+
     return {"status": "success", "new_balance_paise": wallet.balance_paise}
 
 @router.post("/customers/{customer_id}/deny-tier-upgrade")
