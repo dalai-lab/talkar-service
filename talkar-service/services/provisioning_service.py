@@ -77,14 +77,14 @@ async def run_provisioning(customer_id: int, plan: str = None, db: AsyncSession 
             tts_config = {
                 "provider": "smallest",
                 "api_key": settings.TALKAR_SMALLEST_AI_KEY or "",
-                "model": "lightning_v3.1",
-                "voice": tier_cfg.get("default_voice_id", "meera"),
+                "model": "lightning_v3.1_pro",
+                "voice": tier_cfg.get("default_voice_id", "mishka"),
             }
             stt_config = {
-                "provider": "smallest",
-                "api_key": settings.TALKAR_SMALLEST_AI_KEY or "",
-                "model": "pulse",
-                "language": "en",
+                "provider": "deepgram",
+                "api_key": settings.TALKAR_DEEPGRAM_KEY or "",
+                "model": "flux-general-multi",
+                "language": "multi",
             }
         else:  # deepgram
             tts_config = {
@@ -96,7 +96,7 @@ async def run_provisioning(customer_id: int, plan: str = None, db: AsyncSession 
             stt_config = {
                 "provider": "deepgram",
                 "api_key": settings.TALKAR_DEEPGRAM_KEY or "",
-                "model": "nova-3-general",
+                "model": "flux-general-multi",
                 "language": "multi",
             }
 
