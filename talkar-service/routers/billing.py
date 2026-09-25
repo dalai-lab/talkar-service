@@ -703,12 +703,19 @@ async def get_wallet_by_org(org_id: int, db: AsyncSession = Depends(get_db)):
     if not wallet:
         raise HTTPException(404, "Wallet not found")
         
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == master_id))
+    sub = sub_res.scalar_one_or_none()
+        
     return {
         "balance_paise": wallet.balance_paise,
         "auto_recharge_enabled": wallet.auto_recharge_enabled,
         "auto_recharge_threshold_paise": wallet.auto_recharge_threshold_paise,
         "auto_recharge_amount_paise": wallet.auto_recharge_amount_paise,
-        "has_saved_card": bool(wallet.razorpay_payment_method_id)
+        "has_saved_card": bool(wallet.razorpay_payment_method_id),
+        "plan": sub.plan if sub else "starter",
+        "plan_status": sub.status if sub else "active",
+        "custom_plan_label": getattr(sub, "custom_plan_label", None) if sub else None,
+        "customer_status": customer.status,
     }
 
 class CreateRazorpayCustomerRequest(BaseModel):
