@@ -23,6 +23,7 @@ class TopupRequest(BaseModel):
 
 class DograhQuotaRequest(BaseModel):
     organization_id: int
+    mode: Optional[str] = None
 
 class DograhDeductRequest(BaseModel):
     workflow_run_id: int
@@ -465,6 +466,10 @@ async def check_quota(data: DograhQuotaRequest, db: AsyncSession = Depends(get_d
         if wallet:
             await check_and_trigger_auto_recharge(db, master_id)
         return {"has_quota": False}
+
+    # Bypassing concurrency limits and reserve checks for web/text chat testing calls
+    if data.mode in ("textchat", "webrtc", "smallwebrtc"):
+        return {"has_quota": True}
 
     # 1. Minimum Reserve Check (Risk 1)
     # For sub-orgs, subscription and custom_config live on the master — use master_id.
