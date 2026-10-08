@@ -1,4 +1,4 @@
-﻿import redis.asyncio as redis
+import redis.asyncio as redis
 from config import settings
 import logging
 
@@ -40,19 +40,35 @@ async def increment_active_calls(master_id: int, ttl_seconds: int):
         return
     try:
         key = f"billing_group_active:{master_id}"
-        # INCR first, then only set TTL if this is a fresh key (value == 1).
-        # This avoids resetting the TTL for pre-existing concurrent calls, which
-        # would cause the counter to expire before all calls decrement it.
+        # INCR and fetch current TTL atomically.
         pipe = redis_client.pipeline()
         pipe.incr(key)
+        pipe.ttl(key)
         results = await pipe.execute()
         new_val = results[0]
-        if new_val == 1:
-            # First call in this group - set a generous TTL as a safety net.
-            # Add 60s buffer so the last decrement is not racing the expiry.
+        current_ttl = results[1]  # -1 = no expiry, -2 = key missing, >=0 = seconds left
+
+        # Always ensure the key's TTL is at least as long as this call's max duration.
+        # Without this, a key created by an earlier call can expire mid-campaign,
+        # the next INCR creates a fresh key with no TTL, and it stays forever.
+        # current_ttl < ttl_seconds covers the case where an older call set a shorter TTL.
+        if current_ttl < 0 or current_ttl < ttl_seconds:
             await redis_client.expire(key, ttl_seconds + 60)
     except Exception as e:
         logger.error(f"Redis INCR failed for billing_group_active:{master_id}: {e}")
+
+# Lua script: atomically decrement but never go below 0.
+# Plain DECR can drift negative when orphaned deductions arrive for calls
+# that were never quota-checked (old cron runs, crash-recovery, etc.).
+# A floored counter guarantees get_active_calls() always reads truthfully.
+_LUA_DECR_FLOOR_ZERO = """
+local val = tonumber(redis.call('get', KEYS[1]) or '0')
+if val <= 0 then
+    redis.call('set', KEYS[1], '0')
+    return 0
+end
+return redis.call('decr', KEYS[1])
+"""
 
 async def decrement_active_calls(master_id: int):
     global redis_client
@@ -60,9 +76,7 @@ async def decrement_active_calls(master_id: int):
         return
     try:
         key = f"billing_group_active:{master_id}"
-        pipe = redis_client.pipeline()
-        pipe.decr(key)
-        await pipe.execute()
+        await redis_client.eval(_LUA_DECR_FLOOR_ZERO, 1, key)
     except Exception as e:
         logger.error(f"Redis DECR failed for billing_group_active:{master_id}: {e}")
 

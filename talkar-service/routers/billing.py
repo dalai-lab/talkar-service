@@ -465,7 +465,7 @@ async def check_quota(data: DograhQuotaRequest, db: AsyncSession = Depends(get_d
     if not wallet or wallet.balance_paise <= CALL_BLOCK_THRESHOLD_PAISE:
         if wallet:
             await check_and_trigger_auto_recharge(db, master_id)
-        return {"has_quota": False}
+        return {"has_quota": False, "reason": "insufficient_balance", "balance_paise": wallet.balance_paise if wallet else 0}
 
     # Bypassing concurrency limits and reserve checks for web/text chat testing calls
     if data.mode in ("textchat", "webrtc", "smallwebrtc"):
@@ -493,7 +493,7 @@ async def check_quota(data: DograhQuotaRequest, db: AsyncSession = Depends(get_d
     if wallet.balance_paise < max_call_cost:
         logger.warning(f"Org {data.organization_id} has balance {wallet.balance_paise} below one-call reserve {max_call_cost}")
         await check_and_trigger_auto_recharge(db, master_id)
-        return {"has_quota": False}
+        return {"has_quota": False, "reason": "insufficient_reserve", "balance_paise": wallet.balance_paise, "required_paise": max_call_cost}
         
     # 2. Billing Group Concurrency Cap (Risk 2)
     from services import redis_client
@@ -504,15 +504,15 @@ async def check_quota(data: DograhQuotaRequest, db: AsyncSession = Depends(get_d
     max_concurrent = min(max_affordable_concurrent, concurrent_call_limit)
     
     if max_concurrent <= 0:
-        return {"has_quota": False}
+        return {"has_quota": False, "reason": "insufficient_reserve_for_any_concurrent_call"}
         
     current_active = await redis_client.get_active_calls(master_id)
     
     # Safety: if Redis is down (returns 0), fall back to plan's hard limit so we
     # don't grant unlimited calls on a stale counter.
     if current_active >= max_concurrent:
-        logger.warning(f"Billing group {master_id} hit concurrency cap ({current_active}/{max_concurrent})")
-        return {"has_quota": False}
+        logger.warning(f"Billing group {master_id} hit concurrency cap ({current_active}/{max_concurrent}) — balance {wallet.balance_paise} paise, plan limit {concurrent_call_limit}")
+        return {"has_quota": False, "reason": "concurrency_cap", "active": current_active, "limit": max_concurrent}
         
     # Grant quota -> increment Redis
     await redis_client.increment_active_calls(master_id, max_duration_secs)
@@ -630,6 +630,11 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
         tts_provider=active_tts,
     )
     db.add(call_log)
+
+    # Pre-define master_id using the fastest available signal (customer row) so the
+    # finally block always has a valid ID even if get_billing_wallet() throws below.
+    # get_billing_wallet() will overwrite this with the authoritative value.
+    master_id = customer.billing_org_id or customer.id
 
     try:
         # SOT line 282: atomic deduction — UPDATE...RETURNING to get new balance
