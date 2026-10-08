@@ -495,27 +495,14 @@ async def check_quota(data: DograhQuotaRequest, db: AsyncSession = Depends(get_d
         await check_and_trigger_auto_recharge(db, master_id)
         return {"has_quota": False, "reason": "insufficient_reserve", "balance_paise": wallet.balance_paise, "required_paise": max_call_cost}
         
-    # 2. Billing Group Concurrency Cap (Risk 2)
-    from services import redis_client
+    # 2. Billing Group Concurrency Cap
+    # We no longer enforce the concurrency cap here using a Talkar Redis counter.
+    # Why? Because Dograh already enforces the exact concurrent_call_limit we push to it
+    # via its own reliable ZSET-based rate limiter (which correctly releases slots on failure).
+    # If a call drops before /deduct is called, Talkar's counter would leak permanently.
+    # The balance check above ensures we have enough money for at least 1 call, and if we
+    # drop below ₹500, we block calls via sync_wallet_block_policy which pushes limit=0 to Dograh.
     
-    # How many simultaneous calls can the wallet afford if they all hit max duration?
-    max_affordable_concurrent = math.floor(wallet.balance_paise / max_call_cost)
-    # Never exceed the plan's hard concurrent call limit either
-    max_concurrent = min(max_affordable_concurrent, concurrent_call_limit)
-    
-    if max_concurrent <= 0:
-        return {"has_quota": False, "reason": "insufficient_reserve_for_any_concurrent_call"}
-        
-    current_active = await redis_client.get_active_calls(master_id)
-    
-    # Safety: if Redis is down (returns 0), fall back to plan's hard limit so we
-    # don't grant unlimited calls on a stale counter.
-    if current_active >= max_concurrent:
-        logger.warning(f"Billing group {master_id} hit concurrency cap ({current_active}/{max_concurrent}) — balance {wallet.balance_paise} paise, plan limit {concurrent_call_limit}")
-        return {"has_quota": False, "reason": "concurrency_cap", "active": current_active, "limit": max_concurrent}
-        
-    # Grant quota -> increment Redis
-    await redis_client.increment_active_calls(master_id, max_duration_secs)
     return {"has_quota": True}
 
 
@@ -595,9 +582,6 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
         )
         db.add(call_log)
         await db.commit()
-        from services import redis_client
-        master_id_short = customer.billing_org_id or customer.id
-        await redis_client.decrement_active_calls(master_id_short)
         logger.info(f"Sub-10s call for run {data.workflow_run_id} ({data.duration_seconds}s) — logged with ₹0 cost")
 
         # ── Still enforce balance block even on free calls ─────────────────────
@@ -694,9 +678,9 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
             from services.billing_service import sync_wallet_block_policy
             await sync_wallet_block_policy(db, customer.id)
             
-    finally:
-        from services import redis_client
-        await redis_client.decrement_active_calls(master_id)
+    except Exception as e:
+        logger.error(f"Failed to deduct wallet for run {data.workflow_run_id}: {e}")
+        raise
 
     return {"status": "ok", "cost_paise": cost_paise, "new_balance_paise": wallet.balance_paise if wallet else None}
 
