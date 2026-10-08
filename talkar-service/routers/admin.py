@@ -1111,10 +1111,6 @@ async def get_wallet_alerts(db: AsyncSession = Depends(get_db), current_admin: T
 
     return {"low_balance": yellow, "zero_balance": red}
 
-@router.get("/calls/active")
-async def get_active_calls(db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
-    # Stub reading from Dograh Redis
-    return {"active_calls": 0}
 
 @router.get("/calls/stats")
 async def get_calls_stats(db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
