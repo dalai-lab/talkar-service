@@ -211,7 +211,6 @@ async def deduct_for_run(run_id: int):
         
         wallet, master_id = await get_billing_wallet(db, customer.id)
         
-        from services import redis_client
         try:
             if cost_paise > 0:
                 # Deduct wallet
@@ -242,8 +241,12 @@ async def deduct_for_run(run_id: int):
             # Trigger auto-recharge hook
             if cost_paise > 0:
                 await check_and_trigger_auto_recharge(db, customer.id)
-        finally:
-            await redis_client.decrement_active_calls(master_id)
+        except Exception as e:
+            logger.error(f"Error in cron deduction for run {run_id}: {e}")
+            raise
+        # NOTE: No decrement_active_calls here — the cron reconciliation path processes
+        # runs that were never granted quota via check_quota (no INCR was ever called).
+        # Decrementing here would corrupt the live counter with ghost decrements.
 
 async def sync_wallet_block_policy(db: AsyncSession, customer_id: int):
     """

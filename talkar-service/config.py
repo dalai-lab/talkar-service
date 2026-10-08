@@ -55,7 +55,7 @@ CALL_BLOCK_THRESHOLD_PAISE = 50000  # ₹500
 TIER_CONFIG = {
     "starter": {
         "per_minute_rate_paise": 600,    # ₹6/min
-        "concurrent_call_limit": 2,
+        "concurrent_call_limit": 5,
         "max_call_duration_seconds": 900,
         "llm_model": "gpt-4o-mini",
         "tts_provider": "deepgram",
@@ -65,7 +65,7 @@ TIER_CONFIG = {
     },
     "growth": {
         "per_minute_rate_paise": 600,    # ₹6/min — same as starter
-        "concurrent_call_limit": 2,
+        "concurrent_call_limit": 5,
         "max_call_duration_seconds": 900,
         "llm_model": "gpt-4o-mini",
         "tts_provider": "smallest_ai",  # Indian-optimised low-latency TTS
