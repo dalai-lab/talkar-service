@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 from datetime import datetime, timezone
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException
@@ -37,7 +37,6 @@ async def execute_announcement_broadcast(db: AsyncSession, announcement: Announc
     send_in_app = "in_app" in channels
     send_email = "email" in channels
 
-    recipients_count = 0
     email_subject = f"Talkar Announcement: {announcement.title}"
     if announcement.type == "critical":
         email_subject = f"[CRITICAL] {announcement.title}"
@@ -46,32 +45,49 @@ async def execute_announcement_broadcast(db: AsyncSession, announcement: Announc
     elif announcement.type == "update":
         email_subject = f"[UPDATE] {announcement.title}"
 
-    for cust in customers:
-        recipients_count += 1
-        if send_in_app:
-            notif = Notification(
+    recipients_count = len(customers)
+
+    # 1. Bulk insert in-app notifications
+    if send_in_app and customers:
+        notifications = [
+            Notification(
                 customer_id=cust.id,
                 title=announcement.title,
                 body=announcement.body,
                 type=announcement.type,
                 is_read=False,
             )
-            db.add(notif)
+            for cust in customers
+        ]
+        db.add_all(notifications)
 
-        if send_email and cust.contact_email:
-            try:
-                await notification_service.send_email(
-                    to_email=cust.contact_email,
-                    subject=email_subject,
-                    body=announcement.body
-                )
-            except Exception as e:
-                logger.error(f"Failed to dispatch announcement email to {cust.contact_email}: {e}")
-
+    # Mark announcement as sent and commit state first to prevent duplicate sends on retry
     announcement.status = "sent"
     announcement.sent_at = datetime.now(timezone.utc)
     announcement.recipients_count = recipients_count
     await db.commit()
+
+    # 2. Bulk dispatch emails reusing persistent authenticated SMTP TLS connections
+    if send_email:
+        email_items = [
+            {
+                "to_email": cust.contact_email,
+                "subject": email_subject,
+                "body": announcement.body,
+            }
+            for cust in customers
+            if cust.contact_email
+        ]
+        if email_items:
+            try:
+                results = await notification_service.send_bulk_emails(email_items)
+                logger.info(
+                    f"Announcement #{announcement.id} broadcast email results: "
+                    f"{results.get('sent', 0)} sent, {results.get('failed', 0)} failed out of {len(email_items)}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to dispatch bulk announcement emails for #{announcement.id}: {e}")
+
     logger.info(f"Broadcast announcement #{announcement.id} sent to {recipients_count} customers.")
     return recipients_count
 

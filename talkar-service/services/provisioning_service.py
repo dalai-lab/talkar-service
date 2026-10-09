@@ -125,6 +125,15 @@ async def run_provisioning(customer_id: int, plan: str = None, db: AsyncSession 
         await dograh_client.upsert_org_config(customer.dograh_org_id, "CONCURRENT_CALL_LIMIT", {"value": tier_cfg["concurrent_call_limit"]})
         await dograh_client.upsert_org_config(customer.dograh_org_id, "WORKFLOW_TIMEOUT_SECONDS", {"value": tier_cfg["max_call_duration_seconds"]})
 
+        # Step 3b: Write CONCURRENCY_GROUP_ID so sub-orgs share master org's concurrency pool in Redis
+        master_dograh_id = customer.dograh_org_id
+        if customer.billing_org_id:
+            master_cust_res = await db.execute(select(Customer).where(Customer.id == customer.billing_org_id))
+            master_cust = master_cust_res.scalar_one_or_none()
+            if master_cust and master_cust.dograh_org_id:
+                master_dograh_id = master_cust.dograh_org_id
+        await dograh_client.upsert_org_config(customer.dograh_org_id, "CONCURRENCY_GROUP_ID", {"value": master_dograh_id})
+
         # Step 4: Create wallet record in Talkar DB (balance = 0)
         if customer.billing_org_id is None:
             existing_wallet = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))

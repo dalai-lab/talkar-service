@@ -1,7 +1,10 @@
 import razorpay
 import hmac
 import hashlib
+import logging
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 # Initialize razorpay client
 if settings.RAZORPAY_KEY_ID and settings.RAZORPAY_KEY_SECRET:
@@ -53,6 +56,25 @@ async def charge_saved_card(customer_id: str, payment_method_id: str, amount_pai
         "recurring": "1",
         "description": "Talkar Wallet Auto-Recharge"
     })
+
+
+async def fetch_order(order_id: str) -> dict | None:
+    if not client:
+        return None
+    try:
+        return await asyncio.to_thread(client.order.fetch, order_id)
+    except Exception as e:
+        logger.error(f"Failed to fetch Razorpay order {order_id}: {e}")
+        return None
+
+async def fetch_payment(payment_id: str) -> dict | None:
+    if not client:
+        return None
+    try:
+        return await asyncio.to_thread(client.payment.fetch, payment_id)
+    except Exception as e:
+        logger.error(f"Failed to fetch Razorpay payment {payment_id}: {e}")
+        return None
 
 
 def verify_webhook_signature(payload: bytes, signature: str) -> bool:

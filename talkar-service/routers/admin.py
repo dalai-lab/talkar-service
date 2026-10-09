@@ -629,13 +629,15 @@ async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: As
             except Exception as e:
                 import logging; logging.getLogger(__name__).error(f"[AdminCredit] Provisioning failed for customer {customer.id}: {e}")
 
-        elif customer.status == "suspended" and wallet.balance_paise >= activation_threshold:
-            customer.status = "active"
-            await db.commit()
-            try:
-                await run_provisioning(customer.id, None, db)
-            except Exception as e:
-                import logging; logging.getLogger(__name__).error(f"[AdminCredit] Re-provisioning failed for customer {customer.id}: {e}")
+        elif customer.status == "suspended":
+            from config import CALL_BLOCK_THRESHOLD_PAISE
+            if wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE:
+                customer.status = "active"
+                await db.commit()
+                try:
+                    await run_provisioning(customer.id, None, db)
+                except Exception as e:
+                    import logging; logging.getLogger(__name__).error(f"[AdminCredit] Re-provisioning failed for customer {customer.id}: {e}")
 
         # Synchronize wallet block policy
         await sync_wallet_block_policy(db, customer.id)
@@ -1412,22 +1414,6 @@ async def get_profitability(
         run_id_list_q = run_id_list_q.where(CallLog.called_at >= since)
     call_rows = (await db.execute(run_id_list_q)).all()
 
-    # --- Fetch usage_info from Dograh DB ---
-    usage_map = {}
-    if call_rows:
-        try:
-            run_ids = [r.dograh_run_id for r in call_rows if r.dograh_run_id]
-            if run_ids:
-                async with DograhSessionLocal() as ddb:
-                    usage_rows = (await ddb.execute(
-                        text("SELECT id, usage_info FROM workflow_runs WHERE id = ANY(:ids)"),
-                        {"ids": run_ids},
-                    )).all()
-                    usage_map = {r.id: r.usage_info for r in usage_rows}
-        except Exception as e:
-            _log.warning(f"Could not fetch usage_info from Dograh DB: {e}")
-
-
     # --- Fetch subscriptions for tts_provider / llm_model per customer ---
     subs_res = await db.execute(select(Subscription))
     subs = {s.customer_id: s for s in subs_res.scalars().all()}
@@ -1443,6 +1429,7 @@ async def get_profitability(
 
     # --- Aggregate per customer AND per plan bucket ---
     from collections import defaultdict
+    from config import TIER_CONFIG, resolve_tier_config
 
     def empty_bucket():
         return {"calls": 0, "total_minutes": 0.0, "revenue_inr": 0.0,
@@ -1457,69 +1444,107 @@ async def get_profitability(
     total_revenue_inr = 0.0
     total_cost_inr = 0.0
 
-    for row in call_rows:
-        cid = row.customer_id
-        if cid not in customers:
-            continue
-        c_obj = customers[cid]
-        c_overrides = c_obj.report_settings.get("profitability_overrides", {})
-        
-        # Merge hierarchy: Base defaults -> Global Overrides -> Customer Overrides
-        effective_overrides = {}
-        effective_overrides.update(global_overrides)
-        effective_overrides.update(c_overrides)
+    # Process call_rows in bounded batches (500 runs) to avoid allocating gigabytes of RAM
+    # from tens of thousands of multi-kilobyte usage_info JSON blobs simultaneously.
+    BATCH_SIZE = 500
+    ddb_session_ctx = None
+    ddb = None
+    try:
+        ddb_session_ctx = DograhSessionLocal()
+        ddb = await ddb_session_ctx.__aenter__()
+    except Exception as e:
+        _log.warning(f"Could not open Dograh DB session for profitability: {e}")
+        ddb = None
+        ddb_session_ctx = None
 
-        # Use the plan stamped on the call_log at billing time (accurate for mid-month
-        # plan switches). Fall back to current subscription if column is NULL (old rows).
-        stamped_plan = getattr(row, "plan", None)
-        stamped_tts = getattr(row, "tts_provider", None)
+    try:
+        for i in range(0, len(call_rows), BATCH_SIZE):
+            batch_rows = call_rows[i : i + BATCH_SIZE]
+            batch_run_ids = [r.dograh_run_id for r in batch_rows if r.dograh_run_id]
+            batch_usage_map = {}
+            if ddb and batch_run_ids:
+                try:
+                    usage_rows = (await ddb.execute(
+                        text("SELECT id, usage_info FROM workflow_runs WHERE id = ANY(:ids)"),
+                        {"ids": batch_run_ids},
+                    )).all()
+                    batch_usage_map = {r.id: r.usage_info for r in usage_rows}
+                except Exception as e:
+                    _log.warning(f"Could not fetch usage_info batch from Dograh DB: {e}")
+                    try:
+                        await ddb.rollback()
+                    except Exception:
+                        pass
 
-        if stamped_plan and stamped_tts:
-            tts_provider = stamped_tts
-            from config import TIER_CONFIG, resolve_tier_config
-            if stamped_plan == "custom":
-                sub = subs.get(cid)
-                tier_cfg = resolve_tier_config(sub) if sub else {}
-            else:
-                tier_cfg = TIER_CONFIG.get(stamped_plan, {})
-            llm_model = tier_cfg.get("llm_model", "gpt-4o-mini")
-            stt_provider = tier_cfg.get("stt_provider", "deepgram")
-            active_plan = stamped_plan
-        else:
-            # Legacy rows: fall back to current subscription
-            sub = subs.get(cid)
-            tts_provider = "deepgram"
-            stt_provider = "deepgram"
-            llm_model = "gpt-4o-mini"
-            active_plan = "starter"
-            if sub:
-                from config import TIER_CONFIG
-                tier_cfg = TIER_CONFIG.get(sub.plan, {})
-                tts_provider = tier_cfg.get("tts_provider", "deepgram")
-                stt_provider = tier_cfg.get("stt_provider", "deepgram")
-                llm_model = tier_cfg.get("llm_model", "gpt-4o-mini")
-                active_plan = sub.plan
+            for row in batch_rows:
+                cid = row.customer_id
+                if cid not in customers:
+                    continue
+                c_obj = customers[cid]
+                c_overrides = c_obj.report_settings.get("profitability_overrides", {})
+                
+                # Merge hierarchy: Base defaults -> Global Overrides -> Customer Overrides
+                effective_overrides = {}
+                effective_overrides.update(global_overrides)
+                effective_overrides.update(c_overrides)
 
-        usage_info = usage_map.get(row.dograh_run_id)
-        cost_breakdown = _estimate_call_cost_inr(
-            row.duration_seconds, usage_info, tts_provider, stt_provider, llm_model, effective_overrides
-        )
-        revenue_inr = row.cost_to_customer_paise / 100.0
+                # Use the plan stamped on the call_log at billing time (accurate for mid-month
+                # plan switches). Fall back to current subscription if column is NULL (old rows).
+                stamped_plan = getattr(row, "plan", None)
+                stamped_tts = getattr(row, "tts_provider", None)
 
-        plan_key = (cid, active_plan, tts_provider)
+                if stamped_plan and stamped_tts:
+                    tts_provider = stamped_tts
+                    if stamped_plan == "custom":
+                        sub = subs.get(cid)
+                        tier_cfg = resolve_tier_config(sub) if sub else {}
+                    else:
+                        tier_cfg = TIER_CONFIG.get(stamped_plan, {})
+                    llm_model = tier_cfg.get("llm_model", "gpt-4o-mini")
+                    stt_provider = tier_cfg.get("stt_provider", "deepgram")
+                    active_plan = stamped_plan
+                else:
+                    # Legacy rows: fall back to current subscription
+                    sub = subs.get(cid)
+                    tts_provider = "deepgram"
+                    stt_provider = "deepgram"
+                    llm_model = "gpt-4o-mini"
+                    active_plan = "starter"
+                    if sub:
+                        tier_cfg = TIER_CONFIG.get(sub.plan, {})
+                        tts_provider = tier_cfg.get("tts_provider", "deepgram")
+                        stt_provider = tier_cfg.get("stt_provider", "deepgram")
+                        llm_model = tier_cfg.get("llm_model", "gpt-4o-mini")
+                        active_plan = sub.plan
 
-        for bucket in [per_customer[cid], per_plan[plan_key]]:
-            bucket["calls"] += 1
-            bucket["total_minutes"] += row.duration_seconds / 60.0
-            bucket["revenue_inr"] += revenue_inr
-            bucket["cost_inr"] += cost_breakdown["total_cost_inr"]
-            bucket["plivo_inr"] += cost_breakdown["plivo_inr"]
-            bucket["stt_inr"] += cost_breakdown["stt_inr"]
-            bucket["tts_inr"] += cost_breakdown["tts_inr"]
-            bucket["llm_inr"] += cost_breakdown["llm_inr"]
+                usage_info = batch_usage_map.get(row.dograh_run_id)
+                cost_breakdown = _estimate_call_cost_inr(
+                    row.duration_seconds, usage_info, tts_provider, stt_provider, llm_model, effective_overrides
+                )
+                revenue_inr = row.cost_to_customer_paise / 100.0
 
-        total_revenue_inr += revenue_inr
-        total_cost_inr += cost_breakdown["total_cost_inr"]
+                plan_key = (cid, active_plan, tts_provider)
+
+                for bucket in [per_customer[cid], per_plan[plan_key]]:
+                    bucket["calls"] += 1
+                    bucket["total_minutes"] += row.duration_seconds / 60.0
+                    bucket["revenue_inr"] += revenue_inr
+                    bucket["cost_inr"] += cost_breakdown["total_cost_inr"]
+                    bucket["plivo_inr"] += cost_breakdown["plivo_inr"]
+                    bucket["stt_inr"] += cost_breakdown["stt_inr"]
+                    bucket["tts_inr"] += cost_breakdown["tts_inr"]
+                    bucket["llm_inr"] += cost_breakdown["llm_inr"]
+
+                total_revenue_inr += revenue_inr
+                total_cost_inr += cost_breakdown["total_cost_inr"]
+
+            batch_usage_map.clear()
+    finally:
+        if ddb_session_ctx:
+            try:
+                await ddb_session_ctx.__aexit__(None, None, None)
+            except Exception:
+                pass
 
     # --- Fetch topups for the period ---
     topup_q = select(func.sum(WalletTransaction.amount_paise)).where(

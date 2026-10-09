@@ -26,7 +26,11 @@ class UpdateStatusRequest(BaseModel):
     reason: Optional[str] = None
 
 @router.post("/")
-async def create_customer(data: CreateCustomerRequest, db: AsyncSession = Depends(get_db)):
+async def create_customer(
+    data: CreateCustomerRequest,
+    db: AsyncSession = Depends(get_db),
+    authorization: Optional[str] = Header(None)
+):
     result = await db.execute(
         select(Customer)
         .where(Customer.dograh_org_id == data.dograh_org_id)
@@ -65,7 +69,51 @@ async def create_customer(data: CreateCustomerRequest, db: AsyncSession = Depend
 
     billing_org_id = None
     if existing_email:
-        billing_org_id = existing_email.billing_org_id if existing_email.billing_org_id else existing_email.id
+        # Security: Prevent customer impersonation & workspace hijacking.
+        # Verify that the requester owns the existing email / customer account.
+        
+        # 1. User Identity Check:
+        # If the existing customer record has a dograh_user_id, the incoming dograh_user_id must match.
+        if existing_email.dograh_user_id and existing_email.dograh_user_id != data.dograh_user_id:
+            logger.warning(
+                f"Security: Impersonation attempt detected. Incoming dograh_user_id={data.dograh_user_id} "
+                f"attempted to register workspace for email '{data.email}', which is already owned by "
+                f"dograh_user_id={existing_email.dograh_user_id} (Customer ID {existing_email.id})."
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="Email is already associated with an existing customer account of another user."
+            )
+
+        # 2. Dograh Organization Membership Check:
+        # Verify that data.dograh_user_id actually belongs to data.dograh_org_id in Dograh DB
+        is_member = await dograh_client.verify_dograh_org_user(
+            org_id=data.dograh_org_id,
+            user_id=data.dograh_user_id,
+            email=data.email
+        )
+        if is_member is False:
+            logger.warning(
+                f"Security: dograh_user_id={data.dograh_user_id} is not a member of dograh_org_id={data.dograh_org_id}."
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="User is not authorized for this Dograh organization."
+            )
+
+        # 3. Only link if user identity is confirmed
+        if existing_email.dograh_user_id and existing_email.dograh_user_id == data.dograh_user_id:
+            billing_org_id = existing_email.billing_org_id if existing_email.billing_org_id else existing_email.id
+        elif not existing_email.dograh_user_id and is_member is True:
+            # Established customer created before dograh_user_id was tracked, verified via Dograh DB
+            billing_org_id = existing_email.billing_org_id if existing_email.billing_org_id else existing_email.id
+        else:
+            # Cannot verify ownership; do NOT link to existing billing account
+            logger.warning(
+                f"Ownership of email '{data.email}' could not be verified against existing customer {existing_email.id}. "
+                f"Creating standalone customer without linking billing."
+            )
+            billing_org_id = None
 
     customer = Customer(
         contact_email=data.email,
@@ -104,12 +152,18 @@ async def get_all_customers(
 
 # IMPORTANT: static paths must come before /{customer_id} to avoid shadowing
 @router.get("/existing")
-async def get_existing_customer(contact_email: str, db: AsyncSession = Depends(get_db)):
+async def get_existing_customer(
+    contact_email: str,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email")
+):
     """
     Check if an email already has an active/approved customer record in any org.
     Used by the frontend to detect returning customers creating a new workspace.
     Returns the master customer_id if found, or 404.
     """
+    if x_talkar_email and x_talkar_email.strip().lower() != contact_email.strip().lower():
+        raise HTTPException(status_code=403, detail="Cannot query account status for other email addresses.")
     result = await db.execute(
         select(Customer)
         .where(Customer.contact_email == contact_email)
@@ -187,8 +241,12 @@ async def save_agent_brief(dograh_org_id: int, data: dict, db: AsyncSession = De
     return customer
 
 @router.post("/by-org/{dograh_org_id}/new-agent-request")
-
-async def create_new_agent_request(dograh_org_id: int, data: dict, db: AsyncSession = Depends(get_db)):
+async def create_new_agent_request(
+    dograh_org_id: int,
+    data: dict,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email")
+):
     """
     Called when a returning customer fills the brief form on a brand-new workspace
     that has no Talkar customer record yet. Creates a sub-org customer record
@@ -210,6 +268,44 @@ async def create_new_agent_request(dograh_org_id: int, data: dict, db: AsyncSess
     if existing:
         return existing  # Idempotent
 
+    # Security: Verify caller identity against master customer to prevent workspace hijacking
+    caller_email = x_talkar_email.strip().lower() if x_talkar_email else None
+    master_email = master.contact_email.strip().lower() if master.contact_email else ""
+
+    if caller_email and caller_email != master_email:
+        logger.warning(
+            f"Security: Workspace hijacking attempt blocked. Authenticated caller '{caller_email}' "
+            f"attempted to link dograh_org_id={dograh_org_id} to master_customer_id={master.id} ('{master_email}')."
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: Caller is not authorized to link workspaces to this master customer account."
+        )
+
+    # Verify that the master customer is actually associated with this dograh_org_id in Dograh DB
+    is_org_member = await dograh_client.verify_dograh_org_user(
+        org_id=dograh_org_id,
+        user_id=master.dograh_user_id,
+        email=master.contact_email
+    )
+    if is_org_member is False:
+        logger.warning(
+            f"Security: Master customer {master.id} ({master.contact_email}) is not a member of Dograh org {dograh_org_id}."
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: Master customer is not associated with this organization."
+        )
+
+    if not caller_email and is_org_member is not True:
+        logger.warning(
+            f"Security: Unverified request for dograh_org_id={dograh_org_id} to link to master_customer_id={master.id}."
+        )
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required: Unable to verify caller identity."
+        )
+
     # Determine billing master (if master is itself a sub-org, use its master)
     billing_org_id = master.billing_org_id or master.id
 
@@ -223,6 +319,7 @@ async def create_new_agent_request(dograh_org_id: int, data: dict, db: AsyncSess
         onboarding_form=data.get("form", {}),
         billing_org_id=billing_org_id,
         dograh_org_id=dograh_org_id,
+        dograh_user_id=master.dograh_user_id,
     )
     db.add(new_customer)
     await db.commit()

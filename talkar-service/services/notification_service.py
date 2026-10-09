@@ -123,83 +123,153 @@ def format_body_to_html(body: str, subject: str) -> str:
     return html_content
 
 
-async def send_email(to_email: str, subject: str, body: str, cc: str | None = None):
-    """Send email via ZeptoMail SMTP.
+def build_email_mime_message(
+    to_email: str, subject: str, body: str, cc: str | None = None
+) -> tuple[MIMEMultipart, list[str]]:
+    """Build a styled multipart HTML + plain-text email message."""
+    html_content = format_body_to_html(body, subject)
+    html_body = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{subject}</title>
+        <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #fafafa; margin: 0; padding: 0; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }}
+            .container {{ max-width: 580px; margin: 40px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(9, 9, 11, 0.03), 0 1px 4px rgba(9, 9, 11, 0.02); border: 1px solid #e4e4e7; }}
+            .header {{ background-color: #09090b; padding: 24px 32px; text-align: center; border-bottom: 2px solid #fe6905; }}
+            .content {{ padding: 36px 40px; color: #27272a; font-size: 14px; line-height: 1.6; }}
+            .footer {{ background-color: #fafafa; padding: 20px 32px; text-align: center; font-size: 11px; color: #a1a1aa; border-top: 1px solid #f4f4f5; }}
+            a {{ color: #fe6905; text-decoration: none; font-weight: 500; }}
+            a:hover {{ text-decoration: underline; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                    <tr>
+                        <td align="center">
+                            <img src="https://talkar.in/logo-white.png" alt="Talkar" width="150" style="display: block; max-width: 150px; height: auto;" />
+                        </td>
+                    </tr>
+                </table>
+            </div>
+            <div class="content">
+                {html_content}
+            </div>
+            <div class="footer">
+                &copy; 2026 Talkar AI. All rights reserved.<br>
+                This is an automated communication regarding your workspace services.
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = f"Talkar <{settings.FROM_EMAIL}>"
+    msg["To"] = to_email
+    if cc:
+        msg["Cc"] = cc
+    msg.attach(MIMEText(body, "plain"))
+    msg.attach(MIMEText(html_body, "html"))
+
+    recipients = [to_email, cc] if cc else [to_email]
+    return msg, recipients
+
+
+def _send_bulk_sync(email_items: list[dict], batch_size: int = 50) -> dict:
+    """Synchronous worker that reuses a single TLS-authenticated SMTP session across batches."""
+    if not email_items:
+        return {"total": 0, "sent": 0, "failed": 0}
+
+    if not settings.SMTP_PASSWORD:
+        for item in email_items:
+            logger.info(
+                f"[EMAIL MOCK BULK] To: {item.get('to_email')} | "
+                f"Subject: {item.get('subject')} | Body: {str(item.get('body', ''))[:120]}"
+            )
+        return {"total": len(email_items), "sent": len(email_items), "failed": 0}
+
+    sent_count = 0
+    failed_count = 0
+
+    for i in range(0, len(email_items), batch_size):
+        chunk = email_items[i : i + batch_size]
+        server = None
+        try:
+            server = smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=30)
+            server.ehlo()
+            server.starttls()
+            server.login(settings.SMTP_EMAIL, settings.SMTP_PASSWORD)
+
+            for item in chunk:
+                to_email = item.get("to_email")
+                if not to_email:
+                    continue
+                subject = item.get("subject", "Talkar Notification")
+                body = item.get("body", "")
+                cc = item.get("cc")
+
+                try:
+                    msg, recipients = build_email_mime_message(to_email, subject, body, cc)
+                    server.sendmail(settings.FROM_EMAIL, recipients, msg.as_string())
+                    sent_count += 1
+                    logger.info(f"Email sent to {to_email}{f' (CC: {cc})' if cc else ''} | Subject: {subject}")
+                except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, ConnectionResetError, BrokenPipeError) as conn_err:
+                    logger.warning(f"SMTP connection lost sending to {to_email}, reconnecting: {conn_err}")
+                    try:
+                        server = smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=30)
+                        server.ehlo()
+                        server.starttls()
+                        server.login(settings.SMTP_EMAIL, settings.SMTP_PASSWORD)
+                        server.sendmail(settings.FROM_EMAIL, recipients, msg.as_string())
+                        sent_count += 1
+                        logger.info(f"Email sent to {to_email} after reconnection | Subject: {subject}")
+                    except Exception as retry_err:
+                        failed_count += 1
+                        logger.error(f"Failed sending email to {to_email} after retry: {retry_err}")
+                except Exception as item_err:
+                    failed_count += 1
+                    logger.error(f"Failed sending email to {to_email}: {item_err}")
+        except Exception as batch_conn_err:
+            logger.error(f"Failed connecting to SMTP server for batch: {batch_conn_err}")
+            failed_count += len(chunk)
+        finally:
+            if server:
+                try:
+                    server.quit()
+                except Exception:
+                    try:
+                        server.close()
+                    except Exception:
+                        pass
+
+    return {"total": len(email_items), "sent": sent_count, "failed": failed_count}
+
+
+async def send_bulk_emails(email_items: list[dict], batch_size: int = 50) -> dict:
+    """
+    Sends multiple emails reusing persistent SMTP TLS sessions.
+    Runs non-blocking in a thread pool via asyncio.to_thread.
+    """
+    return await asyncio.to_thread(_send_bulk_sync, email_items, batch_size)
+
+
+async def send_email(to_email: str, subject: str, body: str, cc: str | None = None) -> bool:
+    """Send email via ZeptoMail SMTP reusing persistent connection logic.
 
     Args:
         to_email: Primary recipient.
         subject:  Email subject line.
         body:     Plain-text body (also rendered as HTML).
-        cc:       Optional CC address.  Existing callers that omit this
-                  argument are completely unaffected (defaults to None).
+        cc:       Optional CC address. Defaults to None.
     """
-    if not settings.SMTP_PASSWORD:
-        logger.info(f"[EMAIL MOCK] To: {to_email} | CC: {cc} | Subject: {subject} | Body: {body[:120]}")
-        return
-
-    def _send():
-        html_content = format_body_to_html(body, subject)
-        html_body = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>{subject}</title>
-            <style>
-                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #fafafa; margin: 0; padding: 0; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }}
-                .container {{ max-width: 580px; margin: 40px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(9, 9, 11, 0.03), 0 1px 4px rgba(9, 9, 11, 0.02); border: 1px solid #e4e4e7; }}
-                .header {{ background-color: #09090b; padding: 24px 32px; text-align: center; border-bottom: 2px solid #fe6905; }}
-                .content {{ padding: 36px 40px; color: #27272a; font-size: 14px; line-height: 1.6; }}
-                .footer {{ background-color: #fafafa; padding: 20px 32px; text-align: center; font-size: 11px; color: #a1a1aa; border-top: 1px solid #f4f4f5; }}
-                a {{ color: #fe6905; text-decoration: none; font-weight: 500; }}
-                a:hover {{ text-decoration: underline; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                        <tr>
-                            <td align="center">
-                                <img src="https://talkar.in/logo-white.png" alt="Talkar" width="150" style="display: block; max-width: 150px; height: auto;" />
-                            </td>
-                        </tr>
-                    </table>
-                </div>
-                <div class="content">
-                    {html_content}
-                </div>
-                <div class="footer">
-                    &copy; 2026 Talkar AI. All rights reserved.<br>
-                    This is an automated communication regarding your workspace services.
-                </div>
-            </div>
-        </body>
-        </html>
-        """
-
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"] = f"Talkar <{settings.FROM_EMAIL}>"
-        msg["To"] = to_email
-        if cc:
-            msg["Cc"] = cc
-        msg.attach(MIMEText(body, "plain"))
-        msg.attach(MIMEText(html_body, "html"))
-
-        recipients = [to_email, cc] if cc else [to_email]
-        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
-            server.ehlo()
-            server.starttls()
-            server.login(settings.SMTP_EMAIL, settings.SMTP_PASSWORD)
-            server.sendmail(settings.FROM_EMAIL, recipients, msg.as_string())
-            logger.info(f"Email sent to {to_email}{f' (CC: {cc})' if cc else ''} | Subject: {subject}")
-
-    try:
-        await asyncio.to_thread(_send)
-    except Exception as e:
-        logger.error(f"Failed to send email to {to_email}: {e}")
+    result = await send_bulk_emails([{"to_email": to_email, "subject": subject, "body": body, "cc": cc}])
+    return result.get("sent", 0) > 0
 
 async def push_notification(customer_id: int, title: str, body: str, notification_type: str = "info"):
     """Push an in-app notification to the database."""

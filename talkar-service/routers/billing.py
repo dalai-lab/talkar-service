@@ -1,19 +1,57 @@
-from fastapi import APIRouter, Request, Depends, HTTPException, Query
+from fastapi import APIRouter, Request, Depends, HTTPException, Query, status, Header
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from sqlalchemy.sql import func
 from db.session import get_db
 from db.models import Customer, Subscription, Wallet, WalletTransaction, CallLog
 from services import razorpay_client, billing_service, provisioning_service, notification_service
+from services.customer_auth import verify_customer_access
 from pydantic import BaseModel
 from typing import Optional
 import json
 import logging
 import hmac
 import hashlib
+import secrets
 from config import settings, CALL_BLOCK_THRESHOLD_PAISE
 
 logger = logging.getLogger(__name__)
+
+billing_security = HTTPBearer(auto_error=False)
+
+async def verify_billing_token(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(billing_security),
+):
+    expected_token = getattr(settings, "TALKAR_BILLING_API_TOKEN", "")
+    token = None
+    if credentials and credentials.credentials:
+        token = credentials.credentials
+    elif "authorization" in request.headers:
+        auth_header = request.headers["authorization"]
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+        else:
+            token = auth_header.strip()
+    elif "x-billing-token" in request.headers:
+        token = request.headers["x-billing-token"].strip()
+
+    if not token:
+        logger.warning(f"Unauthorized billing request to {request.url.path}: missing authentication token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing billing authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not expected_token or not secrets.compare_digest(token, expected_token):
+        logger.warning(f"Forbidden billing request to {request.url.path}: invalid authentication token")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid billing authentication token",
+        )
+    return token
 
 router = APIRouter()
 
@@ -24,6 +62,8 @@ class TopupRequest(BaseModel):
 class DograhQuotaRequest(BaseModel):
     organization_id: int
     mode: Optional[str] = None
+    active_calls: Optional[int] = None
+    workflow_run_id: Optional[int] = None
 
 class DograhDeductRequest(BaseModel):
     workflow_run_id: int
@@ -156,16 +196,17 @@ class ConfirmTopupRequest(BaseModel):
     razorpay_order_id: str
     razorpay_signature: str
     dograh_org_id: int
-    amount_paise: int
+    amount_paise: Optional[int] = None
     requested_tier: Optional[str] = None
 
 @router.post("/confirm-topup")
 async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(get_db)):
     # 1. Verify signature (skip in mock mode)
+    is_mock = False
     if settings.RAZORPAY_KEY_SECRET:
         import os
         if data.razorpay_signature == "mock_signature" and os.environ.get("NODE_ENV") != "production":
-            pass # Explicitly allow dev mock bypass even if secret is loaded locally
+            is_mock = True  # Explicitly allow dev mock bypass even if secret is loaded locally
         else:
             msg = f"{data.razorpay_order_id}|{data.razorpay_payment_id}"
             expected = hmac.new(
@@ -175,7 +216,9 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
             ).hexdigest()
             if not hmac.compare_digest(expected, data.razorpay_signature):
                 raise HTTPException(400, "Invalid payment signature")
-    
+    else:
+        is_mock = True
+
     # 2. Find customer
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id))
     customer = result.scalar_one_or_none()
@@ -190,9 +233,39 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
         wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
         w = wallet_res.scalar_one_or_none()
         return {"status": "already_processed", "new_balance_paise": w.balance_paise if w else 0}
-    
-    # 4. Credit wallet
-    wallet = await billing_service.credit_wallet(db, customer.id, data.amount_paise, data.razorpay_order_id)
+
+    # 4. Authoritative amount verification from Razorpay (prevents client-tampered amounts)
+    credit_amount_paise: int = 0
+    if not is_mock and razorpay_client.client:
+        payment = await razorpay_client.fetch_payment(data.razorpay_payment_id)
+        if payment:
+            if payment.get("order_id") and payment.get("order_id") != data.razorpay_order_id:
+                raise HTTPException(400, "Payment order ID mismatch")
+            if payment.get("status") not in ("captured", "authorized"):
+                raise HTTPException(400, f"Payment is not successful (status: {payment.get('status')})")
+            credit_amount_paise = int(payment.get("amount") or 0)
+        else:
+            # Fallback to fetching order if payment lookup failed
+            order = await razorpay_client.fetch_order(data.razorpay_order_id)
+            if not order:
+                raise HTTPException(400, "Unable to verify payment with payment gateway")
+            credit_amount_paise = int(order.get("amount") or 0)
+
+        if credit_amount_paise <= 0:
+            raise HTTPException(400, "Invalid payment amount returned by payment gateway")
+
+        if data.amount_paise is not None and data.amount_paise != credit_amount_paise:
+            logger.warning(
+                f"Client claimed {data.amount_paise} paise, but Razorpay verified amount is {credit_amount_paise} paise. Using verified amount."
+            )
+    else:
+        # Dev / mock mode fallback
+        if data.amount_paise is None or data.amount_paise <= 0:
+            raise HTTPException(400, "amount_paise must be a positive integer in mock mode")
+        credit_amount_paise = data.amount_paise
+
+    # 5. Credit wallet with verified amount
+    wallet = await billing_service.credit_wallet(db, customer.id, credit_amount_paise, data.razorpay_order_id)
     
     # 5. Process Tier Upgrade if requested
     if data.requested_tier:
@@ -272,21 +345,24 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
                 subject="Your Talkar Agent is Live!",
                 body="Your wallet is funded and your agent is now active!"
             )
-    elif customer.status == "suspended" and wallet.balance_paise >= activation_threshold:
-        customer.status = "active"
-        await db.commit()
-        from services.provisioning_service import run_provisioning
-        from services import dograh_client
-        try:
-            await run_provisioning(customer.id, None, db)
-        except Exception as e:
-            logger.error(f"Failed to re-provision after reactivating customer {customer.id}: {e}")
-        # Synchronize wallet block policy
-        from services.billing_service import sync_wallet_block_policy
-        await sync_wallet_block_policy(db, customer.id)
+    elif customer.status == "suspended":
+        from config import CALL_BLOCK_THRESHOLD_PAISE
+        if wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE:
+            customer.status = "active"
+            await db.commit()
+            from services.provisioning_service import run_provisioning
+            try:
+                await run_provisioning(customer.id, None, db)
+            except Exception as e:
+                logger.error(f"Failed to re-provision after reactivating customer {customer.id}: {e}")
+
+    # Synchronize wallet block policy unconditionally so Dograh CONCURRENT_CALL_LIMIT is restored
+    # for all active customers (and any reactivated from suspended/pending_deposit)
+    from services.billing_service import sync_wallet_block_policy
+    await sync_wallet_block_policy(db, customer.id)
 
     from services.notification_service import notify_customer_topup_successful
-    await notify_customer_topup_successful(customer.id, data.amount_paise, wallet.balance_paise)
+    await notify_customer_topup_successful(customer.id, credit_amount_paise, wallet.balance_paise)
 
     return {"status": "ok", "new_balance_paise": wallet.balance_paise}
 
@@ -442,22 +518,58 @@ async def razorpay_webhook(request: Request, db: AsyncSession = Depends(get_db))
                                             await dograh_client.restore_org_calls(sub_org.dograh_org_id, requested_tier, sub_concurrent)
                                     except Exception as e:
                                         logger.error(f"Failed to cascade provisioning/restore to sub-org {sub_org.id}: {e}")
+                else:
+                    # Regular top-up via webhook: auto-reactivate if suspended/pending_deposit and restore calls
+                    cust_result = await db.execute(select(Customer).where(Customer.id == customer_id))
+                    cust = cust_result.scalar_one_or_none()
+                    if cust:
+                        sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer_id))
+                        sub = sub_res.scalar_one_or_none()
+                        from config import resolve_tier_config, CALL_BLOCK_THRESHOLD_PAISE
+                        tier_cfg = resolve_tier_config(sub)
+                        activation_threshold = tier_cfg.get("activation_deposit_paise", 600000)
+
+                        if cust.status == "pending_deposit" and wallet.balance_paise >= activation_threshold:
+                            cust.status = "active"
+                            await db.commit()
+                            from services.provisioning_service import run_provisioning
+                            try:
+                                await run_provisioning(cust.id, None, db)
+                            except Exception as e:
+                                logger.error(f"Failed to provision after webhook activating customer {cust.id}: {e}")
+                        elif cust.status == "suspended" and wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE:
+                            cust.status = "active"
+                            await db.commit()
+                            from services.provisioning_service import run_provisioning
+                            try:
+                                await run_provisioning(cust.id, None, db)
+                            except Exception as e:
+                                logger.error(f"Failed to re-provision after webhook reactivating customer {cust.id}: {e}")
+
+                        # Synchronize wallet block policy unconditionally so call limits in Dograh are restored
+                        from services.billing_service import sync_wallet_block_policy
+                        await sync_wallet_block_policy(db, cust.id)
 
     return {"status": "ok"}
 
 @router.post("/check-quota")
-async def check_quota(data: DograhQuotaRequest, db: AsyncSession = Depends(get_db)):
+async def check_quota(
+    data: DograhQuotaRequest,
+    db: AsyncSession = Depends(get_db),
+    _token: str = Depends(verify_billing_token),
+):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.organization_id))
     customer = result.scalar_one_or_none()
     if not customer:
-        return {"has_quota": True}  # Unknown org — pass through
+        logger.warning(f"Quota check rejected: No Talkar customer found for Dograh org {data.organization_id}")
+        return {"has_quota": False, "reason": "unknown_organization"}
         
-    if customer.status == "agent_building":
-        # Test bypass: agent is being built — skip wallet check so devs can test calls freely.
-        # This is automatically revoked the moment mark_ready flips the status to active/pending_deposit.
-        return {"has_quota": True}
     if customer.status != "active":
-        return {"has_quota": False}
+        # Allow zero-cost web/text chat playground testing during agent_building, but block all telephony
+        if customer.status == "agent_building" and data.mode in ("textchat", "webrtc", "smallwebrtc"):
+            return {"has_quota": True}
+        logger.info(f"Quota check rejected: Customer {customer.id} status is '{customer.status}' (mode: {data.mode})")
+        return {"has_quota": False, "reason": f"customer_status_{customer.status}"}
 
     from services.billing_service import get_billing_wallet, check_and_trigger_auto_recharge
     wallet, master_id = await get_billing_wallet(db, customer.id)
@@ -487,27 +599,50 @@ async def check_quota(data: DograhQuotaRequest, db: AsyncSession = Depends(get_d
     # Cost of one worst-case call (max duration, ceil'd to minutes)
     max_call_cost = math.ceil(max_duration_secs / 60) * rate
     
-    # Must have enough to cover at least one full call before granting quota.
-    # Previously this was "5 * rate" (~₹30 starter) which was far too low and caused
-    # wallet to go negative when multiple concurrent calls all finished simultaneously.
-    if wallet.balance_paise < max_call_cost:
-        logger.warning(f"Org {data.organization_id} has balance {wallet.balance_paise} below one-call reserve {max_call_cost}")
+    # Concurrency-aware reserve: required balance scales with active in-flight calls
+    # Provided directly by Dograh's self-cleaning Redis rate-limiter:
+    # Required = (active_calls) * max_call_cost
+    concurrent_calls = data.active_calls if (data.active_calls is not None and data.active_calls >= 1) else 1
+
+    # Tier Concurrency Limit Check across the entire customer fleet
+    if concurrent_calls > concurrent_call_limit:
+        logger.warning(
+            f"Org {data.organization_id} exceeded tier concurrency limit: "
+            f"{concurrent_calls} > {concurrent_call_limit}"
+        )
+        return {
+            "has_quota": False,
+            "reason": "concurrency_limit_exceeded",
+            "active_calls": concurrent_calls,
+            "concurrent_call_limit": concurrent_call_limit,
+        }
+
+    total_required_reserve = concurrent_calls * max_call_cost
+
+    # Must have enough to cover all concurrent in-flight calls before granting quota.
+    if wallet.balance_paise < total_required_reserve:
+        logger.warning(
+            f"Org {data.organization_id} has balance {wallet.balance_paise} below required reserve "
+            f"{total_required_reserve} paise for {concurrent_calls} concurrent call(s) (rate: {rate}, max_cost: {max_call_cost})"
+        )
         await check_and_trigger_auto_recharge(db, master_id)
-        return {"has_quota": False, "reason": "insufficient_reserve", "balance_paise": wallet.balance_paise, "required_paise": max_call_cost}
-        
-    # 2. Billing Group Concurrency Cap
-    # We no longer enforce the concurrency cap here using a Talkar Redis counter.
-    # Why? Because Dograh already enforces the exact concurrent_call_limit we push to it
-    # via its own reliable ZSET-based rate limiter (which correctly releases slots on failure).
-    # If a call drops before /deduct is called, Talkar's counter would leak permanently.
-    # The balance check above ensures we have enough money for at least 1 call, and if we
-    # drop below ₹500, we block calls via sync_wallet_block_policy which pushes limit=0 to Dograh.
-    
+        return {
+            "has_quota": False,
+            "reason": "insufficient_reserve",
+            "balance_paise": wallet.balance_paise,
+            "required_paise": total_required_reserve,
+            "concurrent_calls": concurrent_calls,
+        }
+
     return {"has_quota": True}
 
 
 @router.post("/deduct")
-async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(get_db)):
+async def deduct_for_run(
+    data: DograhDeductRequest,
+    db: AsyncSession = Depends(get_db),
+    _token: str = Depends(verify_billing_token),
+):
     import math
     from sqlalchemy.sql import func
     from services.billing_service import check_and_trigger_auto_recharge
@@ -518,10 +653,6 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
     if not customer:
         logger.warning(f"No customer found for org {data.organization_id} — run {data.workflow_run_id} not billed")
         return {"status": "ignored", "reason": "no customer found for org"}
-        
-    if customer.status != "active":
-        logger.warning(f"Customer {customer.id} is not active (status: {customer.status}) — run {data.workflow_run_id} not billed")
-        return {"status": "ignored", "reason": "customer not active"}
 
     # --- Idempotency: never double-charge the same run ---
     existing = await db.execute(
@@ -685,11 +816,23 @@ async def deduct_for_run(data: DograhDeductRequest, db: AsyncSession = Depends(g
     return {"status": "ok", "cost_paise": cost_paise, "new_balance_paise": wallet.balance_paise if wallet else None}
 
 @router.get("/wallet/by-org/{org_id}")
-async def get_wallet_by_org(org_id: int, db: AsyncSession = Depends(get_db)):
+async def get_wallet_by_org(
+    org_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None)
+):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
+
+    await verify_customer_access(
+        customer=customer,
+        db=db,
+        x_talkar_email=x_talkar_email,
+        authorization=authorization
+    )
         
     from services.billing_service import get_billing_wallet
     wallet, master_id = await get_billing_wallet(db, customer.id)
@@ -853,6 +996,9 @@ async def confirm_add_card(data: ConfirmAddCardRequest, db: AsyncSession = Depen
 
     await db.commit()
 
+    from services.redis_client import clear_auto_recharge_failures
+    await clear_auto_recharge_failures(master_id)
+
     return {
         "status": "card_saved",
         "payment_method_id": wallet.razorpay_payment_method_id
@@ -863,12 +1009,24 @@ class SaveCardRequest(BaseModel):
     razorpay_payment_method_id: str
 
 @router.post("/save-card")
-async def save_card(data: SaveCardRequest, db: AsyncSession = Depends(get_db)):
+async def save_card(
+    data: SaveCardRequest,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None)
+):
     """Step 2: Save the card token after customer completes mandate authorization."""
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
+
+    await verify_customer_access(
+        customer=customer,
+        db=db,
+        x_talkar_email=x_talkar_email,
+        authorization=authorization
+    )
     
     from services.billing_service import get_billing_wallet
     wallet, master_id = await get_billing_wallet(db, customer.id)
@@ -878,6 +1036,9 @@ async def save_card(data: SaveCardRequest, db: AsyncSession = Depends(get_db)):
     
     wallet.razorpay_payment_method_id = data.razorpay_payment_method_id
     await db.commit()
+
+    from services.redis_client import clear_auto_recharge_failures
+    await clear_auto_recharge_failures(master_id)
     
     return {"status": "card_saved"}
 
@@ -999,7 +1160,13 @@ class AutoRechargeSettings(BaseModel):
     amount_paise: int
 
 @router.patch("/wallet/auto-recharge/by-org/{org_id}")
-async def update_auto_recharge(org_id: int, data: AutoRechargeSettings, db: AsyncSession = Depends(get_db)):
+async def update_auto_recharge(
+    org_id: int,
+    data: AutoRechargeSettings,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None)
+):
     if data.threshold_paise < 10000:
         raise HTTPException(400, "Minimum threshold is ₹100")
     if data.amount_paise < 50000:
@@ -1009,6 +1176,13 @@ async def update_auto_recharge(org_id: int, data: AutoRechargeSettings, db: Asyn
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
+
+    await verify_customer_access(
+        customer=customer,
+        db=db,
+        x_talkar_email=x_talkar_email,
+        authorization=authorization
+    )
     
     from services.billing_service import get_billing_wallet
     wallet, master_id = await get_billing_wallet(db, customer.id)
@@ -1022,6 +1196,10 @@ async def update_auto_recharge(org_id: int, data: AutoRechargeSettings, db: Asyn
     wallet.auto_recharge_threshold_paise = data.threshold_paise
     wallet.auto_recharge_amount_paise = data.amount_paise
     await db.commit()
+
+    if data.enabled:
+        from services.redis_client import clear_auto_recharge_failures
+        await clear_auto_recharge_failures(master_id)
     
     return {"status": "ok"}
 

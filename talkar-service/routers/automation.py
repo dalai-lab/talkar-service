@@ -148,13 +148,15 @@ async def credit_customer(
         except Exception:
             pass
 
-    elif customer.status == "suspended" and wallet.balance_paise >= activation_threshold:
-        customer.status = "active"
-        await db.commit()
-        try:
-            await run_provisioning(customer.id, None, db)
-        except Exception:
-            pass
+    elif customer.status == "suspended":
+        from config import CALL_BLOCK_THRESHOLD_PAISE
+        if wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE:
+            customer.status = "active"
+            await db.commit()
+            try:
+                await run_provisioning(customer.id, None, db)
+            except Exception:
+                pass
 
     # Synchronize wallet block policy
     from services.billing_service import sync_wallet_block_policy
@@ -301,11 +303,9 @@ async def unsuspend_customer(
     
     sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == master_id))
     sub = sub_res.scalar_one_or_none()
-    tier_cfg = resolve_tier_config(sub)
-    activation_threshold = tier_cfg.get("activation_deposit_paise", 600000)
-
-    if not wallet or wallet.balance_paise < activation_threshold:
-        raise HTTPException(400, f"Wallet balance must be >= {activation_threshold/100:.2f} INR to unsuspend")
+    from config import CALL_BLOCK_THRESHOLD_PAISE
+    if not wallet or wallet.balance_paise <= CALL_BLOCK_THRESHOLD_PAISE:
+        raise HTTPException(400, f"Wallet balance must be > {CALL_BLOCK_THRESHOLD_PAISE/100:.2f} INR to unsuspend")
 
     customer.status = "active"
     existing_form = dict(customer.onboarding_form or {})

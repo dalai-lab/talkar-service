@@ -5,7 +5,7 @@ from sqlalchemy import text
 from config import settings
 
 # Override the DB URL if needed for docker, but settings should load it from env_file
-engine = create_async_engine(settings.TALKAR_DB_URL, echo=True)
+engine = create_async_engine(settings.TALKAR_DB_URL, echo=False)
 SessionLocal = sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 
 async def apply_fixes():

@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     FROM_EMAIL: str = "noreply@talkar.in"
     ADMIN_EMAIL: str = "admin@talkar.in"
 
+    # Database connection pool and logging settings
+    DB_POOL_SIZE: int = 30
+    DB_MAX_OVERFLOW: int = 20
+    DB_POOL_TIMEOUT: int = 30
+    DB_POOL_RECYCLE: int = 1800
+    DB_ECHO: bool = False
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 settings = Settings()

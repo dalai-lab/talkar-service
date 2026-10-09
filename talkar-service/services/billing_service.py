@@ -80,6 +80,34 @@ async def credit_wallet(db: AsyncSession, customer_id: int, amount_paise: int, r
 
 _in_flight_recharges = set()
 
+async def _handle_auto_recharge_failure(db: AsyncSession, wallet: Wallet, master_id: int, error_detail: str):
+    """
+    Handles auto-recharge failure by setting a cooldown, tracking consecutive failures,
+    notifying customer & admin, and disabling auto-recharge after repeated failures.
+    """
+    from services import redis_client
+    fail_count, cooldown_sec = await redis_client.record_auto_recharge_failure(master_id)
+    logger.warning(
+        f"Auto-recharge failure #{fail_count} for customer {master_id} ({error_detail}). "
+        f"Cooldown applied for {cooldown_sec}s."
+    )
+    try:
+        await notification_service.notify_customer_auto_recharge_failed(master_id)
+        await notification_service.notify_admin_auto_recharge_failed(master_id)
+    except Exception as notify_err:
+        logger.error(f"Failed to send auto-recharge failure notifications: {notify_err}")
+
+    # If consecutive failures reach threshold (3), disable auto-recharge to prevent card suspension & gateway fraud flagging
+    if fail_count >= 3:
+        logger.error(
+            f"Disabling auto-recharge for customer {master_id} after {fail_count} consecutive payment failures."
+        )
+        wallet.auto_recharge_enabled = False
+        try:
+            await db.commit()
+        except Exception as commit_err:
+            logger.error(f"Failed to persist auto_recharge_enabled=False to DB: {commit_err}")
+
 async def check_and_trigger_auto_recharge(db: AsyncSession, customer_id: int):
     """Evaluates threshold and triggers Razorpay token charge if enabled with duplicate charge guard."""
     wallet, master_id = await get_billing_wallet(db, customer_id)
@@ -99,16 +127,22 @@ async def check_and_trigger_auto_recharge(db: AsyncSession, customer_id: int):
         return
 
     if wallet.balance_paise < wallet.auto_recharge_threshold_paise:
-        # In-memory in-flight guard
+        from services import redis_client
+
+        # Guard 1: Cooldown check to prevent stampede on repeated payment failures
+        if await redis_client.is_auto_recharge_in_cooldown(master_id):
+            logger.info(f"Auto-recharge for customer {master_id} is in cooldown after previous payment failure, skipping.")
+            return
+
+        # Guard 2: In-memory in-flight guard for current process
         if master_id in _in_flight_recharges:
             logger.info(f"Auto-recharge already in flight in this process for customer {master_id}, skipping.")
             return
 
-        # Distributed lock guard to prevent race condition across multiple concurrent calls/workers
-        from services import redis_client
+        # Guard 3: Distributed lock guard (fails closed) to prevent race condition across multiple concurrent calls/workers
         locked = await redis_client.acquire_auto_recharge_lock(master_id, ttl_seconds=120)
         if not locked:
-            logger.info(f"Auto-recharge lock currently held for customer {master_id}, skipping concurrent charge.")
+            logger.info(f"Auto-recharge lock currently held (or Redis unavailable) for customer {master_id}, skipping concurrent charge.")
             return
 
         _in_flight_recharges.add(master_id)
@@ -128,12 +162,17 @@ async def check_and_trigger_auto_recharge(db: AsyncSession, customer_id: int):
                     description="Auto-recharge: Low balance top-up via saved card"
                 )
                 logger.info(f"Auto-recharge successful for customer {master_id}")
+                await sync_wallet_block_policy(db, master_id)
+                # Successful charge clears any prior failure counter or cooldown
+                await redis_client.clear_auto_recharge_failures(master_id)
             else:
+                charge_status = charge.get("status", "unknown")
+                err_msg = f"Auto-recharge charge uncaptured (status: {charge_status})"
                 logger.error(f"Auto-recharge charge uncaptured for customer {master_id}: {charge}")
+                await _handle_auto_recharge_failure(db, wallet, master_id, err_msg)
         except Exception as e:
             logger.error(f"Auto-recharge failed for customer {master_id}: {e}")
-            await notification_service.notify_customer_auto_recharge_failed(master_id)
-            await notification_service.notify_admin_auto_recharge_failed(master_id)
+            await _handle_auto_recharge_failure(db, wallet, master_id, str(e))
         finally:
             _in_flight_recharges.discard(master_id)
             await redis_client.release_auto_recharge_lock(master_id)
@@ -160,11 +199,7 @@ async def deduct_for_run(run_id: int):
         result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
         customer = result.scalar_one_or_none()
         if not customer:
-            logger.warning(f"No customer found for org {org_id} â€” run {run_id} not billed")
-            return
-            
-        if customer.status != "active":
-            logger.warning(f"Customer {customer.id} is not active (status: {customer.status}) â€” run {run_id} not billed")
+            logger.warning(f"No customer found for org {org_id} — run {run_id} not billed")
             return
             
         sub_result = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
@@ -276,21 +311,24 @@ async def sync_wallet_block_policy(db: AsyncSession, customer_id: int):
     tier = sub.plan if sub else "starter"
     concurrent_limit = resolve_tier_config(sub).get("concurrent_call_limit")
 
-    # Gather orgs to update
-    org_ids_to_update = []
+    # Master Dograh org ID acts as the concurrency group key for the entire fleet
+    master_dograh_id = master.dograh_org_id
+
+    # Gather orgs to update with their concurrency group ID
+    orgs_to_update = []
     if master.dograh_org_id:
-        org_ids_to_update.append(master.dograh_org_id)
+        orgs_to_update.append((master.dograh_org_id, master.dograh_org_id))
     
     sub_orgs = await db.execute(select(Customer).where(Customer.billing_org_id == master_id))
     for sub_org in sub_orgs.scalars().all():
         if sub_org.dograh_org_id:
-            org_ids_to_update.append(sub_org.dograh_org_id)
+            orgs_to_update.append((sub_org.dograh_org_id, master_dograh_id or sub_org.dograh_org_id))
 
-    for org_id in org_ids_to_update:
+    for org_id, group_id in orgs_to_update:
         try:
             if should_block:
                 await dograh_client.block_org_calls(org_id)
             else:
-                await dograh_client.restore_org_calls(org_id, tier, concurrent_limit)
+                await dograh_client.restore_org_calls(org_id, tier, concurrent_limit, group_id=group_id)
         except Exception as e:
             logger.error(f"Failed to sync Dograh call limit for org {org_id}: {e}")

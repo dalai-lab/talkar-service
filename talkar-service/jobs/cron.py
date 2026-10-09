@@ -19,23 +19,49 @@ async def nightly_reconciliation(ctx):
     
     # Get all Dograh workflow_runs completed in last 25h (buffer for 24h)
     runs = await dograh_client.get_completed_runs(hours=25)
-    
+    if not runs:
+        logger.info("Nightly reconciliation completed: 0 completed runs found.")
+        return
+
+    logger.info(f"Reconciliation: fetched {len(runs)} completed runs from Dograh to verify.")
+
+    run_ids = [r["id"] for r in runs if r.get("id")]
+    processed_run_ids = set()
+
     async with AsyncSessionLocal() as db:
-        for run in runs:
-            # Check if this run was already processed
+        # Bulk query existing processed call logs in chunks to eliminate N+1 queries
+        CHUNK_SIZE = 1000
+        for i in range(0, len(run_ids), CHUNK_SIZE):
+            chunk = run_ids[i : i + CHUNK_SIZE]
             result = await db.execute(
-                select(CallLog).where(
-                    CallLog.dograh_run_id == run["id"],
+                select(CallLog.dograh_run_id).where(
+                    CallLog.dograh_run_id.in_(chunk),
                     CallLog.processed_at.is_not(None)
                 )
             )
-            exists = result.scalar_one_or_none()
-            
-            if not exists:
-                await billing_service.deduct_for_run(run["id"])
-                logger.info(f"Reconciliation: deducted for run {run['id']}")
+            processed_run_ids.update(result.scalars().all())
+
+    deducted_count = 0
+    skipped_count = len(processed_run_ids)
+    error_count = 0
+
+    for run in runs:
+        run_id = run["id"]
+        if run_id in processed_run_ids:
+            continue
+
+        try:
+            await billing_service.deduct_for_run(run_id)
+            deducted_count += 1
+            logger.info(f"Reconciliation: successfully deducted for run {run_id}")
+        except Exception as e:
+            error_count += 1
+            logger.error(f"Reconciliation: failed to deduct for run {run_id}: {e}", exc_info=True)
                 
-    logger.info("Nightly reconciliation completed.")
+    logger.info(
+        f"Nightly reconciliation completed: {deducted_count} deducted, "
+        f"{skipped_count} already processed, {error_count} failed."
+    )
 
 async def check_low_balances(ctx):
     """
