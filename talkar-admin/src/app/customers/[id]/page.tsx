@@ -284,7 +284,7 @@ export default function CustomerDetailPage() {
         body: JSON.stringify({
           amount_paise: amountPaise,
           reason: setBalanceReason || "Admin manual override",
-          expected_balance_paise: wallet?.balance_paise
+          expected_balance_paise: customer?.wallet?.balance_paise
         })
       });
       if (res.ok) {
