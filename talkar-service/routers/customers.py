@@ -199,6 +199,30 @@ async def get_existing_customer(
         "company_name": customer.company_name,
     }
 
+@router.get("/by-email/{email:path}")
+async def get_customer_by_email(
+    email: str,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Customer)
+        .where(Customer.contact_email == email.strip())
+        .order_by(Customer.updated_at.desc())
+        .limit(1)
+    )
+    customer = result.scalars().first()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    return {
+        "id": customer.id,
+        "customer_id": customer.id,
+        "dograh_org_id": customer.dograh_org_id,
+        "status": customer.status,
+        "contact_name": customer.contact_name,
+        "company_name": customer.company_name,
+        "contact_email": customer.contact_email,
+    }
+
 @router.post("/by-org/{dograh_org_id}/new-agent-brief")
 async def save_agent_brief(dograh_org_id: int, data: dict, db: AsyncSession = Depends(get_db)):
     """
@@ -394,15 +418,14 @@ async def get_customer_status(
         result = await db.execute(select(Customer).where(Customer.id == customer_id))
         customer = result.scalar_one_or_none()
     elif contact_email:
-        # Legacy fallback: only match customers that haven't been linked to a dograh_org yet
+        # Match by contact_email
         result = await db.execute(
             select(Customer)
-            .where(Customer.contact_email == contact_email)
-            .where(Customer.dograh_org_id == None)  # noqa: E711
-            .order_by(Customer.id.asc())
+            .where(Customer.contact_email == contact_email.strip())
+            .order_by(Customer.updated_at.desc())
             .limit(1)
         )
-        customer = result.scalar_one_or_none()
+        customer = result.scalars().first()
 
     if not customer:
         raise HTTPException(status_code=404, detail="No Talkar account found for this workspace")
