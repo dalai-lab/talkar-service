@@ -91,10 +91,16 @@ async def lifespan(app: FastAPI):
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_transactions_razorpay
                 ON wallet_transactions(razorpay_order_id) WHERE razorpay_order_id IS NOT NULL;
             """))
-            try:
-                await conn.execute(text("ALTER TABLE subscriptions ADD CONSTRAINT uq_subscription_customer_id UNIQUE (customer_id);"))
-            except Exception:
-                pass
+            await conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint WHERE conname = 'uq_subscription_customer_id'
+                    ) THEN
+                        ALTER TABLE subscriptions ADD CONSTRAINT uq_subscription_customer_id UNIQUE (customer_id);
+                    END IF;
+                END $$;
+            """))
             await conn.execute(text("UPDATE subscriptions SET per_minute_rate_paise = 600 WHERE plan = 'starter' AND per_minute_rate_paise != 600;"))
             await conn.execute(text("UPDATE subscriptions SET per_minute_rate_paise = 1800 WHERE plan = 'pro' AND per_minute_rate_paise != 1800;"))
     except Exception as e:
