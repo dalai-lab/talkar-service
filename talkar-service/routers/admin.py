@@ -1,13 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, func, text, delete
+from sqlalchemy import select, update, func, text, delete, case
 from db.session import get_db
-from db.models import Customer, Wallet, WalletTransaction, CallLog, Agent, TalkarAdmin, Subscription, Notification
-from services import razorpay_client, notification_service
+from db.models import Customer, Wallet, WalletTransaction, CallLog, Agent, TalkarAdmin, Subscription, Notification, TransactionType
+from services import razorpay_client, notification_service, dograh_client
 from services.admin_auth import get_current_admin, create_admin_access_token
 from pydantic import BaseModel
 from typing import Optional, List
 from config import CALL_BLOCK_THRESHOLD_PAISE
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -34,6 +38,7 @@ class RequestInfoRequest(BaseModel):
 class CreditGrantRequest(BaseModel):
     amount_paise: int
     description: str
+    type: Optional[str] = TransactionType.MANUAL_CREDIT.value
 
 class AdminCreateRequest(BaseModel):
     email: str
@@ -262,6 +267,14 @@ async def set_custom_pricing(customer_id: int, data: SetCustomPricingRequest, db
     if not sub:
         raise HTTPException(400, "Customer has no subscription record yet. Ensure provisioning has run first.")
     
+    from config import get_minimum_rate_floor_paise
+    floor = get_minimum_rate_floor_paise(data.tts_provider)
+    if data.per_minute_rate_paise < floor:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Rate of {data.per_minute_rate_paise} paise/min is below provider floor of {floor} paise/min (₹{floor/100:.2f}/min) for {data.tts_provider}."
+        )
+
     custom_config_data = {
         "concurrent_call_limit": data.concurrent_call_limit,
         "max_call_duration_seconds": data.max_call_duration_seconds,
@@ -476,11 +489,77 @@ async def get_customer_subscription(customer_id: int, db: AsyncSession = Depends
         "custom_plan_label": getattr(sub, "custom_plan_label", None),
     }
 
+async def _resolve_agent_tts_provider(agent: Agent, db: AsyncSession) -> str:
+    """Helper to detect the agent's effective TTS provider from Dograh org config or subscription tier."""
+    from services import dograh_client
+    org_id = agent.dograh_org_id
+    if not org_id:
+        cust_res = await db.execute(select(Customer).where(Customer.id == agent.customer_id))
+        cust = cust_res.scalar_one_or_none()
+        if cust:
+            org_id = cust.dograh_org_id
+
+    if org_id:
+        try:
+            cfg = await dograh_client.get_org_config(org_id, "MODEL_CONFIGURATION_V2")
+            if cfg:
+                tts_cfg = cfg.get("byok", {}).get("pipeline", {}).get("tts", {})
+                provider = tts_cfg.get("provider")
+                if provider:
+                    return str(provider)
+        except Exception as e:
+            logger.warning(f"Could not fetch MODEL_CONFIGURATION_V2 for org {org_id}: {e}")
+
+    # Fallback to subscription tier's default TTS provider
+    try:
+        sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == agent.customer_id))
+        sub = sub_res.scalar_one_or_none()
+        if not isinstance(sub, Subscription):
+            sub = None
+    except Exception:
+        sub = None
+    from config import resolve_tier_config
+    return str(resolve_tier_config(sub).get("tts_provider", "deepgram"))
+
+
 @router.patch("/customers/{customer_id}/agents/{agent_id}/rate")
+@router.post("/customers/{customer_id}/agents/{agent_id}/rate")
 async def update_agent_rate(customer_id: int, agent_id: int, data: UpdateAgentRateRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
     result = await db.execute(select(Agent).where(Agent.id == agent_id, Agent.customer_id == customer_id))
     agent = result.scalar_one_or_none()
     if not agent: raise HTTPException(404, "Agent not found for this customer")
+
+    if data.per_minute_rate_paise is not None:
+        from config import get_minimum_rate_floor_paise
+        tts_provider = await _resolve_agent_tts_provider(agent, db)
+        floor = get_minimum_rate_floor_paise(tts_provider)
+        if data.per_minute_rate_paise < floor:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Rate of {data.per_minute_rate_paise} paise/min is below provider floor of {floor} paise/min (₹{floor/100:.2f}/min) for {tts_provider}."
+            )
+
+    agent.per_minute_rate_paise = data.per_minute_rate_paise
+    await db.commit()
+    return {"status": "ok", "per_minute_rate_paise": agent.per_minute_rate_paise}
+
+@router.patch("/agents/{agent_id}/rate")
+@router.post("/agents/{agent_id}/rate")
+async def update_agent_rate_direct(agent_id: int, data: UpdateAgentRateRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
+    result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    agent = result.scalar_one_or_none()
+    if not agent: raise HTTPException(404, "Agent not found")
+
+    if data.per_minute_rate_paise is not None:
+        from config import get_minimum_rate_floor_paise
+        tts_provider = await _resolve_agent_tts_provider(agent, db)
+        floor = get_minimum_rate_floor_paise(tts_provider)
+        if data.per_minute_rate_paise < floor:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Rate of {data.per_minute_rate_paise} paise/min is below provider floor of {floor} paise/min (₹{floor/100:.2f}/min) for {tts_provider}."
+            )
+
     agent.per_minute_rate_paise = data.per_minute_rate_paise
     await db.commit()
     return {"status": "ok", "per_minute_rate_paise": agent.per_minute_rate_paise}
@@ -587,15 +666,28 @@ async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: As
     result = await db.execute(
         update(Wallet)
         .where(Wallet.customer_id == master_id)
-        .values(balance_paise=Wallet.balance_paise + data.amount_paise)
+        .values(
+            balance_paise=Wallet.balance_paise + data.amount_paise,
+            zero_balance_since=case(
+                (Wallet.balance_paise + data.amount_paise <= 0, func.coalesce(Wallet.zero_balance_since, func.now())),
+                else_=None
+            )
+        )
         .returning(Wallet)
     )
     wallet = result.scalar_one_or_none()
     
     # Store transaction
+    valid_credit_types = {
+        TransactionType.MANUAL_CREDIT.value,
+        TransactionType.GRANT.value,
+        TransactionType.TOP_UP.value,
+        TransactionType.CREDIT.value,
+    }
+    txn_type = data.type if data.type in valid_credit_types else TransactionType.MANUAL_CREDIT.value
     txn = WalletTransaction(
         customer_id=master_id,
-        type="manual_credit",
+        type=txn_type,
         amount_paise=data.amount_paise,
         description=data.description
     )
@@ -655,6 +747,7 @@ async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: As
 class AdminDeductRequest(BaseModel):
     amount_paise: int
     reason: str
+    type: Optional[str] = TransactionType.MANUAL_DEDUCT.value
 
 @router.post("/customers/{customer_id}/deduct")
 async def admin_deduct_customer(customer_id: int, data: AdminDeductRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
@@ -671,15 +764,27 @@ async def admin_deduct_customer(customer_id: int, data: AdminDeductRequest, db: 
     result = await db.execute(
         update(Wallet)
         .where(Wallet.customer_id == master_id)
-        .values(balance_paise=Wallet.balance_paise - data.amount_paise)
+        .values(
+            balance_paise=Wallet.balance_paise - data.amount_paise,
+            zero_balance_since=case(
+                (Wallet.balance_paise - data.amount_paise <= 0, func.coalesce(Wallet.zero_balance_since, func.now())),
+                else_=None
+            )
+        )
         .returning(Wallet)
     )
     wallet = result.scalar_one_or_none()
     
     # Record transaction
+    valid_deduct_types = {
+        TransactionType.MANUAL_DEDUCT.value,
+        TransactionType.CALL_DEDUCTION.value,
+        TransactionType.DEDUCTION.value,
+    }
+    txn_type = data.type if data.type in valid_deduct_types else TransactionType.MANUAL_DEDUCT.value
     transaction = WalletTransaction(
         customer_id=master_id,
-        type="manual_deduct",
+        type=txn_type,
         amount_paise=-data.amount_paise,
         description=f"Admin deduction: {data.reason} (by {current_admin.email})"
     )
@@ -690,11 +795,23 @@ async def admin_deduct_customer(customer_id: int, data: AdminDeductRequest, db: 
         import logging
         logging.getLogger(__name__).warning(f"Customer {customer_id} wallet went negative after admin deduct: {wallet.balance_paise}")
 
+    # Synchronize wallet block policy with Dograh
+    from services.billing_service import sync_wallet_block_policy
+    if wallet.balance_paise <= CALL_BLOCK_THRESHOLD_PAISE:
+        try:
+            await notification_service.notify_customer_service_paused(customer.id)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to send service paused notification: {e}")
+
+    await sync_wallet_block_policy(db, customer.id)
+
     return {"status": "success", "new_balance_paise": wallet.balance_paise}
 
 class AdminSetBalanceRequest(BaseModel):
     amount_paise: int
     reason: str = "Admin manual override"
+    expected_balance_paise: Optional[int] = None
 
 @router.post("/customers/{customer_id}/set-balance")
 async def admin_set_balance(customer_id: int, data: AdminSetBalanceRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
@@ -706,19 +823,35 @@ async def admin_set_balance(customer_id: int, data: AdminSetBalanceRequest, db: 
     wallet, master_id = await get_billing_wallet(db, customer_id)
     if not wallet: raise HTTPException(404, "Wallet not found")
     
+    # Lock the wallet row exclusively to prevent concurrent call deduction or top-up race conditions
+    wallet_res = await db.execute(
+        select(Wallet).where(Wallet.customer_id == master_id).with_for_update()
+    )
+    wallet = wallet_res.scalar_one_or_none()
+    if not wallet: raise HTTPException(404, "Wallet not found")
+
+    if data.expected_balance_paise is not None and wallet.balance_paise != data.expected_balance_paise:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Concurrent modification detected. Current balance is {wallet.balance_paise} paise, but expected {data.expected_balance_paise} paise. Please refresh and retry."
+        )
+
     diff = data.amount_paise - wallet.balance_paise
     
     result = await db.execute(
         update(Wallet)
         .where(Wallet.customer_id == master_id)
-        .values(balance_paise=data.amount_paise)
+        .values(
+            balance_paise=data.amount_paise,
+            zero_balance_since=func.coalesce(Wallet.zero_balance_since, func.now()) if data.amount_paise <= 0 else None
+        )
         .returning(Wallet)
     )
     wallet = result.scalar_one_or_none()
     
     transaction = WalletTransaction(
         customer_id=master_id,
-        type="manual_set_balance",
+        type=TransactionType.MANUAL_SET_BALANCE.value,
         amount_paise=diff,
         description=f"Admin set balance: {data.reason} (by {current_admin.email})"
     )
@@ -1186,6 +1319,21 @@ async def assign_phone_number(customer_id: int, data: AssignPhoneNumberRequest, 
     )
     db.add(pn)
     await db.commit()
+
+    if customer.dograh_org_id:
+        try:
+            agent_res = await db.execute(
+                select(Agent.dograh_workflow_id)
+                .where(Agent.customer_id == customer_id, Agent.dograh_workflow_id.isnot(None))
+                .order_by(Agent.id.desc())
+                .limit(1)
+            )
+            wf_id = agent_res.scalar_one_or_none()
+            await dograh_client.sync_phone_number_to_dograh(customer.dograh_org_id, data.number, workflow_id=wf_id)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to sync phone number {data.number} to Dograh org {customer.dograh_org_id}: {e}")
+
     return {"status": "assigned"}
 
 @router.get("/phone-number-requests")
@@ -1210,6 +1358,24 @@ async def approve_phone_number_request(request_id: int, data: ApprovePhoneNumber
         db.add(pn)
         
     await db.commit()
+
+    # Sync approved numbers to Dograh
+    cust_res = await db.execute(select(Customer).where(Customer.id == req.customer_id))
+    customer = cust_res.scalar_one_or_none()
+    if customer and customer.dograh_org_id:
+        agent_res = await db.execute(
+            select(Agent.dograh_workflow_id)
+            .where(Agent.customer_id == req.customer_id, Agent.dograh_workflow_id.isnot(None))
+            .order_by(Agent.id.desc())
+            .limit(1)
+        )
+        wf_id = agent_res.scalar_one_or_none()
+        for number in data.numbers:
+            try:
+                await dograh_client.sync_phone_number_to_dograh(customer.dograh_org_id, number, workflow_id=wf_id)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Failed to sync phone number {number} to Dograh org {customer.dograh_org_id}: {e}")
     
     import asyncio
     asyncio.create_task(notification_service.notify_customer_phone_approved(req.customer_id, data.numbers))
@@ -1548,7 +1714,11 @@ async def get_profitability(
 
     # --- Fetch topups for the period ---
     topup_q = select(func.sum(WalletTransaction.amount_paise)).where(
-        WalletTransaction.type == "top_up"
+        WalletTransaction.type.in_([
+            TransactionType.TOP_UP.value,
+            TransactionType.CREDIT.value,
+            TransactionType.MANUAL_CREDIT.value,
+        ])
     )
     if since:
         topup_q = topup_q.where(WalletTransaction.created_at >= since)
@@ -1938,3 +2108,76 @@ async def factory_reset_logs(
         f"(org={dograh_org_id}). Results: {results}"
     )
     return {"status": "reset_complete", "customer_id": customer_id, "dograh_org_id": dograh_org_id, **results}
+
+
+# --- Billing Dead-Letter Queue (DLQ) Management ---
+
+@router.get("/billing/dlq")
+async def get_billing_dlq(
+    current_admin: TalkarAdmin = Depends(get_current_admin),
+):
+    """Inspect unbilled calls parked in the Redis dead-letter queue after retries were exhausted."""
+    import json
+    from services import redis_client
+    r = await redis_client.get_redis()
+    if not r:
+        return {"items": [], "count": 0}
+    try:
+        raw_items = await r.lrange("talkar:billing:dlq", 0, 99)
+        items = [json.loads(i) for i in raw_items if i]
+        total_count = await r.llen("talkar:billing:dlq")
+        return {"items": items, "count": total_count}
+    except Exception as e:
+        logger.error(f"Error reading billing DLQ: {e}")
+        return {"items": [], "count": 0, "error": str(e)}
+
+
+@router.post("/billing/dlq/replay")
+async def replay_billing_dlq(
+    current_admin: TalkarAdmin = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Replay and re-process parked DLQ runs through Talkar billing deduction."""
+    import json
+    from services import redis_client
+    from routers.billing import deduct_for_run, DograhDeductRequest
+
+    r = await redis_client.get_redis()
+    if not r:
+        return {"replayed": 0, "failed": 0, "remaining": 0}
+
+    replayed = 0
+    failed = 0
+    while True:
+        item_raw = await r.lpop("talkar:billing:dlq")
+        if not item_raw:
+            break
+        try:
+            item = json.loads(item_raw)
+            payload = item.get("payload") or {}
+            run_id = payload.get("workflow_run_id") or item.get("workflow_run_id")
+            org_id = payload.get("dograh_org_id") or payload.get("organization_id")
+            if not run_id or not org_id:
+                logger.error(f"Skipping malformed DLQ item: {item}")
+                failed += 1
+                continue
+
+            req = DograhDeductRequest(
+                workflow_run_id=int(run_id),
+                duration_seconds=int(payload.get("duration_seconds", 0)),
+                organization_id=int(org_id),
+                mode=payload.get("mode") or payload.get("call_type"),
+                workflow_id=payload.get("workflow_id"),
+            )
+            await deduct_for_run(data=req, db=db, _token="admin_replay")
+            replayed += 1
+        except Exception as e:
+            logger.error(f"Failed to replay DLQ item {item_raw}: {e}")
+            failed += 1
+            # Re-enqueue back into DLQ so it is not lost
+            await r.rpush("talkar:billing:dlq", item_raw)
+            break
+
+    remaining = await r.llen("talkar:billing:dlq")
+    return {"replayed": replayed, "failed": failed, "remaining": remaining}
+

@@ -1,6 +1,6 @@
 import logging
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, update, text
 from sqlalchemy.sql import func
 from db.session import get_db, AsyncSessionLocal
@@ -23,9 +23,15 @@ async def nightly_reconciliation(ctx):
         logger.info("Nightly reconciliation completed: 0 completed runs found.")
         return
 
-    logger.info(f"Reconciliation: fetched {len(runs)} completed runs from Dograh to verify.")
+    # Filter out textchat runs upfront (defense-in-depth against dummy CallLog creation)
+    billable_runs = [r for r in runs if r.get("mode") != "textchat"]
+    if not billable_runs:
+        logger.info("Nightly reconciliation completed: 0 billable completed runs found.")
+        return
 
-    run_ids = [r["id"] for r in runs if r.get("id")]
+    logger.info(f"Reconciliation: fetched {len(billable_runs)} billable completed runs from Dograh to verify.")
+
+    run_ids = [r["id"] for r in billable_runs if r.get("id")]
     processed_run_ids = set()
 
     async with AsyncSessionLocal() as db:
@@ -45,9 +51,11 @@ async def nightly_reconciliation(ctx):
     skipped_count = len(processed_run_ids)
     error_count = 0
 
-    for run in runs:
+    for run in billable_runs:
         run_id = run["id"]
         if run_id in processed_run_ids:
+            continue
+        if run.get("mode") == "textchat":
             continue
 
         try:
@@ -140,17 +148,16 @@ async def check_suspensions(ctx):
     """
     logger.info("Checking for overdue zero-balance accounts...")
     async with AsyncSessionLocal() as db:
-        # Suspend accounts dormant for 14+ days — fetch IDs first, then handle per-row
+        # Suspend accounts dormant at <= 0 balance for 14+ continuous days
         suspend_query = text("""
             WITH MasterSuspensions AS (
                 SELECT w.customer_id FROM wallets w
                 WHERE w.balance_paise <= 0
-                  AND NOT EXISTS (
-                    SELECT 1 FROM wallet_transactions wt 
-                    WHERE wt.customer_id = w.customer_id 
-                    AND wt.amount_paise > 0
-                    AND wt.created_at >= now() - interval '14 days'
-                  )
+                  AND COALESCE(
+                        w.zero_balance_since,
+                        (SELECT MAX(wt.created_at) FROM wallet_transactions wt WHERE wt.customer_id = w.customer_id),
+                        w.created_at
+                      ) <= now() - interval '14 days'
             )
             UPDATE customers SET status = 'suspended'
             WHERE status = 'active'

@@ -10,6 +10,25 @@ async def lifespan(app: FastAPI):
     from arq import create_pool
     from arq.connections import RedisSettings
     from config import settings
+    import logging
+    _startup_log = logging.getLogger(__name__)
+    is_prod = getattr(settings, "ENVIRONMENT", "").lower() in ("production", "prod", "staging")
+    if is_prod:
+        insecure_defaults = [
+            "change-me-in-production-billing-token",
+            "change-me-in-production-admin-secret",
+            "",
+        ]
+        token = getattr(settings, "TALKAR_BILLING_API_TOKEN", "").strip()
+        secret = getattr(settings, "TALKAR_ADMIN_JWT_SECRET", "").strip()
+
+        if token in insecure_defaults or len(token) < 16:
+            _startup_log.critical("FATAL: Insecure or default TALKAR_BILLING_API_TOKEN in production! Blocking startup.")
+            raise RuntimeError("CRITICAL SECURITY ERROR: TALKAR_BILLING_API_TOKEN must be securely set in production.")
+
+        if secret in insecure_defaults or len(secret) < 16:
+            _startup_log.critical("FATAL: Insecure or default TALKAR_ADMIN_JWT_SECRET in production! Blocking startup.")
+            raise RuntimeError("CRITICAL SECURITY ERROR: TALKAR_ADMIN_JWT_SECRET must be securely set in production.")
     app.state.arq_pool = await create_pool(RedisSettings.from_dsn(settings.REDIS_URL))
     try:
         from db.session import engine
@@ -58,9 +77,30 @@ async def lifespan(app: FastAPI):
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 );
             """))
+
+            # V6 / V7 Audit Hardening & Ledger Consistency Migrations
+            await conn.execute(text("ALTER TABLE wallets ADD COLUMN IF NOT EXISTS zero_balance_since TIMESTAMPTZ;"))
+            await conn.execute(text("ALTER TABLE wallets ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();"))
+            await conn.execute(text("DROP INDEX IF EXISTS uq_agents_dograh_org_id;"))
+            await conn.execute(text("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_transactions_dograh_run_id
+                ON wallet_transactions(dograh_run_id) WHERE dograh_run_id IS NOT NULL;
+            """))
+            await conn.execute(text("DROP INDEX IF EXISTS idx_wallet_transactions_razorpay;"))
+            await conn.execute(text("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_transactions_razorpay
+                ON wallet_transactions(razorpay_order_id) WHERE razorpay_order_id IS NOT NULL;
+            """))
+            try:
+                await conn.execute(text("ALTER TABLE subscriptions ADD CONSTRAINT uq_subscription_customer_id UNIQUE (customer_id);"))
+            except Exception:
+                pass
+            await conn.execute(text("UPDATE subscriptions SET per_minute_rate_paise = 600 WHERE plan = 'starter' AND per_minute_rate_paise != 600;"))
+            await conn.execute(text("UPDATE subscriptions SET per_minute_rate_paise = 1800 WHERE plan = 'pro' AND per_minute_rate_paise != 1800;"))
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"Database migration / backfill skipped/failed: {e}")
+        _startup_log.critical(f"FATAL: Database migration / backfill failed on startup: {e}", exc_info=True)
+        if is_prod:
+            raise RuntimeError(f"Database migration failed on startup: {e}") from e
     yield
     if hasattr(app.state, 'arq_pool'):
         await app.state.arq_pool.close()
@@ -78,7 +118,7 @@ app.add_middleware(
         "https://admin.talkar.in",
         "https://billing.talkar.in"
     ],
-    allow_origin_regex="https://.*\.talkar\.in",
+    allow_origin_regex=r"https://.*\.talkar\.in",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

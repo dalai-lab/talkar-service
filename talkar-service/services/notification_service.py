@@ -381,31 +381,52 @@ async def notify_admin_customer_ready_for_build(customer_id: int):
     )
 
 
-async def notify_customer_auto_recharge_failed(customer_id: int):
+async def notify_customer_auto_recharge_failed(customer_id: int, error_detail: str = None, disabled: bool = False):
     info = await _get_customer_email(customer_id)
     if not info:
         return
     email, name = info
+    
+    if disabled:
+        subject = "Action Required: Auto-Recharge Disabled"
+        body = (
+            f"Hi {name},\n\n"
+            f"Your automatic wallet recharge has been disabled after consecutive payment authorization failures.\n\n"
+            f"Under RBI regulations, automatic card debits require an active e-mandate registered with your issuing bank. "
+            f"If your bank requires pre-debit authorization or did not approve the recurring mandate, you can register a compliant card on your dashboard or make manual wallet top-ups.\n\n"
+            f"Please visit your dashboard to re-verify your billing method or add wallet credits to keep your voice agents online: talkar.in/wallet\n\n"
+            f"The Talkar Team"
+        )
+        push_body = "Auto-recharge was paused after payment failures. Please update billing to prevent service interruption."
+    else:
+        subject = "Action Required: Auto-Recharge Payment Issue"
+        body = (
+            f"Hi {name},\n\n"
+            f"We were unable to process your automatic wallet recharge. Under RBI regulations, automated card debits require an active bank e-mandate.\n\n"
+            f"To ensure your voice agent remains online and active, please verify your billing method on your dashboard or top up manually.\n\n"
+            f"The Talkar Team"
+        )
+        push_body = "Auto-recharge payment failed. Please check your billing method."
+
     await send_email_and_push(
         customer_id=customer_id,
         to_email=email,
-        subject="Action Required: Auto-Recharge Failed",
-        body=(
-            f"Hi {name},\n\n"
-            f"We were unable to process your automatic wallet recharge. To ensure your voice agent remains online and active, please update your billing method on your dashboard.\n\n"
-            f"The Talkar Team"
-        ),
+        subject=subject,
+        body=body,
         notification_type="warning",
-        push_body="Auto-recharge failed. Please update your billing method."
+        push_body=push_body
     )
 
 
-async def notify_admin_auto_recharge_failed(customer_id: int):
+async def notify_admin_auto_recharge_failed(customer_id: int, error_detail: str = None, disabled: bool = False):
+    status_str = "Auto-Recharge Disabled (3 failures)" if disabled else "Auto-Recharge Failed"
+    detail_str = f"\nError: {error_detail}" if error_detail else ""
     await send_email(
         to_email=settings.ADMIN_EMAIL,
-        subject=f"[Talkar Admin] Billing Warning: Auto-Recharge Failed",
+        subject=f"[Talkar Admin] Billing Warning: {status_str} for Customer #{customer_id}",
         body=(
-            f"Auto-recharge transaction failed for customer ID #{customer_id}.\n\n"
+            f"Auto-recharge transaction failed for customer ID #{customer_id}.{detail_str}\n"
+            f"Disabled: {disabled}\n\n"
             f"Please check customer payment details and follow up if needed: talkar.in/admin"
         )
     )
@@ -466,6 +487,18 @@ async def notify_customer_low_balance(customer_id: int, balance_paise: int):
 
 
 async def notify_customer_service_paused(customer_id: int):
+    try:
+        from services import redis_client
+        r = await redis_client.get_redis()
+        if r:
+            cooldown_key = f"alert_paused_cooldown:{customer_id}"
+            already_sent = await r.set(cooldown_key, "1", nx=True, ex=86400)
+            if not already_sent:
+                logger.info(f"Service paused notification for customer {customer_id} in 24h cooldown, skipping duplicate email.")
+                return
+    except Exception as e:
+        logger.error(f"Error checking service paused cooldown in Redis: {e}")
+
     info = await _get_customer_email(customer_id)
     if not info:
         logger.warning(f"Emailing customer {customer_id}: balance below threshold, calls paused.")
@@ -667,7 +700,7 @@ async def notify_customer_credit_granted(customer_id: int, amount_paise: int, de
     info = await _get_customer_email(customer_id)
     if not info: return
     email, name = info
-    amount_rs = amount_paise / 100
+    amount_rs = abs(amount_paise) / 100
     await send_email_and_push(
         customer_id=customer_id,
         to_email=email,

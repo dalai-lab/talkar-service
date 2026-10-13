@@ -2,12 +2,14 @@ from fastapi import APIRouter, Depends, Query, HTTPException, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from db.session import get_db
-from db.models import Customer, Subscription
+from db.models import Customer, Subscription, TalkarAdmin
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 import logging
 from services import notification_service, dograh_client
+from services.admin_auth import get_current_admin
+from services.customer_auth import resolve_authenticated_email, verify_customer_access
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,13 @@ async def create_customer(
     db: AsyncSession = Depends(get_db),
     authorization: Optional[str] = Header(None)
 ):
+    from services.customer_auth import is_admin_or_service_request
+    if not is_admin_or_service_request(authorization):
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required to register customer."
+        )
+
     result = await db.execute(
         select(Customer)
         .where(Customer.dograh_org_id == data.dograh_org_id)
@@ -141,7 +150,8 @@ async def get_all_customers(
     plan: Optional[str] = None,
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin),
 ):
     query = select(Customer)
     if status:
@@ -155,14 +165,18 @@ async def get_all_customers(
 async def get_existing_customer(
     contact_email: str,
     db: AsyncSession = Depends(get_db),
-    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email")
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     """
     Check if an email already has an active/approved customer record in any org.
     Used by the frontend to detect returning customers creating a new workspace.
     Returns the master customer_id if found, or 404.
     """
-    if x_talkar_email and x_talkar_email.strip().lower() != contact_email.strip().lower():
+    caller_email = resolve_authenticated_email(authorization, x_talkar_email)
+    if not caller_email:
+        raise HTTPException(status_code=401, detail="Authentication required to query customer records.")
+    if caller_email != contact_email.strip().lower() and caller_email != "service":
         raise HTTPException(status_code=403, detail="Cannot query account status for other email addresses.")
     result = await db.execute(
         select(Customer)
@@ -188,41 +202,50 @@ async def get_existing_customer(
 @router.post("/by-org/{dograh_org_id}/new-agent-brief")
 async def save_agent_brief(dograh_org_id: int, data: dict, db: AsyncSession = Depends(get_db)):
     """
-    Called when a returning customer fills the brief form on a workspace where
+    Called when a customer fills the brief form on a workspace where
     a sub-org customer record already exists (auto-created by the Dograh workspace hook)
-    but has no onboarding form yet. Updates the existing record and notifies admin.
+    or is in agent_building. Updates the existing record, preserves documents, and notifies admin.
     """
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(status_code=404, detail="No customer record found for this org. Use /new-agent-request instead.")
 
-    form_data = data.get("form", {})
-    customer.onboarding_form = form_data
+    # Preserve any existing fields (e.g. approved_tier set by auto-provisioning)
+    existing_form = customer.onboarding_form or {}
+    existing_form.update(data.get("form", {}))
+    customer.onboarding_form = existing_form
     
-    # Check if this is a sub-org and the master is active
+    if "documents" in data:
+        customer.documents = data.get("documents", [])
+    
+    # Check if this is a sub-org and lookup master info
     master_is_active = False
     master_sub = None
+    master_name = customer.company_name
     if customer.billing_org_id:
         master_res = await db.execute(select(Customer).where(Customer.id == customer.billing_org_id))
         master = master_res.scalar_one_or_none()
-        if master and master.status == "active":
-            master_is_active = True
-            master_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == master.id))
-            master_sub = master_sub_res.scalar_one_or_none()
+        if master:
+            master_name = master.company_name
+            if master.status == "active":
+                master_is_active = True
+                master_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == master.id))
+                master_sub = master_sub_res.scalar_one_or_none()
             
     customer.status = "under_review"
     await db.commit()
     await db.refresh(customer)
 
+    effective_name = master_name or customer.company_name or customer.contact_email
     if master_is_active and master_sub:
         await notification_service.send_email(
             to_email=settings.ADMIN_EMAIL,
-            subject=f"New Agent Brief (Returning Customer): {customer.company_name or customer.contact_email}",
+            subject=f"New Agent Brief (Returning Customer): {effective_name}",
             body=(
                 f"Existing active customer {customer.contact_email} (Tier: {master_sub.plan}) has submitted a new agent brief "
                 f"for their new workspace (Dograh Org ID: {customer.dograh_org_id}).\n\n"
-                f"Brief:\n{form_data}\n\n"
+                f"Brief:\n{customer.onboarding_form}\n\n"
                 f"Please review at talkar.in/admin.\n"
                 f"Note: Since they are a returning customer, you can set the Integration Fee to 0 to approve them instantly, or set a custom fee if this specific agent requires complex integration work."
             )
@@ -230,11 +253,11 @@ async def save_agent_brief(dograh_org_id: int, data: dict, db: AsyncSession = De
     else:
         await notification_service.send_email(
             to_email=settings.ADMIN_EMAIL,
-            subject=f"New Agent Brief: {customer.company_name or customer.contact_email}",
+            subject=f"New Agent Brief Submitted: {effective_name}",
             body=(
-                f"{customer.contact_email} has submitted a new agent brief "
+                f"{effective_name} ({customer.contact_email}) has submitted a new agent brief "
                 f"for workspace org {dograh_org_id}.\n\n"
-                f"Brief:\n{form_data}\n\n"
+                f"Brief:\n{customer.onboarding_form}\n\n"
                 f"Review at talkar.in/admin"
             )
         )
@@ -245,7 +268,8 @@ async def create_new_agent_request(
     dograh_org_id: int,
     data: dict,
     db: AsyncSession = Depends(get_db),
-    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email")
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     """
     Called when a returning customer fills the brief form on a brand-new workspace
@@ -269,10 +293,12 @@ async def create_new_agent_request(
         return existing  # Idempotent
 
     # Security: Verify caller identity against master customer to prevent workspace hijacking
-    caller_email = x_talkar_email.strip().lower() if x_talkar_email else None
+    caller_email = resolve_authenticated_email(authorization, x_talkar_email)
+    if not caller_email:
+        raise HTTPException(status_code=401, detail="Authentication required to create a new agent request.")
     master_email = master.contact_email.strip().lower() if master.contact_email else ""
 
-    if caller_email and caller_email != master_email:
+    if caller_email != "service" and caller_email != master_email:
         logger.warning(
             f"Security: Workspace hijacking attempt blocked. Authenticated caller '{caller_email}' "
             f"attempted to link dograh_org_id={dograh_org_id} to master_customer_id={master.id} ('{master_email}')."
@@ -645,41 +671,7 @@ async def submit_onboarding_by_org(dograh_org_id: int, data: dict, db: AsyncSess
     )
     return customer
 
-@router.post("/by-org/{dograh_org_id}/new-agent-brief")
-async def submit_new_agent_brief(dograh_org_id: int, data: dict, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
-    customer = result.scalar_one_or_none()
-    if not customer:
-        raise HTTPException(status_code=404, detail="Customer not found for this org")
-    
-    # Allow submitting brief as long as it's still building
-    if customer.status != "agent_building":
-        return customer 
 
-    # We preserve any existing approved_tier set by auto-provisioning
-    existing_form = customer.onboarding_form or {}
-    existing_form.update(data.get("form", {}))
-    customer.onboarding_form = existing_form
-    
-    if "documents" in data:
-        customer.documents = data.get("documents", [])
-    
-    await db.commit()
-    await db.refresh(customer)
-    
-    # Check if there is a master org to lookup the name
-    master_name = customer.company_name
-    if customer.billing_org_id:
-        master_res = await db.execute(select(Customer).where(Customer.id == customer.billing_org_id))
-        master = master_res.scalar_one_or_none()
-        if master: master_name = master.company_name
-
-    await notification_service.send_email(
-        to_email=settings.ADMIN_EMAIL,
-        subject=f"New Agent Brief Submitted: {master_name}",
-        body=f"{master_name} ({customer.contact_email}) has submitted a brief for their new agent (Org {dograh_org_id}).\n\nReview at talkar.in/admin"
-    )
-    return customer
 
 @router.post("/{customer_id}/onboarding")
 async def submit_onboarding_by_id(customer_id: int, data: dict, db: AsyncSession = Depends(get_db)):
@@ -723,17 +715,21 @@ class SupportRequestPayload(BaseModel):
 async def create_support_request(
     data: SupportRequestPayload,
     dograh_org_id: int = Query(...),
-    x_talkar_email: Optional[str] = Header(None),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
-    
-    if x_talkar_email and customer.contact_email:
-        if x_talkar_email.strip().lower() != customer.contact_email.strip().lower():
-            logger.warning(f"Support request email mismatch: header '{x_talkar_email}' vs customer '{customer.contact_email}'")
+
+    await verify_customer_access(
+        customer=customer,
+        db=db,
+        x_talkar_email=x_talkar_email,
+        authorization=authorization,
+    )
 
     from db.models import SupportRequest
     desc = data.description
@@ -774,13 +770,21 @@ async def create_support_request(
 @router.get("/support-requests")
 async def get_support_requests(
     dograh_org_id: int = Query(...),
-    x_talkar_email: Optional[str] = Header(None),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
+
+    await verify_customer_access(
+        customer=customer,
+        db=db,
+        x_talkar_email=x_talkar_email,
+        authorization=authorization,
+    )
 
     from db.models import SupportRequest, PhoneNumberRequest
     reqs = await db.execute(
@@ -833,12 +837,59 @@ async def get_support_requests(
 # Parameterized paths after static ones
 
 @router.get("/{customer_id}")
-async def get_customer(customer_id: int, db: AsyncSession = Depends(get_db)):
+async def get_customer(
+    customer_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin),
+):
     result = await db.execute(select(Customer).where(Customer.id == customer_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     return customer
+
+
+class AssignPhoneNumberRequest(BaseModel):
+    number: str
+    plivo_number_id: Optional[str] = None
+
+
+@router.post("/{customer_id}/assign-phone-number")
+async def assign_customer_phone_number(
+    customer_id: int,
+    data: AssignPhoneNumberRequest,
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin),
+):
+    result = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+
+    from db.models import PhoneNumber
+    pn = PhoneNumber(
+        customer_id=customer_id,
+        number=data.number,
+        plivo_number_id=data.plivo_number_id
+    )
+    db.add(pn)
+    await db.commit()
+
+    if customer.dograh_org_id:
+        try:
+            from db.models import Agent
+            agent_res = await db.execute(
+                select(Agent.dograh_workflow_id)
+                .where(Agent.customer_id == customer_id, Agent.dograh_workflow_id.isnot(None))
+                .order_by(Agent.id.desc())
+                .limit(1)
+            )
+            wf_id = agent_res.scalar_one_or_none()
+            await dograh_client.sync_phone_number_to_dograh(customer.dograh_org_id, data.number, workflow_id=wf_id)
+        except Exception as e:
+            logger.error(f"Failed to sync phone number {data.number} to Dograh org {customer.dograh_org_id}: {e}")
+
+    return {"status": "assigned"}
 
 
 

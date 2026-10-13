@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, func, desc
 from db.session import get_db
 from db.models import Customer, Notification
+from services.customer_auth import verify_customer_access
 
 router = APIRouter()
 
@@ -10,12 +12,21 @@ router = APIRouter()
 async def get_notifications(
     dograh_org_id: int = Query(...),
     limit: int = Query(20, ge=1, le=50),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
+
+    await verify_customer_access(
+        customer=customer,
+        db=db,
+        x_talkar_email=x_talkar_email,
+        authorization=authorization,
+    )
 
     # Get unread count
     unread_res = await db.execute(
@@ -49,11 +60,24 @@ async def get_notifications(
     }
 
 @router.patch("/{notification_id}/read")
-async def mark_notification_read(notification_id: int, dograh_org_id: int = Query(...), db: AsyncSession = Depends(get_db)):
+async def mark_notification_read(
+    notification_id: int,
+    dograh_org_id: int = Query(...),
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
+
+    await verify_customer_access(
+        customer=customer,
+        db=db,
+        x_talkar_email=x_talkar_email,
+        authorization=authorization,
+    )
         
     result = await db.execute(
         update(Notification)
@@ -64,11 +88,23 @@ async def mark_notification_read(notification_id: int, dograh_org_id: int = Quer
     return {"status": "success"}
 
 @router.post("/read-all")
-async def mark_all_notifications_read(dograh_org_id: int = Query(...), db: AsyncSession = Depends(get_db)):
+async def mark_all_notifications_read(
+    dograh_org_id: int = Query(...),
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
+
+    await verify_customer_access(
+        customer=customer,
+        db=db,
+        x_talkar_email=x_talkar_email,
+        authorization=authorization,
+    )
         
     result = await db.execute(
         update(Notification)
@@ -79,11 +115,24 @@ async def mark_all_notifications_read(dograh_org_id: int = Query(...), db: Async
     return {"status": "success"}
 
 @router.delete("/{notification_id}")
-async def delete_notification(notification_id: int, dograh_org_id: int = Query(...), db: AsyncSession = Depends(get_db)):
+async def delete_notification(
+    notification_id: int,
+    dograh_org_id: int = Query(...),
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
+
+    await verify_customer_access(
+        customer=customer,
+        db=db,
+        x_talkar_email=x_talkar_email,
+        authorization=authorization,
+    )
         
     res = await db.execute(select(Notification).where(Notification.id == notification_id, Notification.customer_id == customer.id))
     n = res.scalar_one_or_none()

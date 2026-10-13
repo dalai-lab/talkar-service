@@ -40,6 +40,46 @@ def is_admin_or_service_request(authorization: Optional[str]) -> bool:
     return False
 
 
+def resolve_authenticated_email(
+    authorization: Optional[str] = None,
+    x_talkar_email: Optional[str] = None,
+) -> Optional[str]:
+    """Resolves the cryptographically verified caller email.
+    
+    Security: Prevents identity spoofing via raw unverified X-Talkar-Email headers.
+    An unauthenticated caller cannot simply supply X-Talkar-Email: victim@company.com.
+    The email is only trusted if:
+      1. A cryptographically valid JWT Bearer token is provided containing the email claim.
+      2. Or the request is signed with the internal service token (TALKAR_BILLING_API_TOKEN),
+         indicating it originated from the authenticated server-side proxy.
+    """
+    if not authorization:
+        return None
+
+    token = authorization[7:].strip() if authorization.startswith("Bearer ") else authorization.strip()
+    if not token:
+        return None
+
+    # 1. Internal service token from trusted backend proxy
+    expected_service_token = getattr(settings, "TALKAR_BILLING_API_TOKEN", "")
+    if expected_service_token and secrets.compare_digest(token, expected_service_token):
+        if x_talkar_email:
+            return x_talkar_email.strip().lower()
+        return "service"
+
+    # 2. Cryptographically signed JWT token
+    try:
+        payload = jwt.decode(token, TALKAR_ADMIN_JWT_SECRET, algorithms=[ALGORITHM])
+        if payload.get("email"):
+            return str(payload["email"]).strip().lower()
+        if payload.get("sub"):
+            return str(payload["sub"]).strip().lower()
+    except Exception:
+        pass
+
+    return None
+
+
 async def verify_customer_access(
     customer: Customer,
     db: AsyncSession,
@@ -54,22 +94,33 @@ async def verify_customer_access(
       3. Authenticated user owning a related workspace (sub-org / master org).
       4. Authenticated user who is a member of the customer's Dograh org.
     Raises:
-      HTTPException(401) if unauthenticated.
+      HTTPException(401) if unauthenticated or spoofed.
       HTTPException(403) if unauthorized.
     """
-    # 1. Admin or internal service
+    # 1. Admin or generic internal service request
     if is_admin_or_service_request(authorization):
-        return
+        token = authorization[7:].strip() if authorization.startswith("Bearer ") else authorization.strip()
+        expected_service_token = getattr(settings, "TALKAR_BILLING_API_TOKEN", "")
+        # Admin JWT: full access granted
+        try:
+            payload = jwt.decode(token, TALKAR_ADMIN_JWT_SECRET, algorithms=[ALGORITHM])
+            if payload.get("is_admin"):
+                return
+        except Exception:
+            pass
 
-    # 2. Authenticated user via session header
-    if not x_talkar_email:
-        logger.warning(f"Unauthenticated access attempt to customer {customer.id} resources.")
+        # Internal service token without specific user header: granted
+        if expected_service_token and secrets.compare_digest(token, expected_service_token) and not x_talkar_email:
+            return
+
+    # 2. Resolve caller email with anti-spoofing verification
+    caller_email = resolve_authenticated_email(authorization, x_talkar_email)
+    if not caller_email or caller_email == "service":
+        logger.warning(f"Unauthenticated or spoofed access attempt to customer {customer.id} resources.")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required to access this resource."
         )
-
-    caller_email = x_talkar_email.strip().lower()
 
     # Direct match on customer contact_email
     if customer.contact_email and customer.contact_email.strip().lower() == caller_email:

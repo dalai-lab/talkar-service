@@ -58,6 +58,7 @@ CREATE TABLE wallets (
   razorpay_customer_id          TEXT,
   razorpay_payment_method_id    TEXT,
   low_balance_alerted_at        TIMESTAMPTZ,
+  zero_balance_since            TIMESTAMPTZ,
   created_at                    TIMESTAMPTZ DEFAULT now(),
   updated_at                    TIMESTAMPTZ DEFAULT now()
 );
@@ -74,7 +75,8 @@ CREATE TABLE wallet_transactions (
 );
 
 CREATE INDEX idx_wallet_transactions_customer ON wallet_transactions(customer_id, created_at DESC);
-CREATE INDEX idx_wallet_transactions_razorpay ON wallet_transactions(razorpay_order_id) WHERE razorpay_order_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_wallet_transactions_razorpay ON wallet_transactions(razorpay_order_id) WHERE razorpay_order_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_wallet_transactions_dograh_run_id ON wallet_transactions(dograh_run_id) WHERE dograh_run_id IS NOT NULL;
 
 CREATE TABLE phone_numbers (
   id                    SERIAL PRIMARY KEY,

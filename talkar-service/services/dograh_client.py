@@ -107,7 +107,7 @@ async def get_run(run_id: int):
     async with DograhSessionLocal() as session:
         result = await session.execute(
             text(r"""
-                SELECT wfr.id, w.organization_id, wfr.state, 
+                SELECT wfr.id, w.organization_id, wfr.workflow_id, wfr.state, wfr.mode, 
                        CASE 
                            WHEN (wfr.usage_info->>'call_duration_seconds') ~ '^[0-9]+(\.[0-9]+)?$' 
                            THEN CAST(wfr.usage_info->>'call_duration_seconds' AS FLOAT)
@@ -125,7 +125,14 @@ async def get_run(run_id: int):
                 dur = float(row.duration_seconds) if row.duration_seconds is not None else 0.0
             except (ValueError, TypeError):
                 dur = 0.0
-            return {"id": row.id, "organization_id": row.organization_id, "status": row.state, "duration_seconds": dur}
+            return {
+                "id": row.id,
+                "organization_id": row.organization_id,
+                "workflow_id": getattr(row, "workflow_id", None),
+                "status": row.state,
+                "mode": getattr(row, "mode", None),
+                "duration_seconds": dur,
+            }
         return None
 
 async def get_completed_runs(hours: int = 25):
@@ -133,7 +140,7 @@ async def get_completed_runs(hours: int = 25):
     async with DograhSessionLocal() as session:
         result = await session.execute(
             text(r"""
-                SELECT wfr.id, w.organization_id, wfr.state, 
+                SELECT wfr.id, w.organization_id, wfr.workflow_id, wfr.state, wfr.mode, 
                        CASE 
                            WHEN (wfr.usage_info->>'call_duration_seconds') ~ '^[0-9]+(\.[0-9]+)?$' 
                            THEN CAST(wfr.usage_info->>'call_duration_seconds' AS FLOAT)
@@ -142,7 +149,9 @@ async def get_completed_runs(hours: int = 25):
                        wfr.created_at 
                 FROM workflow_runs wfr
                 JOIN workflows w ON w.id = wfr.workflow_id
-                WHERE wfr.state = 'completed' AND wfr.created_at >= NOW() - make_interval(hours => :hours)
+                WHERE wfr.state = 'completed'
+                  AND wfr.created_at >= NOW() - make_interval(hours => :hours)
+                  AND (wfr.mode IS NULL OR wfr.mode != 'textchat')
             """),
             {"hours": hours}
         )
@@ -156,7 +165,9 @@ async def get_completed_runs(hours: int = 25):
             runs.append({
                 "id": r.id,
                 "organization_id": r.organization_id,
+                "workflow_id": getattr(r, "workflow_id", None),
                 "status": r.state,
+                "mode": getattr(r, "mode", None),
                 "duration_seconds": dur,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             })
@@ -246,4 +257,98 @@ async def verify_dograh_org_user(org_id: int, user_id: int | None = None, email:
     except Exception as e:
         logger.warning(f"Could not query Dograh DB to verify org {org_id} user: {e}")
         return None
+
+
+async def sync_phone_number_to_dograh(org_id: int, phone_number: str, workflow_id: int | None = None):
+    """Sync an assigned phone number into Dograh's telephony_phone_numbers table.
+    Ensures inbound calls can be resolved to the organization and dispatched to its active workflow.
+    """
+    clean_number = phone_number.strip()
+    if not clean_number:
+        return
+
+    # Normalization: ensure E.164-like formatting for PSTN
+    normalized = clean_number if clean_number.startswith("+") else f"+{clean_number}"
+    country_code = "IN" if normalized.startswith("+91") else None
+
+    async with DograhSessionLocal() as session:
+        try:
+            # 1. Ensure a telephony configuration exists for this org
+            cfg_res = await session.execute(
+                text("SELECT id FROM telephony_configurations WHERE organization_id = :org_id ORDER BY id ASC LIMIT 1"),
+                {"org_id": org_id}
+            )
+            cfg_id = cfg_res.scalar_one_or_none()
+
+            if not cfg_id:
+                insert_cfg = await session.execute(
+                    text("""
+                        INSERT INTO telephony_configurations (organization_id, name, provider, credentials, is_default_outbound, created_at, updated_at)
+                        VALUES (:org_id, 'talkar_telephony', 'plivo', '{}'::json, true, now(), now())
+                        RETURNING id
+                    """),
+                    {"org_id": org_id}
+                )
+                cfg_id = insert_cfg.scalar_one()
+
+            # 2. Resolve inbound workflow if not explicitly provided
+            target_wf_id = workflow_id
+            if target_wf_id is None:
+                try:
+                    wf_res = await session.execute(
+                        text("SELECT id FROM workflows WHERE organization_id = :org_id AND status = 'active' ORDER BY id ASC LIMIT 1"),
+                        {"org_id": org_id}
+                    )
+                    target_wf_id = wf_res.scalar_one_or_none()
+                except Exception as wf_err:
+                    logger.debug(f"Could not query default workflow for org {org_id}: {wf_err}")
+
+            # 3. Check if this phone number already exists in Dograh for this org or config
+            num_res = await session.execute(
+                text("SELECT id FROM telephony_phone_numbers WHERE organization_id = :org_id AND address_normalized = :normalized"),
+                {"org_id": org_id, "normalized": normalized}
+            )
+            existing_num_id = num_res.scalar_one_or_none()
+
+            if existing_num_id:
+                await session.execute(
+                    text("""
+                        UPDATE telephony_phone_numbers 
+                        SET is_active = true, 
+                            inbound_workflow_id = COALESCE(:target_wf_id, inbound_workflow_id),
+                            updated_at = now() 
+                        WHERE id = :id
+                    """),
+                    {"id": existing_num_id, "target_wf_id": target_wf_id}
+                )
+            else:
+                await session.execute(
+                    text("""
+                        INSERT INTO telephony_phone_numbers (
+                            organization_id, telephony_configuration_id, address, address_normalized,
+                            address_type, country_code, inbound_workflow_id, is_active, is_default_caller_id, extra_metadata,
+                            created_at, updated_at
+                        ) VALUES (
+                            :org_id, :cfg_id, :address, :normalized,
+                            'pstn_number', :country_code, :target_wf_id, true, true, '{}'::json,
+                            now(), now()
+                        )
+                    """),
+                    {
+                        "org_id": org_id,
+                        "cfg_id": cfg_id,
+                        "address": clean_number,
+                        "normalized": normalized,
+                        "country_code": country_code,
+                        "target_wf_id": target_wf_id,
+                    }
+                )
+
+            await session.commit()
+            logger.info(f"Successfully synced phone number {clean_number} (inbound_workflow_id={target_wf_id}) to Dograh org {org_id}")
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"Failed to sync phone number {clean_number} to Dograh org {org_id}: {e}")
+            raise
+
 

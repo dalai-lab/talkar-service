@@ -11,9 +11,9 @@ SessionLocal = sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=F
 async def apply_fixes():
     async with SessionLocal() as session:
         try:
-            # 1. Fix F-02: Starter plan rate backfill (1200 -> 2500)
+            # 1. Fix F-02: Starter plan rate backfill (600 paise / ₹6.00/min)
             print("Applying F-02: Fixing starter plan per_minute_rate_paise...")
-            await session.execute(text("UPDATE subscriptions SET per_minute_rate_paise = 2500 WHERE plan = 'starter' AND per_minute_rate_paise = 1200;"))
+            await session.execute(text("UPDATE subscriptions SET per_minute_rate_paise = 600 WHERE plan = 'starter';"))
             
             # 2. Fix F-03: Drop unique index on agents
             print("Applying F-03: Dropping unique index on agents(dograh_org_id)...")
@@ -41,6 +41,10 @@ async def apply_fixes():
             print("Applying M-10: Making idx_wallet_transactions_razorpay unique...")
             await session.execute(text("DROP INDEX IF EXISTS idx_wallet_transactions_razorpay;"))
             await session.execute(text("CREATE UNIQUE INDEX idx_wallet_transactions_razorpay ON wallet_transactions(razorpay_order_id) WHERE razorpay_order_id IS NOT NULL;"))
+
+            # 7. Fix E-02: Add zero_balance_since to wallets
+            print("Applying E-02: Adding zero_balance_since to wallets...")
+            await session.execute(text("ALTER TABLE wallets ADD COLUMN IF NOT EXISTS zero_balance_since TIMESTAMPTZ;"))
                     
             await session.commit()
             print("Successfully applied DB fixes.")

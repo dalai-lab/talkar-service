@@ -2,6 +2,7 @@ import redis.asyncio as redis
 from config import settings
 import logging
 import time
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +29,12 @@ async def close_redis():
         await redis_client.close()
         redis_client = None
 
-async def acquire_auto_recharge_lock(master_id: int, ttl_seconds: int = 120) -> bool:
+async def acquire_auto_recharge_lock(master_id: int, ttl_seconds: int = 120, token: str | None = None) -> str | None:
     """
     Acquire a distributed lock for auto-recharge for the given master_id.
-    Fails closed (returns False) if Redis is unavailable or raises an exception,
+    Uses a unique owner token to prevent releasing locks owned by subsequent workers.
+    Returns the lock token string if acquired, None if not acquired (or if Redis unavailable).
+    Fails closed (returns None) if Redis is unavailable or raises an exception,
     preventing concurrent stampedes to payment gateways.
     """
     global redis_client
@@ -42,22 +45,45 @@ async def acquire_auto_recharge_lock(master_id: int, ttl_seconds: int = 120) -> 
             pass
     if not redis_client:
         logger.warning(f"Redis unavailable, auto-recharge lock failing closed for customer {master_id}")
-        return False
+        return None
+    owner_token = token or str(uuid.uuid4())
     try:
-        res = await redis_client.set(f"auto_recharge_lock:{master_id}", "1", nx=True, ex=ttl_seconds)
-        return bool(res)
+        res = await redis_client.set(f"auto_recharge_lock:{master_id}", owner_token, nx=True, ex=ttl_seconds)
+        if res:
+            return owner_token
+        return None
     except Exception as e:
         logger.error(f"Redis auto-recharge lock failed: {e}")
-        return False
+        return None
 
-async def release_auto_recharge_lock(master_id: int):
+RELEASE_LOCK_LUA = """
+if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("del", KEYS[1])
+else
+    return 0
+end
+"""
+
+async def release_auto_recharge_lock(master_id: int, token: str | None = None) -> bool:
+    """
+    Release a distributed lock for auto-recharge for the given master_id.
+    If a unique owner token is provided, atomically deletes the lock only if
+    the current lock value matches the token via Lua script.
+    """
     global redis_client
     if not redis_client:
-        return
+        return False
+    lock_key = f"auto_recharge_lock:{master_id}"
     try:
-        await redis_client.delete(f"auto_recharge_lock:{master_id}")
+        if token:
+            res = await redis_client.eval(RELEASE_LOCK_LUA, 1, lock_key, token)
+            return bool(res)
+        else:
+            res = await redis_client.delete(lock_key)
+            return bool(res)
     except Exception as e:
         logger.error(f"Redis auto-recharge unlock failed: {e}")
+        return False
 
 async def is_auto_recharge_in_cooldown(master_id: int) -> bool:
     """
@@ -169,3 +195,14 @@ async def get_auto_recharge_failure_count(master_id: int) -> int:
         except Exception as e:
             logger.error(f"Error reading auto-recharge failure count from Redis: {e}")
     return _local_failures.get(master_id, (0, 0))[0]
+
+async def get_redis():
+    """Returns the active redis client, attempting to initialize it if not already connected."""
+    global redis_client
+    if redis_client is None:
+        try:
+            await init_redis()
+        except Exception:
+            pass
+    return redis_client
+

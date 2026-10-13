@@ -52,7 +52,9 @@ class Settings(BaseSettings):
     DB_POOL_RECYCLE: int = 1800
     DB_ECHO: bool = False
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    ENVIRONMENT: str = "development"
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 settings = Settings()
 
@@ -82,7 +84,7 @@ TIER_CONFIG = {
         "activation_deposit_paise": 600000,  # ₹6,000 min to activate
     },
     "pro": {
-        "per_minute_rate_paise": 400,    # ₹4/min
+        "per_minute_rate_paise": 1800,   # ₹18/min (covers ElevenLabs TTS COGS ~₹7.75/min + Plivo + STT + LLM with healthy margin)
         "concurrent_call_limit": 10,
         "max_call_duration_seconds": 1800,
         "llm_model": "gpt-4o-mini",
@@ -111,9 +113,32 @@ def resolve_tier_config(subscription=None) -> dict:
     For standard plans, returns from TIER_CONFIG directly.
     Pass None to get the starter fallback.
     """
-    if subscription and subscription.plan == "custom" and getattr(subscription, "custom_config", None):
+    plan = getattr(subscription, "plan", None)
+    if subscription and plan == "custom" and getattr(subscription, "custom_config", None):
         base = dict(TIER_CONFIG["starter"])
         base.update(subscription.custom_config)
         return base
-    plan = (subscription.plan if subscription else None) or "starter"
-    return TIER_CONFIG.get(plan, TIER_CONFIG["starter"])
+    effective_plan = plan or "starter"
+    return TIER_CONFIG.get(effective_plan, TIER_CONFIG["starter"])
+
+# Minimum cost floors per minute (in paise) to protect against negative gross margins.
+# ElevenLabs / Cartesia premium voices cost ~$0.18/1k chars (COGS ~₹8.40+/min with telecom+STT+LLM)
+# Standard voices (Deepgram / Smallest AI) cost ~₹1.20 - ₹2.50/min COGS.
+PROVIDER_MIN_RATE_FLOOR_PAISE = {
+    "elevenlabs": 1200,   # Minimum ₹12.00/min floor
+    "cartesia": 1200,     # Minimum ₹12.00/min floor
+    "smallest": 500,      # Minimum ₹5.00/min floor
+    "smallest_ai": 500,   # Minimum ₹5.00/min floor
+    "deepgram": 400,      # Minimum ₹4.00/min floor
+}
+DEFAULT_MIN_RATE_FLOOR_PAISE = 400
+
+def get_minimum_rate_floor_paise(tts_provider: str | None = None) -> int:
+    """Returns the absolute minimum allowable per_minute_rate_paise for a given TTS provider."""
+    if not tts_provider:
+        return DEFAULT_MIN_RATE_FLOOR_PAISE
+    norm = tts_provider.lower().strip()
+    for provider, floor in PROVIDER_MIN_RATE_FLOOR_PAISE.items():
+        if provider in norm:
+            return floor
+    return DEFAULT_MIN_RATE_FLOOR_PAISE

@@ -281,7 +281,11 @@ export default function CustomerDetailPage() {
       const res = await adminFetch(`/admin/customers/${id}/set-balance`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ amount_paise: amountPaise, reason: setBalanceReason || "Admin manual override" })
+        body: JSON.stringify({
+          amount_paise: amountPaise,
+          reason: setBalanceReason || "Admin manual override",
+          expected_balance_paise: wallet?.balance_paise
+        })
       });
       if (res.ok) {
         setIsSetBalanceOpen(false);
@@ -1382,7 +1386,7 @@ export default function CustomerDetailPage() {
                 <SelectContent className="bg-white border-slate-200">
                   <SelectItem value="starter">Starter — ₹6/min · 2 concurrent · Deepgram TTS</SelectItem>
                   <SelectItem value="growth">Growth — ₹6/min · 2 concurrent · Smallest AI TTS (Indian voices)</SelectItem>
-                  <SelectItem value="pro">Pro — ₹4/min · 10 concurrent · ElevenLabs TTS</SelectItem>
+                  <SelectItem value="pro">Pro — ₹18/min · 10 concurrent · ElevenLabs TTS</SelectItem>
                   <SelectItem value="elite">Elite — ₹12/min · 50 concurrent · ElevenLabs TTS</SelectItem>
                 </SelectContent>
               </Select>

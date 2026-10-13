@@ -1,16 +1,19 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from db.session import get_db
+from db.models import Wallet, TalkarAdmin
+from services.admin_auth import get_current_admin
 
 router = APIRouter()
 
 
 @router.get("/{customer_id}")
-async def get_wallet(customer_id: int, db: AsyncSession = Depends(get_db)):
-    from db.models import Wallet
-    from sqlalchemy import select
-    from fastapi import HTTPException
-    
+async def get_wallet(
+    customer_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin),
+):
     wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer_id))
     wallet = wallet_res.scalar_one_or_none()
     if not wallet: raise HTTPException(404, "Wallet not found")

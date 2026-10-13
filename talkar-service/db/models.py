@@ -1,7 +1,41 @@
+from typing import Optional, List
 from sqlalchemy import Column, Integer, String, Text, Boolean, BigInteger, Date, DateTime, JSON, ForeignKey, Index
 from sqlalchemy.sql import func
 from db.session import Base
 import enum
+
+class TransactionType(str, enum.Enum):
+    TOP_UP = "top_up"
+    CALL_DEDUCTION = "call_deduction"
+    REFUND = "refund"
+    GRANT = "grant"
+    MANUAL_CREDIT = "manual_credit"
+    MANUAL_DEDUCT = "manual_deduct"
+    MANUAL_SET_BALANCE = "manual_set_balance"
+    CREDIT = "credit"
+    DEDUCTION = "deduction"
+
+TRANSACTION_TYPE_CATEGORIES = {
+    "top_up": [TransactionType.TOP_UP.value, TransactionType.CREDIT.value, TransactionType.MANUAL_CREDIT.value],
+    "credit": [TransactionType.CREDIT.value, TransactionType.TOP_UP.value, TransactionType.MANUAL_CREDIT.value],
+    "call_deduction": [TransactionType.CALL_DEDUCTION.value, TransactionType.DEDUCTION.value, TransactionType.MANUAL_DEDUCT.value],
+    "deduction": [TransactionType.DEDUCTION.value, TransactionType.CALL_DEDUCTION.value, TransactionType.MANUAL_DEDUCT.value],
+    "grant": [TransactionType.GRANT.value, TransactionType.MANUAL_CREDIT.value, TransactionType.CREDIT.value],
+    "refund": [TransactionType.REFUND.value],
+    "manual_credit": [TransactionType.MANUAL_CREDIT.value],
+    "manual_deduct": [TransactionType.MANUAL_DEDUCT.value],
+    "manual_set_balance": [TransactionType.MANUAL_SET_BALANCE.value],
+}
+
+def resolve_transaction_types(type_filter: Optional[str]) -> Optional[List[str]]:
+    if not type_filter:
+        return None
+    type_clean = type_filter.lower().strip()
+    if type_clean == "all":
+        return None
+    if type_clean in TRANSACTION_TYPE_CATEGORIES:
+        return TRANSACTION_TYPE_CATEGORIES[type_clean]
+    return [type_filter]
 
 class NotificationCategory(str, enum.Enum):
     INFO = "info"
@@ -83,6 +117,7 @@ class Wallet(Base):
     razorpay_customer_id = Column(Text)
     razorpay_payment_method_id = Column(Text)
     low_balance_alerted_at = Column(DateTime(timezone=True))
+    zero_balance_since = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

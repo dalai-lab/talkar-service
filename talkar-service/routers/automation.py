@@ -3,11 +3,10 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, func
+from sqlalchemy import select, update, func, case
 from db.session import get_db, AsyncSessionLocal
-from db.models import Customer, Wallet, Subscription, AutomationAuditLog
+from db.models import Customer, Wallet, Subscription, AutomationAuditLog, AutomationApiKey, WalletTransaction, TransactionType
 from services.automation_auth import verify_automation_key
-from db.models import AutomationApiKey
 from config import resolve_tier_config
 
 router = APIRouter()
@@ -84,10 +83,12 @@ async def _log_audit(api_key_id: int, endpoint: str, dograh_org_id: str, payload
 class CreditRequest(BaseModel):
     amount_rupees: float
     description: str
+    type: Optional[str] = TransactionType.CREDIT.value
 
 class DeductRequest(BaseModel):
     amount_rupees: float
     reason: str
+    type: Optional[str] = TransactionType.DEDUCTION.value
 
 class SuspendRequest(BaseModel):
     reason: str
@@ -111,18 +112,37 @@ async def credit_customer(
     if customer.status in ("rejected", "churned"):
         raise HTTPException(400, f"Cannot credit a {customer.status} account")
 
-    amount_paise = int(data.amount_rupees * 100)
+    amount_paise = int(round(data.amount_rupees * 100))
     
     from db.models import WalletTransaction
     from services.billing_service import get_billing_wallet
-    wallet, master_id = await get_billing_wallet(db, customer.id)
+    wallet, master_id = await get_billing_wallet(db, customer.id, allow_suspended=True)
     if not wallet:
         raise HTTPException(400, "Customer has no active billing wallet")
         
-    wallet.balance_paise += amount_paise
+    res = await db.execute(
+        update(Wallet)
+        .where(Wallet.customer_id == master_id)
+        .values(
+            balance_paise=Wallet.balance_paise + amount_paise,
+            zero_balance_since=case(
+                (Wallet.balance_paise + amount_paise <= 0, func.coalesce(Wallet.zero_balance_since, func.now())),
+                else_=None
+            )
+        )
+        .returning(Wallet)
+    )
+    wallet = res.scalar_one_or_none()
+    valid_credit_types = {
+        TransactionType.CREDIT.value,
+        TransactionType.TOP_UP.value,
+        TransactionType.GRANT.value,
+        TransactionType.MANUAL_CREDIT.value,
+    }
+    txn_type = data.type if data.type in valid_credit_types else TransactionType.CREDIT.value
     txn = WalletTransaction(
         customer_id=master_id,
-        type='credit',
+        type=txn_type,
         amount_paise=amount_paise,
         description=f"[Auto] {data.description}"
     )
@@ -166,7 +186,7 @@ async def credit_customer(
     import asyncio
     asyncio.create_task(notification_service.notify_customer_credit_granted(
         customer_id=customer.id,
-        amount_paise=-amount_paise,
+        amount_paise=amount_paise,
         description=f"[Automated] {data.description}"
     ))
 
@@ -191,26 +211,62 @@ async def deduct_customer(
     if customer.status not in ("active", "suspended", "pending_deposit", "agent_building"):
         raise HTTPException(400, "Customer is not in a deductible status")
 
-    amount_paise = int(data.amount_rupees * 100)
+    amount_paise = int(round(data.amount_rupees * 100))
     
     from services.billing_service import get_billing_wallet
-    wallet, master_id = await get_billing_wallet(db, customer.id)
+    wallet, master_id = await get_billing_wallet(db, customer.id, allow_suspended=True)
     if not wallet:
         raise HTTPException(400, "Customer has no active billing wallet")
         
-    if wallet.balance_paise < amount_paise:
-        raise HTTPException(400, f"Insufficient balance. Wallet has Rs. {wallet.balance_paise/100:.2f}")
+    res = await db.execute(
+        update(Wallet)
+        .where(
+            Wallet.customer_id == master_id,
+            Wallet.balance_paise >= amount_paise,
+        )
+        .values(
+            balance_paise=Wallet.balance_paise - amount_paise,
+            zero_balance_since=case(
+                (Wallet.balance_paise - amount_paise <= 0, func.coalesce(Wallet.zero_balance_since, func.now())),
+                else_=None
+            )
+        )
+        .returning(Wallet)
+    )
+    wallet = res.scalar_one_or_none()
+    if not wallet:
+        curr_wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == master_id))
+        curr_wallet = curr_wallet_res.scalar_one_or_none()
+        current_bal = curr_wallet.balance_paise if curr_wallet else 0
+        raise HTTPException(400, f"Insufficient balance. Wallet has Rs. {current_bal/100:.2f}")
 
-    wallet.balance_paise -= amount_paise
-    from db.models import WalletTransaction
+    valid_deduct_types = {
+        TransactionType.DEDUCTION.value,
+        TransactionType.CALL_DEDUCTION.value,
+        TransactionType.MANUAL_DEDUCT.value,
+    }
+    txn_type = data.type if data.type in valid_deduct_types else TransactionType.DEDUCTION.value
     txn = WalletTransaction(
         customer_id=master_id,
-        type='deduction',
+        type=txn_type,
         amount_paise=-amount_paise,
         description=data.reason
     )
     db.add(txn)
     await db.commit()
+
+    # Synchronize wallet block policy with Dograh
+    from config import CALL_BLOCK_THRESHOLD_PAISE
+    from services.billing_service import sync_wallet_block_policy
+    if wallet.balance_paise <= CALL_BLOCK_THRESHOLD_PAISE:
+        try:
+            from services import notification_service
+            await notification_service.notify_customer_service_paused(customer.id)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to send service paused notification: {e}")
+
+    await sync_wallet_block_policy(db, customer.id)
 
     return {"status": "success", "new_balance_rupees": wallet.balance_paise / 100}
 @router.get('/customers/{dograh_org_id}/wallet')
@@ -225,7 +281,7 @@ async def get_wallet(
         raise HTTPException(404, "Customer not found")
         
     from services.billing_service import get_billing_wallet
-    wallet, _ = await get_billing_wallet(db, customer.id)
+    wallet, _ = await get_billing_wallet(db, customer.id, allow_suspended=True)
     if not wallet:
         raise HTTPException(404, "Wallet not found")
         
