@@ -11,7 +11,7 @@ CREATE TABLE customers (
   status                TEXT NOT NULL DEFAULT 'pending_approval',
   onboarding_form       JSONB,
   documents             JSONB,
-  billing_org_id        INTEGER REFERENCES customers(id),
+  billing_org_id        INTEGER REFERENCES customers(id) ON DELETE SET NULL,
   dograh_org_id         INTEGER,
   dograh_user_id        INTEGER,
   setup_fee_order_id    TEXT,
@@ -66,6 +66,8 @@ CREATE TABLE wallets (
 CREATE TABLE wallet_transactions (
   id                SERIAL PRIMARY KEY,
   customer_id       INTEGER NOT NULL REFERENCES customers(id),
+  sub_org_id        INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+  dograh_org_id     INTEGER,
   type              TEXT NOT NULL,
   amount_paise      BIGINT NOT NULL,
   description       TEXT,
@@ -75,6 +77,8 @@ CREATE TABLE wallet_transactions (
 );
 
 CREATE INDEX idx_wallet_transactions_customer ON wallet_transactions(customer_id, created_at DESC);
+CREATE INDEX idx_wallet_transactions_sub_org ON wallet_transactions(sub_org_id, created_at DESC);
+CREATE INDEX idx_wallet_transactions_dograh_org ON wallet_transactions(dograh_org_id, created_at DESC);
 CREATE UNIQUE INDEX idx_wallet_transactions_razorpay ON wallet_transactions(razorpay_order_id) WHERE razorpay_order_id IS NOT NULL;
 CREATE UNIQUE INDEX idx_wallet_transactions_dograh_run_id ON wallet_transactions(dograh_run_id) WHERE dograh_run_id IS NOT NULL;
 
@@ -88,7 +92,8 @@ CREATE TABLE phone_numbers (
   agent_id              INTEGER, -- Will add foreign key later to avoid circular dependency
   monthly_cost_paise    BIGINT,
   status                TEXT DEFAULT 'active',
-  purchased_at          TIMESTAMPTZ DEFAULT now()
+  purchased_at          TIMESTAMPTZ DEFAULT now(),
+  last_billed_at        TIMESTAMPTZ
 );
 
 CREATE TABLE agents (

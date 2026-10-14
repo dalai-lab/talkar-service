@@ -84,59 +84,89 @@ async def check_low_balances(ctx):
     MAX_THRESHOLD_PAISE = 5000000  # ₹50,000 — max a customer can configure
     DEFAULT_THRESHOLD_PAISE = 150000  # ₹1,500
 
+    now_utc = datetime.now(timezone.utc)
+
     async with AsyncSessionLocal() as db:
-        # Fetch all active wallets that MIGHT be below anyone's configured threshold.
-        # We use MAX_THRESHOLD_PAISE as the upper bound so we don't miss customers
-        # who have set a higher-than-default threshold.  Per-row filtering happens below.
+        # Fetch all active customers (both master accounts and sub-organizations)
+        # whose effective wallet balance is below MAX_THRESHOLD_PAISE and above ₹500.
         query = text("""
-            SELECT w.customer_id, w.balance_paise, w.low_balance_alerted_at,
-                   c.contact_email, c.report_settings
-            FROM wallets w JOIN customers c ON c.id = w.customer_id
+            SELECT c.id as customer_id, c.billing_org_id, c.contact_email, c.report_settings,
+                   w.customer_id as wallet_customer_id, w.balance_paise, w.low_balance_alerted_at
+            FROM customers c
+            JOIN wallets w ON w.customer_id = COALESCE(c.billing_org_id, c.id)
             WHERE c.status = 'active'
               AND w.balance_paise < :max_threshold
               AND w.balance_paise >= 50000
-              AND (w.low_balance_alerted_at IS NULL
-                   OR w.low_balance_alerted_at < now() - interval '24 hours')
         """)
         result = await db.execute(query, {"max_threshold": MAX_THRESHOLD_PAISE})
-        wallets = result.fetchall()
+        customers = result.fetchall()
         
-        for wallet in wallets:
-            rep = wallet.report_settings or {}
+        for cust_row in customers:
+            rep = cust_row.report_settings or {}
             threshold = rep.get("low_balance_alert_paise", DEFAULT_THRESHOLD_PAISE)
 
-            # Only alert if this customer's wallet is actually below their threshold
-            if wallet.balance_paise >= threshold:
+            # Only alert if this customer's wallet is actually below their configured threshold
+            if cust_row.balance_paise >= threshold:
+                continue
+
+            # 24-hour rate limit check per customer
+            last_alerted_str = rep.get("low_balance_alerted_at")
+            last_alerted = None
+            if last_alerted_str:
+                try:
+                    last_alerted = datetime.fromisoformat(last_alerted_str)
+                    if last_alerted.tzinfo is None:
+                        last_alerted = last_alerted.replace(tzinfo=timezone.utc)
+                except Exception:
+                    last_alerted = None
+
+            # Fallback for master accounts to wallet.low_balance_alerted_at
+            if not last_alerted and not cust_row.billing_org_id and cust_row.low_balance_alerted_at:
+                last_alerted = cust_row.low_balance_alerted_at
+                if last_alerted.tzinfo is None:
+                    last_alerted = last_alerted.replace(tzinfo=timezone.utc)
+
+            if last_alerted and (now_utc - last_alerted).total_seconds() < 86400:
                 continue
 
             # Respect email mute preference
             emails_enabled = rep.get("email_notifications_enabled", True)
             cc_email = (rep.get("cc_email") or "").strip() or None
 
-            if emails_enabled:
+            if emails_enabled and cust_row.contact_email:
                 await notification_service.send_email(
-                    to_email=wallet.contact_email,
+                    to_email=cust_row.contact_email,
                     subject="Low Balance Alert",
-                    body=f"Your wallet balance is getting low: ₹{wallet.balance_paise / 100:.2f}. Please top up to keep your agents active.",
+                    body=f"Your wallet balance is getting low: ₹{cust_row.balance_paise / 100:.2f}. Please top up to keep your agents active.",
                     cc=cc_email,
                 )
             else:
-                # Still send the in-app push even when emails are muted
+                # Still send the in-app push even when emails are muted or contact_email is missing
                 await notification_service.push_notification(
-                    customer_id=wallet.customer_id,
+                    customer_id=cust_row.customer_id,
                     title="Low Balance Alert",
-                    body=f"Low balance: ₹{wallet.balance_paise / 100:.2f}. Please top up.",
+                    body=f"Low balance: ₹{cust_row.balance_paise / 100:.2f}. Please top up.",
                     notification_type="warning"
                 )
 
-            logger.info(f"Sent low balance alert to customer {wallet.customer_id} (threshold: ₹{threshold//100}, email: {emails_enabled})")
+            logger.info(f"Sent low balance alert to customer {cust_row.customer_id} (threshold: ₹{threshold//100}, email: {emails_enabled})")
             
-            # Update alerted_at
+            # Record alerted_at in customer's report_settings so each sub-org has its own 24h rate limit
+            updated_rep = dict(rep)
+            updated_rep["low_balance_alerted_at"] = now_utc.isoformat()
             await db.execute(
-                update(Wallet)
-                .where(Wallet.customer_id == wallet.customer_id)
-                .values(low_balance_alerted_at=func.now())
+                update(Customer)
+                .where(Customer.id == cust_row.customer_id)
+                .values(report_settings=updated_rep)
             )
+
+            # For master accounts, also update wallet table for backward compatibility
+            if not cust_row.billing_org_id:
+                await db.execute(
+                    update(Wallet)
+                    .where(Wallet.customer_id == cust_row.wallet_customer_id)
+                    .values(low_balance_alerted_at=func.now())
+                )
         await db.commit()
     logger.info("Low balance check completed.")
 
@@ -194,11 +224,20 @@ async def check_suspensions(ctx):
             except Exception as e:
                 logger.error(f"Failed to send suspension notification to customer {row.id}: {e}")
 
-        # Churn accounts suspended for 45+ days
+        # Churn accounts suspended for 45+ days (cascading to sub-orgs under churned masters)
         churn_query = text("""
+            WITH MasterChurns AS (
+                SELECT id FROM customers
+                WHERE (status = 'churned' OR (status = 'suspended' AND updated_at < now() - interval '45 days'))
+                  AND billing_org_id IS NULL
+            )
             UPDATE customers SET status = 'churned'
             WHERE status = 'suspended'
-              AND updated_at < now() - interval '45 days'
+              AND (
+                  id IN (SELECT id FROM MasterChurns)
+                  OR billing_org_id IN (SELECT id FROM MasterChurns)
+                  OR updated_at < now() - interval '45 days'
+              )
             RETURNING id, dograh_org_id, contact_email
         """)
         churned_result = await db.execute(churn_query)
@@ -257,19 +296,34 @@ async def cleanup_abandoned_signups(ctx):
         abandoned_result = await db.execute(abandoned_query)
         
         for row in abandoned_result:
-            logger.info(f"Deleting abandoned customer {row.id}")
-            if row.dograh_org_id:
-                await dograh_client.delete_org(row.dograh_org_id)
-            await db.execute(text("DELETE FROM phone_number_requests WHERE customer_id = :id"), {"id": row.id})
-            await db.execute(text("DELETE FROM phone_numbers WHERE customer_id = :id"), {"id": row.id})
-            await db.execute(text("DELETE FROM support_requests WHERE customer_id = :id"), {"id": row.id})
-            await db.execute(text("DELETE FROM call_logs WHERE customer_id = :id"), {"id": row.id})
-            await db.execute(text("DELETE FROM wallet_transactions WHERE customer_id = :id"), {"id": row.id})
-            await db.execute(text("DELETE FROM wallets WHERE customer_id = :id"), {"id": row.id})
-            await db.execute(text("DELETE FROM subscriptions WHERE customer_id = :id"), {"id": row.id})
-            await db.execute(text("DELETE FROM agents WHERE customer_id = :id"), {"id": row.id})
-            await db.execute(text("DELETE FROM customers WHERE id = :id"), {"id": row.id})
-            
+            try:
+                logger.info(f"Deleting abandoned customer {row.id}")
+                if row.dograh_org_id:
+                    try:
+                        await dograh_client.delete_org(row.dograh_org_id)
+                    except Exception as de:
+                        logger.warning(f"Failed to delete Dograh org {row.dograh_org_id} for abandoned customer {row.id}: {de}")
+
+                # 1. Detach dependent sub-orgs so deleting master does not crash on foreign key constraint
+                await db.execute(text("UPDATE customers SET billing_org_id = NULL WHERE billing_org_id = :id"), {"id": row.id})
+
+                # 2. Delete related records in dependency order
+                await db.execute(text("DELETE FROM phone_number_requests WHERE customer_id = :id"), {"id": row.id})
+                await db.execute(text("DELETE FROM phone_numbers WHERE customer_id = :id"), {"id": row.id})
+                await db.execute(text("DELETE FROM support_requests WHERE customer_id = :id"), {"id": row.id})
+                await db.execute(text("DELETE FROM call_logs WHERE customer_id = :id"), {"id": row.id})
+                await db.execute(text("DELETE FROM notifications WHERE customer_id = :id"), {"id": row.id})
+                await db.execute(text("DELETE FROM invoices WHERE customer_id = :id"), {"id": row.id})
+                await db.execute(text("DELETE FROM wallet_transactions WHERE customer_id = :id"), {"id": row.id})
+                await db.execute(text("DELETE FROM wallets WHERE customer_id = :id"), {"id": row.id})
+                await db.execute(text("DELETE FROM subscriptions WHERE customer_id = :id"), {"id": row.id})
+                await db.execute(text("DELETE FROM agents WHERE customer_id = :id"), {"id": row.id})
+                await db.execute(text("DELETE FROM customers WHERE id = :id"), {"id": row.id})
+                await db.commit()
+            except Exception as e:
+                logger.error(f"Failed to delete abandoned customer {row.id}: {e}", exc_info=True)
+                await db.rollback()
+
         await db.commit()
     logger.info("Abandoned signup cleanup completed.")
 
@@ -371,5 +425,21 @@ async def dispatch_scheduled_announcements(ctx):
                 logger.error(f"Failed to broadcast scheduled announcement #{ann.id}: {e}")
 
     logger.info("Scheduled announcements check completed.")
+
+
+async def bill_monthly_phone_numbers(ctx):
+    """
+    8G - Monthly recurring telephony DID lease billing (Issue 31).
+    Runs daily to process recurring phone number lease deductions.
+    """
+    logger.info("Starting monthly phone number lease billing check...")
+    from services.billing_service import bill_monthly_phone_number_leases
+    async with AsyncSessionLocal() as db:
+        try:
+            results = await bill_monthly_phone_number_leases(db)
+            logger.info(f"Phone number lease billing completed: {results}")
+        except Exception as e:
+            logger.error(f"Error during phone number lease billing: {e}", exc_info=True)
+
 
 

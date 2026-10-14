@@ -14,12 +14,14 @@ class TransactionType(str, enum.Enum):
     MANUAL_SET_BALANCE = "manual_set_balance"
     CREDIT = "credit"
     DEDUCTION = "deduction"
+    PHONE_NUMBER_LEASE = "phone_number_lease"
 
 TRANSACTION_TYPE_CATEGORIES = {
     "top_up": [TransactionType.TOP_UP.value, TransactionType.CREDIT.value, TransactionType.MANUAL_CREDIT.value],
     "credit": [TransactionType.CREDIT.value, TransactionType.TOP_UP.value, TransactionType.MANUAL_CREDIT.value],
     "call_deduction": [TransactionType.CALL_DEDUCTION.value, TransactionType.DEDUCTION.value, TransactionType.MANUAL_DEDUCT.value],
-    "deduction": [TransactionType.DEDUCTION.value, TransactionType.CALL_DEDUCTION.value, TransactionType.MANUAL_DEDUCT.value],
+    "deduction": [TransactionType.DEDUCTION.value, TransactionType.CALL_DEDUCTION.value, TransactionType.MANUAL_DEDUCT.value, TransactionType.PHONE_NUMBER_LEASE.value],
+    "phone_number_lease": [TransactionType.PHONE_NUMBER_LEASE.value],
     "grant": [TransactionType.GRANT.value, TransactionType.MANUAL_CREDIT.value, TransactionType.CREDIT.value],
     "refund": [TransactionType.REFUND.value],
     "manual_credit": [TransactionType.MANUAL_CREDIT.value],
@@ -28,7 +30,7 @@ TRANSACTION_TYPE_CATEGORIES = {
 }
 
 def resolve_transaction_types(type_filter: Optional[str]) -> Optional[List[str]]:
-    if not type_filter:
+    if not type_filter or not isinstance(type_filter, str):
         return None
     type_clean = type_filter.lower().strip()
     if type_clean == "all":
@@ -57,7 +59,7 @@ class Customer(Base):
     status = Column(Text, nullable=False, default="pending_approval", index=True)
     onboarding_form = Column(JSON)
     documents = Column(JSON)
-    billing_org_id = Column(Integer, ForeignKey("customers.id"), nullable=True)
+    billing_org_id = Column(Integer, ForeignKey("customers.id", ondelete="SET NULL"), nullable=True)
     dograh_org_id = Column(Integer, index=True)
     dograh_user_id = Column(Integer)
     setup_fee_order_id = Column(Text)
@@ -126,6 +128,8 @@ class WalletTransaction(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
+    sub_org_id = Column(Integer, ForeignKey("customers.id"), nullable=True)
+    dograh_org_id = Column(Integer, nullable=True)
     type = Column(Text, nullable=False)
     amount_paise = Column(BigInteger, nullable=False)
     description = Column(Text)
@@ -135,6 +139,8 @@ class WalletTransaction(Base):
 
     __table_args__ = (
         Index("idx_wallet_transactions_customer", "customer_id", "created_at"),
+        Index("idx_wallet_transactions_sub_org", "sub_org_id", "created_at"),
+        Index("idx_wallet_transactions_dograh_org", "dograh_org_id", "created_at"),
         Index("idx_wallet_transactions_razorpay", "razorpay_order_id", unique=True, postgresql_where=razorpay_order_id.isnot(None)),
         Index("idx_wallet_transactions_dograh_run_id", "dograh_run_id", unique=True, postgresql_where=dograh_run_id.isnot(None)),
     )
@@ -152,6 +158,7 @@ class PhoneNumber(Base):
     monthly_cost_paise = Column(BigInteger)
     status = Column(Text, default="active")
     purchased_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_billed_at = Column(DateTime(timezone=True), nullable=True)
 
 class Agent(Base):
     __tablename__ = "agents"
@@ -273,6 +280,8 @@ class Invoice(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False, index=True)
+    sub_org_id = Column(Integer, ForeignKey("customers.id"), nullable=True, index=True)
+    dograh_org_id = Column(Integer, nullable=True, index=True)
     wallet_transaction_id = Column(Integer, ForeignKey("wallet_transactions.id"), unique=True)
     invoice_number = Column(Text, nullable=False, unique=True)
     amount_paise = Column(BigInteger, nullable=False)

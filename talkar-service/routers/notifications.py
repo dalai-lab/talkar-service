@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Header
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,23 +29,60 @@ async def get_notifications(
         authorization=authorization,
     )
 
-    # Get unread count
-    unread_res = await db.execute(
-        select(func.count(Notification.id))
-        .where(Notification.customer_id == customer.id, Notification.is_read == False)
-    )
-    unread_count = unread_res.scalar_one()
+    limit_val = getattr(limit, "default", limit)
+    try:
+        effective_limit = int(limit_val)
+    except (TypeError, ValueError):
+        effective_limit = 20
 
-    # Get recent notifications
-    notif_res = await db.execute(
-        select(Notification)
-        .where(Notification.customer_id == customer.id)
-        .order_by(desc(Notification.created_at))
-        .limit(limit)
-    )
+    if customer.billing_org_id:
+        # Sub-org account: fetch sub-org's own notifications plus any master fleet billing/warning alerts
+        notif_res = await db.execute(
+            select(Notification)
+            .where(Notification.customer_id == customer.id)
+            .order_by(desc(Notification.created_at))
+            .limit(effective_limit)
+        )
+        sub_notifs = list(notif_res.scalars().all())
+        seen_keys = {(n.title, n.body) for n in sub_notifs}
+
+        master_res = await db.execute(
+            select(Notification)
+            .where(
+                Notification.customer_id == customer.billing_org_id,
+                Notification.type.in_(["warning", "critical", "billing"])
+            )
+            .order_by(desc(Notification.created_at))
+            .limit(effective_limit)
+        )
+        master_notifs = master_res.scalars().all()
+        combined_notifs = list(sub_notifs)
+        for mn in master_notifs:
+            if (mn.title, mn.body) not in seen_keys:
+                combined_notifs.append(mn)
+                seen_keys.add((mn.title, mn.body))
+
+        combined_notifs.sort(key=lambda n: n.created_at or datetime.min, reverse=True)
+        notifications_list = combined_notifs[:effective_limit]
+        unread_count = sum(1 for n in combined_notifs if not n.is_read)
+    else:
+        # Master account
+        unread_res = await db.execute(
+            select(func.count(Notification.id))
+            .where(Notification.customer_id == customer.id, Notification.is_read == False)
+        )
+        unread_count = unread_res.scalar_one()
+
+        notif_res = await db.execute(
+            select(Notification)
+            .where(Notification.customer_id == customer.id)
+            .order_by(desc(Notification.created_at))
+            .limit(effective_limit)
+        )
+        notifications_list = notif_res.scalars().all()
     
     notifications = []
-    for n in notif_res.scalars().all():
+    for n in notifications_list:
         notifications.append({
             "id": n.id,
             "title": n.title,
@@ -79,9 +117,13 @@ async def mark_notification_read(
         authorization=authorization,
     )
         
+    allowed_ids = [customer.id]
+    if customer.billing_org_id:
+        allowed_ids.append(customer.billing_org_id)
+
     result = await db.execute(
         update(Notification)
-        .where(Notification.id == notification_id, Notification.customer_id == customer.id)
+        .where(Notification.id == notification_id, Notification.customer_id.in_(allowed_ids))
         .values(is_read=True)
     )
     await db.commit()
@@ -106,9 +148,13 @@ async def mark_all_notifications_read(
         authorization=authorization,
     )
         
+    allowed_ids = [customer.id]
+    if customer.billing_org_id:
+        allowed_ids.append(customer.billing_org_id)
+
     result = await db.execute(
         update(Notification)
-        .where(Notification.customer_id == customer.id, Notification.is_read == False)
+        .where(Notification.customer_id.in_(allowed_ids), Notification.is_read == False)
         .values(is_read=True)
     )
     await db.commit()
@@ -134,7 +180,13 @@ async def delete_notification(
         authorization=authorization,
     )
         
-    res = await db.execute(select(Notification).where(Notification.id == notification_id, Notification.customer_id == customer.id))
+    allowed_ids = [customer.id]
+    if customer.billing_org_id:
+        allowed_ids.append(customer.billing_org_id)
+
+    res = await db.execute(
+        select(Notification).where(Notification.id == notification_id, Notification.customer_id.in_(allowed_ids))
+    )
     n = res.scalar_one_or_none()
     if not n:
         raise HTTPException(404, "Notification not found")

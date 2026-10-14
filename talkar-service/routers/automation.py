@@ -140,8 +140,12 @@ async def credit_customer(
         TransactionType.MANUAL_CREDIT.value,
     }
     txn_type = data.type if data.type in valid_credit_types else TransactionType.CREDIT.value
+    sub_org_id = customer.id if customer.billing_org_id else None
+    dograh_org_id = customer.dograh_org_id
     txn = WalletTransaction(
         customer_id=master_id,
+        sub_org_id=sub_org_id,
+        dograh_org_id=dograh_org_id,
         type=txn_type,
         amount_paise=amount_paise,
         description=f"[Auto] {data.description}"
@@ -170,8 +174,13 @@ async def credit_customer(
 
     elif customer.status == "suspended":
         from config import CALL_BLOCK_THRESHOLD_PAISE
-        if wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE:
+        c_form = customer.onboarding_form or {}
+        if c_form.get("suspension_reason") in ("zero_balance", None, "") and wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE:
             customer.status = "active"
+            c_dict = dict(c_form)
+            c_dict.pop("suspension_reason", None)
+            c_dict.pop("suspension_message", None)
+            customer.onboarding_form = c_dict
             await db.commit()
             try:
                 await run_provisioning(customer.id, None, db)
@@ -246,8 +255,12 @@ async def deduct_customer(
         TransactionType.MANUAL_DEDUCT.value,
     }
     txn_type = data.type if data.type in valid_deduct_types else TransactionType.DEDUCTION.value
+    sub_org_id = customer.id if customer.billing_org_id else None
+    dograh_org_id = customer.dograh_org_id
     txn = WalletTransaction(
         customer_id=master_id,
+        sub_org_id=sub_org_id,
+        dograh_org_id=dograh_org_id,
         type=txn_type,
         amount_paise=-amount_paise,
         description=data.reason
@@ -441,17 +454,27 @@ async def wallet_alerts(
 ):
     from sqlalchemy import text
     query = text('''
-        SELECT c.dograh_org_id, w.balance_paise, COALESCE((c.report_settings->>'low_balance_alert_paise')::bigint, 150000) as threshold
-        FROM wallets w JOIN customers c ON c.id = w.customer_id
-        WHERE c.status = 'active' AND w.balance_paise < COALESCE((c.report_settings->>'low_balance_alert_paise')::bigint, 150000)
+        SELECT 
+            c.dograh_org_id, 
+            w.balance_paise, 
+            COALESCE((c.report_settings->>'low_balance_alert_paise')::bigint, 150000) as threshold,
+            c.id as customer_id,
+            (c.billing_org_id IS NOT NULL) as is_sub_org
+        FROM customers c
+        JOIN wallets w ON w.customer_id = COALESCE(c.billing_org_id, c.id)
+        WHERE c.status = 'active'
+          AND c.dograh_org_id IS NOT NULL
+          AND w.balance_paise < COALESCE((c.report_settings->>'low_balance_alert_paise')::bigint, 150000)
     ''')
     res = await db.execute(query)
     alerts = []
     for row in res:
         alerts.append({
-            "dograh_org_id": row[0],
-            "balance_rupees": row[1] / 100,
-            "threshold_rupees": float(row[2] or 150000) / 100
+            "dograh_org_id": row.dograh_org_id,
+            "balance_rupees": row.balance_paise / 100,
+            "threshold_rupees": float(row.threshold or 150000) / 100,
+            "customer_id": row.customer_id,
+            "is_sub_org": bool(row.is_sub_org)
         })
     return {"low_balance_customers": alerts}
 
@@ -473,25 +496,27 @@ async def list_customers(
     res = await db.execute(query)
     customers = res.scalars().all()
     
-    # We need to fetch wallets for all these customers
-    customer_ids = [c.id for c in customers]
+    # We need to fetch wallets for all these customers (resolving billing_org_id for sub-orgs)
+    effective_billing_ids = list({c.billing_org_id or c.id for c in customers})
     wallets = {}
-    if customer_ids:
-        wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id.in_(customer_ids)))
+    if effective_billing_ids:
+        wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id.in_(effective_billing_ids)))
         for w in wallet_res.scalars().all():
             wallets[w.customer_id] = w
             
-    # And subscriptions
+    # And subscriptions (resolving direct or master subscription for sub-orgs)
+    all_sub_ids = list({c.id for c in customers} | set(effective_billing_ids))
     subs = {}
-    if customer_ids:
-        sub_res = await db.execute(select(Subscription).where(Subscription.customer_id.in_(customer_ids)))
+    if all_sub_ids:
+        sub_res = await db.execute(select(Subscription).where(Subscription.customer_id.in_(all_sub_ids)))
         for s in sub_res.scalars().all():
             subs[s.customer_id] = s
             
     result = []
     for c in customers:
-        w = wallets.get(c.id)
-        s = subs.get(c.id)
+        effective_billing_id = c.billing_org_id or c.id
+        w = wallets.get(effective_billing_id)
+        s = subs.get(c.id) or subs.get(effective_billing_id)
         result.append({
             "dograh_org_id": c.dograh_org_id,
             "company_name": c.company_name,

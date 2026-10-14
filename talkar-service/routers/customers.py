@@ -1,15 +1,16 @@
 from fastapi import APIRouter, Depends, Query, HTTPException, Header
+from fastapi.params import Header as HeaderParam
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from db.session import get_db
 from db.models import Customer, Subscription, TalkarAdmin
 from pydantic import BaseModel
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, date, timedelta
 import logging
 from services import notification_service, dograh_client
 from services.admin_auth import get_current_admin
-from services.customer_auth import resolve_authenticated_email, verify_customer_access
+from services.customer_auth import resolve_authenticated_email, verify_customer_access, is_admin_or_service_request
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,13 @@ class CreateCustomerRequest(BaseModel):
     company_name: str = ""
     dograh_org_id: int
     dograh_user_id: int
+    account_type: Optional[str] = None  # "shared" or "independent"
+    link_billing: Optional[bool] = None  # True to link to existing billing, False for independent
+    billing_mode: Optional[str] = None  # "shared" or "independent"
+
+class SetBillingAccountTypeRequest(BaseModel):
+    account_type: str  # "shared" or "independent"
+    master_customer_id: Optional[int] = None
 
 class UpdateStatusRequest(BaseModel):
     status: str
@@ -31,14 +39,26 @@ class UpdateStatusRequest(BaseModel):
 async def create_customer(
     data: CreateCustomerRequest,
     db: AsyncSession = Depends(get_db),
-    authorization: Optional[str] = Header(None)
+    authorization: Optional[str] = Header(None),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email")
 ):
     from services.customer_auth import is_admin_or_service_request
-    if not is_admin_or_service_request(authorization):
+    if not is_admin_or_service_request(authorization, x_talkar_email):
         raise HTTPException(
             status_code=401,
             detail="Authentication required to register customer."
         )
+
+    wants_independent = (
+        (data.account_type and data.account_type.strip().lower() == "independent")
+        or data.link_billing is False
+        or (data.billing_mode and data.billing_mode.strip().lower() == "independent")
+    )
+    wants_shared = (
+        (data.account_type and data.account_type.strip().lower() in ("shared", "sub_org", "linked"))
+        or data.link_billing is True
+        or (data.billing_mode and data.billing_mode.strip().lower() in ("shared", "sub_org", "linked"))
+    )
 
     result = await db.execute(
         select(Customer)
@@ -48,10 +68,43 @@ async def create_customer(
     )
     existing_org = result.scalars().first()
     if existing_org:
+        # If caller explicitly specified account_type and it differs from existing_org state, update it
+        if wants_independent and existing_org.billing_org_id is not None:
+            existing_org.billing_org_id = None
+            await db.commit()
+            await db.refresh(existing_org)
+            logger.info(f"Updated existing org {data.dograh_org_id} to independent billing (billing_org_id=None)")
+        elif wants_shared and existing_org.billing_org_id is None:
+            is_owner = await dograh_client.verify_dograh_org_user(
+                org_id=data.dograh_org_id,
+                user_id=data.dograh_user_id,
+                email=data.email,
+                require_owner=True
+            )
+            if is_owner is False:
+                raise HTTPException(403, "Only organization owners/admins can link an organization to a shared billing wallet.")
+
+            ESTABLISHED_STATUSES = ["active", "agent_building", "approved", "pending_deposit",
+                                    "pending_plan_selection", "under_review", "suspended"]
+            res_m = await db.execute(
+                select(Customer)
+                .where(Customer.contact_email == data.email)
+                .where(Customer.id != existing_org.id)
+                .where(Customer.status.in_(ESTABLISHED_STATUSES))
+                .order_by(Customer.billing_org_id.asc().nullsfirst(), Customer.id.asc())
+                .limit(1)
+            )
+            master_cust = res_m.scalar_one_or_none()
+            if master_cust:
+                target_master = master_cust.billing_org_id if master_cust.billing_org_id else master_cust.id
+                if target_master != existing_org.id:
+                    existing_org.billing_org_id = target_master
+                    await db.commit()
+                    await db.refresh(existing_org)
+                    logger.info(f"Updated existing org {data.dograh_org_id} to shared billing (billing_org_id={target_master})")
         return existing_org
 
     # Basic rate limiting: prevent spamming new workspace creations
-    from datetime import timedelta
     recent_spam = await db.execute(
         select(Customer)
         .where(Customer.contact_email == data.email)
@@ -110,19 +163,49 @@ async def create_customer(
                 detail="User is not authorized for this Dograh organization."
             )
 
-        # 3. Only link if user identity is confirmed
-        if existing_email.dograh_user_id and existing_email.dograh_user_id == data.dograh_user_id:
-            billing_org_id = existing_email.billing_org_id if existing_email.billing_org_id else existing_email.id
-        elif not existing_email.dograh_user_id and is_member is True:
-            # Established customer created before dograh_user_id was tracked, verified via Dograh DB
-            billing_org_id = existing_email.billing_org_id if existing_email.billing_org_id else existing_email.id
-        else:
-            # Cannot verify ownership; do NOT link to existing billing account
-            logger.warning(
-                f"Ownership of email '{data.email}' could not be verified against existing customer {existing_email.id}. "
-                f"Creating standalone customer without linking billing."
+        # 3. Billing linkage decision (Issue 8 Prevention):
+        # A workspace can ONLY be linked to an existing master billing wallet if the user
+        # is the verified Owner / Admin of this Dograh organization.
+        # If the user was merely invited as a team member or collaborator to an external
+        # client workspace, automatically linking it to their agency's wallet is a critical
+        # privilege escalation / account hijacking risk.
+        if wants_independent:
+            logger.info(
+                f"Independent billing requested for org {data.dograh_org_id} under existing email '{data.email}'. "
+                f"Creating standalone master customer (billing_org_id=None)."
             )
             billing_org_id = None
+        else:
+            is_owner = await dograh_client.verify_dograh_org_user(
+                org_id=data.dograh_org_id,
+                user_id=data.dograh_user_id,
+                email=data.email,
+                require_owner=True
+            )
+            if is_owner is False:
+                logger.info(
+                    f"User '{data.email}' (dograh_user_id={data.dograh_user_id}) is a collaborator/member, "
+                    f"NOT the owner/admin of Dograh org {data.dograh_org_id}. "
+                    f"Refusing to link billing to agency account {existing_email.id}. Creating standalone customer (billing_org_id=None)."
+                )
+                if wants_shared:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Only organization owners/admins can link an organization to a shared billing wallet."
+                    )
+                billing_org_id = None
+            elif existing_email.dograh_user_id and existing_email.dograh_user_id == data.dograh_user_id:
+                billing_org_id = existing_email.billing_org_id if existing_email.billing_org_id else existing_email.id
+            elif not existing_email.dograh_user_id and is_member is True and is_owner is True:
+                # Established customer created before dograh_user_id was tracked, verified as owner via Dograh DB
+                billing_org_id = existing_email.billing_org_id if existing_email.billing_org_id else existing_email.id
+            else:
+                # Cannot verify ownership; do NOT link to existing billing account
+                logger.warning(
+                    f"Ownership of email '{data.email}' could not be verified against existing customer {existing_email.id}. "
+                    f"Creating standalone customer without linking billing."
+                )
+                billing_org_id = None
 
     customer = Customer(
         contact_email=data.email,
@@ -141,8 +224,145 @@ async def create_customer(
     # in save_agent_brief, so we know what they actually want us to build.
     if billing_org_id:
         logger.info(f"Sub-org {customer.id} created for master {billing_org_id}; awaiting brief submission")
+    else:
+        logger.info(f"Master customer {customer.id} created for org {customer.dograh_org_id}; independent billing account")
             
     return customer
+
+@router.post("/by-org/{dograh_org_id}/billing-account-type")
+async def set_billing_account_type(
+    dograh_org_id: int,
+    data: SetBillingAccountTypeRequest,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
+    """
+    Allow customer to explicitly choose or toggle billing account type for a workspace:
+    - 'independent': Separate wallet, separate subscription, separate invoicing and credit cards.
+    - 'shared': Link to master account (shared wallet, master plan, no setup fee).
+    """
+    result = await db.execute(
+        select(Customer)
+        .where(Customer.dograh_org_id == dograh_org_id)
+        .order_by(Customer.updated_at.desc())
+        .limit(1)
+    )
+    customer = result.scalars().first()
+    if not isinstance(authorization, str):
+        authorization = None
+    if not isinstance(x_talkar_email, str):
+        x_talkar_email = None
+    caller_email = resolve_authenticated_email(authorization, x_talkar_email)
+    
+    if not customer:
+        if not caller_email:
+            raise HTTPException(status_code=401, detail="Authentication required to set billing account type.")
+        
+        is_member = await dograh_client.verify_dograh_org_user(
+            org_id=dograh_org_id,
+            email=caller_email if caller_email != "service" else None
+        )
+        if is_member is False:
+            raise HTTPException(status_code=403, detail="User is not authorized for this Dograh organization.")
+
+        customer = Customer(
+            contact_email=caller_email if caller_email != "service" else "",
+            contact_name=caller_email.split("@")[0] if caller_email and caller_email != "service" else "User",
+            dograh_org_id=dograh_org_id,
+            status="pending_approval",
+            billing_org_id=None
+        )
+        db.add(customer)
+        await db.flush()
+    else:
+        await verify_customer_access(customer, db, x_talkar_email, authorization)
+
+    acct_type = data.account_type.strip().lower()
+    if acct_type == "independent":
+        customer.billing_org_id = None
+        # If customer is already active or in agent building, make sure dedicated wallet and subscription exist
+        if customer.status in ("active", "agent_building"):
+            from db.models import Wallet
+            w_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
+            if not w_res.scalar_one_or_none():
+                db.add(Wallet(customer_id=customer.id, balance_paise=0))
+            s_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+            if not s_res.scalar_one_or_none():
+                from config import TIER_CONFIG
+                db.add(Subscription(
+                    customer_id=customer.id,
+                    plan="starter",
+                    status="active",
+                    per_minute_rate_paise=TIER_CONFIG["starter"]["per_minute_rate_paise"],
+                    setup_fee_paid=True,
+                    start_date=date.today()
+                ))
+        await db.commit()
+        await db.refresh(customer)
+        logger.info(f"Customer {customer.id} (org {dograh_org_id}) set to independent billing account")
+        return {
+            "status": "ok",
+            "account_type": "independent",
+            "is_sub_org": False,
+            "billing_org_id": None,
+            "customer_id": customer.id
+        }
+
+    elif acct_type in ("shared", "sub_org", "linked"):
+        # Security: Check that caller is the verified owner/admin of this organization (Issue 8 Prevention)
+        is_owner = await dograh_client.verify_dograh_org_user(
+            org_id=dograh_org_id,
+            user_id=customer.dograh_user_id,
+            email=customer.contact_email or (caller_email if caller_email != "service" else None),
+            require_owner=True
+        )
+        if is_owner is False:
+            raise HTTPException(status_code=403, detail="Only organization owners/admins can link an organization to a shared billing wallet.")
+
+        master_id = data.master_customer_id
+        if master_id:
+            master_res = await db.execute(select(Customer).where(Customer.id == master_id))
+            master_cust = master_res.scalar_one_or_none()
+            if not master_cust:
+                raise HTTPException(status_code=404, detail="Specified master billing account not found")
+        else:
+            ESTABLISHED_STATUSES = ["active", "agent_building", "approved", "pending_deposit",
+                                    "pending_plan_selection", "under_review", "suspended"]
+            email_to_match = customer.contact_email or caller_email
+            res_m = await db.execute(
+                select(Customer)
+                .where(Customer.contact_email == email_to_match)
+                .where(Customer.id != customer.id)
+                .where(Customer.status.in_(ESTABLISHED_STATUSES))
+                .order_by(Customer.billing_org_id.asc().nullsfirst(), Customer.id.asc())
+                .limit(1)
+            )
+            master_cust = res_m.scalar_one_or_none()
+            if not master_cust:
+                raise HTTPException(status_code=400, detail="No established master account found for this email.")
+
+        if master_cust.dograh_user_id and customer.dograh_user_id:
+            if master_cust.dograh_user_id != customer.dograh_user_id:
+                raise HTTPException(status_code=403, detail="Cannot link to account owned by a different user.")
+
+        target_master_id = master_cust.billing_org_id if master_cust.billing_org_id else master_cust.id
+        if target_master_id == customer.id:
+            raise HTTPException(status_code=400, detail="Cannot link customer to itself.")
+
+        customer.billing_org_id = target_master_id
+        await db.commit()
+        await db.refresh(customer)
+        logger.info(f"Customer {customer.id} (org {dograh_org_id}) linked to master {target_master_id} (shared wallet)")
+        return {
+            "status": "ok",
+            "account_type": "shared",
+            "is_sub_org": True,
+            "billing_org_id": customer.billing_org_id,
+            "customer_id": customer.id
+        }
+    else:
+        raise HTTPException(status_code=400, detail="Invalid account_type. Must be 'independent' or 'shared'.")
 
 @router.get("/")
 async def get_all_customers(
@@ -202,14 +422,22 @@ async def get_existing_customer(
 @router.get("/by-email/{email:path}")
 async def get_customer_by_email(
     email: str,
+    dograh_org_id: Optional[int] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Customer)
-        .where(Customer.contact_email == email.strip())
-        .order_by(Customer.updated_at.desc())
-        .limit(1)
-    )
+    """
+    Deprecated: Unscoped route. Resolves customer record for an email.
+    Deterministic ordering guarantees consistency (master org first, then lowest customer ID)
+    preventing non-deterministic collisions between multiple orgs sharing an email.
+    """
+    logger.warning(f"Unscoped /customers/by-email route accessed for {email}. Use strictly scoped by-org routes instead.")
+    query = select(Customer).where(Customer.contact_email == email.strip())
+    if dograh_org_id is not None:
+        query = query.where(Customer.dograh_org_id == dograh_org_id)
+    else:
+        query = query.order_by(Customer.billing_org_id.asc().nullsfirst(), Customer.id.asc())
+
+    result = await db.execute(query.limit(1))
     customer = result.scalars().first()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
@@ -221,6 +449,7 @@ async def get_customer_by_email(
         "contact_name": customer.contact_name,
         "company_name": customer.company_name,
         "contact_email": customer.contact_email,
+        "billing_org_id": customer.billing_org_id,
     }
 
 @router.post("/by-org/{dograh_org_id}/new-agent-brief")
@@ -332,22 +561,23 @@ async def create_new_agent_request(
             detail="Forbidden: Caller is not authorized to link workspaces to this master customer account."
         )
 
-    # Verify that the master customer is actually associated with this dograh_org_id in Dograh DB
-    is_org_member = await dograh_client.verify_dograh_org_user(
+    # Verify that the master customer is an owner/admin of this dograh_org_id in Dograh DB
+    is_org_owner = await dograh_client.verify_dograh_org_user(
         org_id=dograh_org_id,
         user_id=master.dograh_user_id,
-        email=master.contact_email
+        email=master.contact_email,
+        require_owner=True
     )
-    if is_org_member is False:
+    if is_org_owner is False:
         logger.warning(
-            f"Security: Master customer {master.id} ({master.contact_email}) is not a member of Dograh org {dograh_org_id}."
+            f"Security: Master customer {master.id} ({master.contact_email}) is not an owner/admin of Dograh org {dograh_org_id}."
         )
         raise HTTPException(
             status_code=403,
-            detail="Forbidden: Master customer is not associated with this organization."
+            detail="Forbidden: Master customer is not an owner/admin of this organization."
         )
 
-    if not caller_email and is_org_member is not True:
+    if not caller_email and is_org_owner is not True:
         logger.warning(
             f"Security: Unverified request for dograh_org_id={dograh_org_id} to link to master_customer_id={master.id}."
         )
@@ -418,11 +648,11 @@ async def get_customer_status(
         result = await db.execute(select(Customer).where(Customer.id == customer_id))
         customer = result.scalar_one_or_none()
     elif contact_email:
-        # Match by contact_email
+        # Match by contact_email with deterministic priority (master first, then lowest ID)
         result = await db.execute(
             select(Customer)
             .where(Customer.contact_email == contact_email.strip())
-            .order_by(Customer.updated_at.desc())
+            .order_by(Customer.billing_org_id.asc().nullsfirst(), Customer.id.asc())
             .limit(1)
         )
         customer = result.scalars().first()
@@ -436,6 +666,8 @@ async def get_customer_status(
         "dograh_org_id": customer.dograh_org_id,
         "razorpay_key_id": settings.RAZORPAY_KEY_ID,
         "is_sub_org": bool(customer.billing_org_id),
+        "account_type": "shared" if customer.billing_org_id else "independent",
+        "billing_org_id": customer.billing_org_id,
         "has_onboarding_form": bool(customer.onboarding_form)
     }
     
@@ -469,55 +701,91 @@ async def get_customer_status(
         resp["setup_fee_order_id"] = customer.setup_fee_order_id
     if customer.status == "suspended":
         from db.models import Wallet
-        wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
+        wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == billing_customer_id))
         wallet = wallet_res.scalar_one_or_none()
+        if not wallet:
+            from services.billing_service import get_billing_wallet
+            wallet, _ = await get_billing_wallet(db, customer.id, allow_suspended=True)
         resp["balance_paise"] = wallet.balance_paise if wallet else 0
+        form = customer.onboarding_form or {}
+        if "suspension_reason" in form:
+            resp["suspension_reason"] = form.get("suspension_reason")
+        if "suspension_message" in form:
+            resp["suspension_message"] = form.get("suspension_message")
     return resp
 
 
 @router.get("/by-org/{dograh_org_id}")
-async def get_customer_by_org(dograh_org_id: int, db: AsyncSession = Depends(get_db)):
+async def get_customer_by_org(
+    dograh_org_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found for this org")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+        )
+
     return customer
 
 @router.get("/by-org/{dograh_org_id}/agents")
-async def get_org_agents(dograh_org_id: int, db: AsyncSession = Depends(get_db)):
+async def get_org_agents(
+    dograh_org_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found for this org")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+        )
     
     from db.models import Agent
-    from services.dograh_client import DograhSessionLocal
-    from sqlalchemy import text
+    from services import dograh_client
     
     # Sync from Dograh workflows
     existing_res = await db.execute(select(Agent).where(Agent.customer_id == customer.id))
     existing_agents = {a.dograh_workflow_id: a for a in existing_res.scalars().all() if a.dograh_workflow_id}
     
     try:
-        async with DograhSessionLocal() as ddb:
-            w_res = await ddb.execute(
-                text("SELECT id, name, status, created_at FROM workflows WHERE organization_id = :org_id"),
-                {"org_id": customer.dograh_org_id}
-            )
-            workflows = w_res.fetchall()
-            
-            for w in workflows:
-                if w.id not in existing_agents:
-                    new_ag = Agent(
-                        customer_id=customer.id,
-                        name=w.name,
-                        dograh_workflow_id=w.id,
-                        dograh_org_id=customer.dograh_org_id,
-                        status=w.status,
-                        built_at=w.created_at
-                    )
-                    db.add(new_ag)
-            await db.commit()
+        workflows = await dograh_client.get_org_workflows(customer.dograh_org_id)
+        for w in workflows:
+            wf_id = w["id"] if isinstance(w, dict) else getattr(w, "id")
+            wf_name = w["name"] if isinstance(w, dict) else getattr(w, "name")
+            wf_status = w["status"] if isinstance(w, dict) else getattr(w, "status")
+            wf_created = w.get("created_at") if isinstance(w, dict) else getattr(w, "created_at", None)
+            if wf_id not in existing_agents:
+                new_ag = Agent(
+                    customer_id=customer.id,
+                    name=wf_name,
+                    dograh_workflow_id=wf_id,
+                    dograh_org_id=customer.dograh_org_id,
+                    status=wf_status,
+                    built_at=wf_created
+                )
+                db.add(new_ag)
+        await db.commit()
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(f"Failed to sync workflows for customer {customer.id}: {e}")
@@ -537,11 +805,26 @@ async def get_org_agents(dograh_org_id: int, db: AsyncSession = Depends(get_db))
     ]
 
 @router.get("/by-org/{dograh_org_id}/crm-links")
-async def get_org_crm_links(dograh_org_id: int, db: AsyncSession = Depends(get_db)):
+async def get_org_crm_links(
+    dograh_org_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found for this org")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+        )
     
     links = getattr(customer, "crm_links", None)
     if links and isinstance(links, list) and len(links) > 0:
@@ -583,11 +866,26 @@ class SendTestReportRequest(BaseModel):
     recipients: Optional[List[str]] = None
 
 @router.get("/by-org/{dograh_org_id}/report-settings")
-async def get_org_report_settings(dograh_org_id: int, db: AsyncSession = Depends(get_db)):
+async def get_org_report_settings(
+    dograh_org_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found for this org")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+        )
     
     defaults = {
         "enabled": False,
@@ -603,12 +901,24 @@ async def get_org_report_settings(dograh_org_id: int, db: AsyncSession = Depends
 async def update_org_report_settings(
     dograh_org_id: int,
     data: UpdateReportSettingsRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found for this org")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+        )
 
     clean_recipients = [r.strip() for r in data.recipients if r.strip() and "@" in r]
     if not clean_recipients and customer.contact_email:
@@ -637,12 +947,24 @@ async def update_org_report_settings(
 async def send_test_org_report(
     dograh_org_id: int,
     data: SendTestReportRequest = SendTestReportRequest(),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found for this org")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+        )
 
     clean_recipients = None
     if data.recipients:
@@ -875,6 +1197,7 @@ async def get_customer(
 class AssignPhoneNumberRequest(BaseModel):
     number: str
     plivo_number_id: Optional[str] = None
+    monthly_cost_paise: Optional[int] = None
 
 
 @router.post("/{customer_id}/assign-phone-number")
@@ -889,11 +1212,15 @@ async def assign_customer_phone_number(
     if not customer:
         raise HTTPException(404, "Customer not found")
 
+    from config import DEFAULT_PHONE_NUMBER_MONTHLY_COST_PAISE
+    monthly_cost = data.monthly_cost_paise if (data.monthly_cost_paise is not None and data.monthly_cost_paise > 0) else DEFAULT_PHONE_NUMBER_MONTHLY_COST_PAISE
+
     from db.models import PhoneNumber
     pn = PhoneNumber(
         customer_id=customer_id,
         number=data.number,
-        plivo_number_id=data.plivo_number_id
+        plivo_number_id=data.plivo_number_id,
+        monthly_cost_paise=monthly_cost,
     )
     db.add(pn)
     await db.commit()
@@ -912,7 +1239,56 @@ async def assign_customer_phone_number(
         except Exception as e:
             logger.error(f"Failed to sync phone number {data.number} to Dograh org {customer.dograh_org_id}: {e}")
 
+    try:
+        from services.billing_service import charge_initial_phone_number_lease
+        await charge_initial_phone_number_lease(db, customer_id, pn)
+    except Exception as e:
+        logger.warning(f"Initial lease charge bypassed or failed for phone {pn.number}: {e}")
+
     return {"status": "assigned"}
+
+
+@router.delete("/by-org/{org_id}/phone-numbers/{phone_number_id}")
+async def release_org_phone_number(
+    org_id: int,
+    phone_number_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+        )
+
+    from db.models import PhoneNumber
+    pn_res = await db.execute(
+        select(PhoneNumber).where(PhoneNumber.id == phone_number_id, PhoneNumber.customer_id == customer.id)
+    )
+    pn = pn_res.scalar_one_or_none()
+    if not pn:
+        raise HTTPException(404, "Phone number not found")
+
+    pn.status = "released"
+    await db.commit()
+
+    if customer.dograh_org_id and pn.number:
+        try:
+            await dograh_client.release_phone_number_from_dograh(customer.dograh_org_id, pn.number)
+        except Exception as e:
+            logger.warning(f"Failed to deactivate released phone number {pn.number} in Dograh for customer {customer.id}: {e}")
+
+    return {"status": "released"}
 
 
 
@@ -923,12 +1299,28 @@ class SelectTierRequest(BaseModel):
     tier: str  # "starter" | "pro" | "elite"
 
 @router.post("/by-org/{org_id}/select-tier")
-async def select_tier(org_id: int, data: SelectTierRequest, db: AsyncSession = Depends(get_db)):
+async def select_tier(
+    org_id: int,
+    data: SelectTierRequest,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
     from config import TIER_CONFIG, CALL_BLOCK_THRESHOLD_PAISE
     
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+        )
 
     if data.tier == "custom":
         raise HTTPException(400, "Cannot self-select a custom plan.")
@@ -938,6 +1330,25 @@ async def select_tier(org_id: int, data: SelectTierRequest, db: AsyncSession = D
 
     if customer.status not in ("pending_plan_selection", "pending_deposit"):
         raise HTTPException(400, f"Cannot select plan in current status: {customer.status}")
+
+    # Sub-Org Tier Ceiling Check (Issue 9 Protection):
+    # A sub-organization cannot independently select a tier that exceeds the master organization's plan.
+    # Allowing a sub-org on a Starter master to pick Pro (ElevenLabs voices) while Master is billed at Starter (₹6/min)
+    # creates direct negative gross margins.
+    if customer.billing_org_id:
+        master_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.billing_org_id))
+        master_sub = master_sub_res.scalar_one_or_none()
+        master_tier = master_sub.plan if master_sub else "starter"
+
+        TIER_RANK = {"starter": 1, "growth": 1, "pro": 2, "elite": 3, "custom": 10}
+        req_rank = TIER_RANK.get(data.tier, 1)
+        master_rank = TIER_RANK.get(master_tier, 1)
+
+        if req_rank > master_rank:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Sub-organization plan '{data.tier}' cannot exceed master organization plan '{master_tier}'. Please upgrade the master organization account to {data.tier} first."
+            )
 
     activation_min = tier_cfg.get("activation_deposit_paise", 600000)
 
@@ -961,7 +1372,7 @@ async def select_tier(org_id: int, data: SelectTierRequest, db: AsyncSession = D
         customer.status = "active"
         await db.commit()
         from services.provisioning_service import run_provisioning
-        await run_provisioning(customer.id, None, db=None)
+        await run_provisioning(customer.id, data.tier, db=None)
         await notification_service.send_email(
             to_email=customer.contact_email,
             subject="Your Talkar Agent is Live!",
@@ -985,7 +1396,13 @@ class TierUpgradeRequest(BaseModel):
     requested_tier: str
 
 @router.post("/by-org/{org_id}/request-tier-upgrade")
-async def request_tier_upgrade(org_id: int, data: TierUpgradeRequest, db: AsyncSession = Depends(get_db)):
+async def request_tier_upgrade(
+    org_id: int,
+    data: TierUpgradeRequest,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
     if data.requested_tier == "custom":
         raise HTTPException(400, "Cannot self-assign a custom plan.")
         
@@ -997,35 +1414,81 @@ async def request_tier_upgrade(org_id: int, data: TierUpgradeRequest, db: AsyncS
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+        )
     
     if customer.status not in ["active", "pending_plan_selection"]:
         raise HTTPException(400, f"Customer must be active to upgrade tier (current status: {customer.status})")
     
     is_activating = (customer.status == "pending_plan_selection")
     
-    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
-    sub = sub_res.scalar_one_or_none()
-    if sub and sub.plan == "custom":
+    master_id = customer.billing_org_id if customer.billing_org_id else customer.id
+    master_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == master_id))
+    master_sub = master_sub_res.scalar_one_or_none()
+    if master_sub and master_sub.plan == "custom":
         raise HTTPException(400, "Your plan is custom-configured. Contact Talkar to modify it.")
-    current_tier = sub.plan if sub else "starter"
+    current_tier = master_sub.plan if master_sub else "starter"
     
     if current_tier == data.requested_tier:
         raise HTTPException(400, f"Already on {data.requested_tier} tier")
         
-    # Instantly update subscription
-    if sub:
-        sub.plan = data.requested_tier
-        sub.per_minute_rate_paise = TIER_CONFIG[data.requested_tier]["per_minute_rate_paise"]
+    # Instantly update master subscription
+    if master_sub:
+        master_sub.plan = data.requested_tier
+        master_sub.per_minute_rate_paise = TIER_CONFIG[data.requested_tier]["per_minute_rate_paise"]
+    else:
+        master_sub = Subscription(
+            customer_id=master_id,
+            plan=data.requested_tier,
+            per_minute_rate_paise=TIER_CONFIG[data.requested_tier]["per_minute_rate_paise"],
+            status="active",
+        )
+        db.add(master_sub)
     
+    # Also update caller customer's subscription if separate
+    if customer.id != master_id:
+        sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+        sub = sub_res.scalar_one_or_none()
+        if sub:
+            sub.plan = data.requested_tier
+            sub.per_minute_rate_paise = TIER_CONFIG[data.requested_tier]["per_minute_rate_paise"]
+        else:
+            sub = Subscription(
+                customer_id=customer.id,
+                plan=data.requested_tier,
+                per_minute_rate_paise=TIER_CONFIG[data.requested_tier]["per_minute_rate_paise"],
+                status="active",
+            )
+            db.add(sub)
+
     existing_form = customer.onboarding_form or {}
     # Apply the new tier
     existing_form["approved_tier"] = data.requested_tier
     # Clear any old upgrade requests
     existing_form.pop("tier_upgrade_requested", None)
     existing_form.pop("tier_upgrade_requested_at", None)
-    
     customer.onboarding_form = dict(existing_form) 
     
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(customer, "onboarding_form")
+
+    if customer.id != master_id:
+        master_res = await db.execute(select(Customer).where(Customer.id == master_id))
+        master = master_res.scalar_one_or_none()
+        if master:
+            m_form = master.onboarding_form or {}
+            m_form["approved_tier"] = data.requested_tier
+            master.onboarding_form = dict(m_form)
+            flag_modified(master, "onboarding_form")
+
     if is_activating:
         customer.status = "active"
         
@@ -1040,30 +1503,48 @@ async def request_tier_upgrade(org_id: int, data: TierUpgradeRequest, db: AsyncS
     
     # Run best-effort synchronous provisioning to sync to Dograh
     from services.provisioning_service import run_provisioning
-    await run_provisioning(customer.id, data.requested_tier, db)
+    await run_provisioning(master_id, data.requested_tier, db)
+    if customer.id != master_id:
+        await run_provisioning(customer.id, data.requested_tier, db)
     
-    # Cascade to sub-orgs (Risk 3)
-    sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
+    # Cascade to all sub-orgs under master
+    sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == master_id))
     for sub_org in sub_orgs_res.scalars().all():
+        if sub_org.id == customer.id:
+            continue
         sub_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == sub_org.id))
         sub_sub = sub_sub_res.scalar_one_or_none()
         if sub_sub:
             sub_sub.plan = data.requested_tier
             sub_sub.per_minute_rate_paise = TIER_CONFIG[data.requested_tier]["per_minute_rate_paise"]
+        else:
+            sub_sub = Subscription(
+                customer_id=sub_org.id,
+                plan=data.requested_tier,
+                per_minute_rate_paise=TIER_CONFIG[data.requested_tier]["per_minute_rate_paise"],
+                status="active",
+            )
+            db.add(sub_sub)
             
         sub_form = sub_org.onboarding_form or {}
         sub_form["approved_tier"] = data.requested_tier
         sub_org.onboarding_form = dict(sub_form)
-        from sqlalchemy.orm.attributes import flag_modified
         flag_modified(sub_org, "onboarding_form")
         
         await db.commit()
-        if sub_org.status == "active":
+        if sub_org.dograh_org_id:
             try:
                 await run_provisioning(sub_org.id, data.requested_tier, db)
             except Exception as e:
                 import logging
                 logging.getLogger(__name__).error(f"Failed to cascade provisioning to sub-org {sub_org.id}: {e}")
+
+    from services.billing_service import sync_wallet_block_policy
+    try:
+        await sync_wallet_block_policy(db, master_id)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to sync wallet block policy after tier upgrade for {master_id}: {e}")
     
     # Notify customer of instant upgrade/downgrade
     await notification_service.send_email(
@@ -1079,10 +1560,27 @@ class PhoneNumberRequestBody(BaseModel):
     use_case: str
 
 @router.post("/by-org/{org_id}/request-phone-numbers")
-async def request_phone_numbers(org_id: int, data: PhoneNumberRequestBody, db: AsyncSession = Depends(get_db)):
+async def request_phone_numbers(
+    org_id: int,
+    data: PhoneNumberRequestBody,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+        )
+
     if customer.status != "active": raise HTTPException(400, "Customer not active")
     
     from db.models import PhoneNumberRequest
@@ -1131,7 +1629,9 @@ class UpdateProfileRequest(BaseModel):
 async def update_customer_profile(
     dograh_org_id: int,
     data: UpdateProfileRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     """
     Allows an active customer to update their own company name, contact name,
@@ -1145,6 +1645,16 @@ async def update_customer_profile(
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found for this org")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+        )
 
     # Guard: don't allow edits while the admin is reviewing the application.
     LOCKED_STATUSES = {"pending_approval", "under_review", "info_requested", "rejected"}
@@ -1197,11 +1707,26 @@ class UpdateNotificationSettingsRequest(BaseModel):
     email_notifications_enabled: Optional[bool] = None
 
 @router.get("/by-org/{dograh_org_id}/notification-settings")
-async def get_notification_settings(dograh_org_id: int, db: AsyncSession = Depends(get_db)):
+async def get_notification_settings(
+    dograh_org_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found for this org")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+        )
 
     rep = customer.report_settings or {}
     return {
@@ -1214,7 +1739,9 @@ async def get_notification_settings(dograh_org_id: int, db: AsyncSession = Depen
 async def update_notification_settings(
     dograh_org_id: int,
     data: UpdateNotificationSettingsRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     """
     Merges notification preferences into the existing report_settings JSON.
@@ -1224,6 +1751,16 @@ async def update_notification_settings(
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found for this org")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+        )
 
     # Validate low balance threshold
     if data.low_balance_alert_paise is not None:
@@ -1276,28 +1813,75 @@ async def update_notification_settings(
 
 
 @router.patch("/by-org/{org_id}/voice")
-async def update_customer_voice(org_id: int, data: UpdateVoiceRequest, db: AsyncSession = Depends(get_db)):
-
+async def update_customer_voice(
+    org_id: int,
+    data: UpdateVoiceRequest,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+        )
     
     if customer.status not in ("active", "agent_building"):
         raise HTTPException(400, "Customer must be active to change voice")
 
-    # Fetch subscription to check tier limits
-    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+    # Fetch effective subscription to check tier limits (check master if sub-org to prevent voice/tier desync)
+    effective_customer_id = customer.billing_org_id if customer.billing_org_id else customer.id
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == effective_customer_id))
     sub = sub_res.scalar_one_or_none()
+    if not sub and customer.billing_org_id:
+        sub_own_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+        sub = sub_own_res.scalar_one_or_none()
+
     tier = sub.plan if sub else "starter"
+    from config import resolve_tier_config
+    tier_cfg = resolve_tier_config(sub)
 
-    from config import TIER_CONFIG
-    tier_cfg = TIER_CONFIG.get(tier, TIER_CONFIG["starter"])
-    allowed_provider = tier_cfg["tts_provider"]
+    form = customer.onboarding_form or {}
+    sub_tier = form.get("approved_tier")
+    if sub_tier:
+        tier = sub_tier
+        if sub_tier == "custom" and sub and sub.plan == "custom":
+            tier_cfg = resolve_tier_config(sub)
+        else:
+            tier_cfg = resolve_tier_config(sub_tier)
+    elif not sub:
+        tier = form.get("approved_plan", "starter")
+        tier_cfg = resolve_tier_config(tier)
 
-    # TIER_CONFIG already uses the same provider strings as the frontend
-    # (e.g. "smallest_ai", "deepgram", "elevenlabs"), so compare directly.
-    if data.provider != allowed_provider:
-        raise HTTPException(403, f"Your current tier ({tier}) only supports {allowed_provider} voices. Please upgrade to use {data.provider}.")
+    def normalize_provider(p: str) -> str:
+        if not p:
+            return ""
+        p = p.lower().strip()
+        if p in ("smallest", "smallest_ai"):
+            return "smallest_ai"
+        return p
+
+    allowed_provider = tier_cfg.get("tts_provider", "deepgram")
+    allowed_providers = tier_cfg.get("allowed_tts_providers")
+    if isinstance(allowed_providers, (list, tuple, set)):
+        allowed_set = {normalize_provider(p) for p in allowed_providers}
+    else:
+        allowed_set = {normalize_provider(allowed_provider)}
+    allowed_set.add(normalize_provider(allowed_provider))
+
+    if normalize_provider(data.provider) not in allowed_set:
+        raise HTTPException(
+            403,
+            f"Your current tier ({tier}) only supports {allowed_provider} voices. Please upgrade to use {data.provider}."
+        )
 
     # Fetch current model config from Dograh
     cfg = await dograh_client.get_org_config(org_id, "MODEL_CONFIGURATION_V2")
@@ -1325,10 +1909,206 @@ async def update_customer_voice(org_id: int, data: UpdateVoiceRequest, db: Async
 
     tts_cfg["voice"] = data.voice_id
     tts_cfg["provider"] = dograh_provider
-    # Preserve the existing api_key — don't blank it out
-    # tts_cfg["api_key"] is left untouched
+    if dograh_provider == "elevenlabs" and settings.TALKAR_ELEVENLABS_KEY:
+        tts_cfg["api_key"] = settings.TALKAR_ELEVENLABS_KEY
+        if not tts_cfg.get("model") or "aura" in tts_cfg.get("model", "") or "lightning" in tts_cfg.get("model", ""):
+            tts_cfg["model"] = "eleven_flash_v2_5"
+    elif dograh_provider == "smallest" and settings.TALKAR_SMALLEST_AI_KEY:
+        tts_cfg["api_key"] = settings.TALKAR_SMALLEST_AI_KEY
+        if not tts_cfg.get("model") or "aura" in tts_cfg.get("model", "") or "eleven" in tts_cfg.get("model", ""):
+            tts_cfg["model"] = "lightning_v3.1_pro"
+    elif dograh_provider == "deepgram" and settings.TALKAR_DEEPGRAM_KEY:
+        tts_cfg["api_key"] = settings.TALKAR_DEEPGRAM_KEY
+        if not tts_cfg.get("model") or "eleven" in tts_cfg.get("model", "") or "lightning" in tts_cfg.get("model", ""):
+            tts_cfg["model"] = "aura-2-thalia-en"
+
     cfg["byok"]["pipeline"]["tts"] = tts_cfg
 
     await dograh_client.upsert_org_config(org_id, "MODEL_CONFIGURATION_V2", cfg)
     
     return {"status": "success", "voice_id": data.voice_id, "provider": dograh_provider}
+
+
+# ---------------------------------------------------------------------------
+# Sub-Org Spending Limits & Concurrency Quotas (Issue 5 Protection)
+# ---------------------------------------------------------------------------
+
+class SubOrgSpendingLimitsRequest(BaseModel):
+    monthly_spending_cap_paise: Optional[int] = None
+    concurrent_call_limit: Optional[int] = None
+
+@router.get("/by-org/{dograh_org_id}/spending-limits")
+async def get_suborg_spending_limits(
+    dograh_org_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Get spending limits and current month spend for a sub-organization.
+    Accessible by Master owner, Sub-Org owner, or Admin/Service.
+    """
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    await verify_customer_access(customer, db, x_talkar_email, authorization)
+
+    form = customer.onboarding_form or {}
+    cap = form.get("monthly_spending_cap_paise")
+    concurrent_limit = form.get("concurrent_call_limit")
+
+    from services.billing_service import get_customer_month_spend
+    month_spend = await get_customer_month_spend(db, customer.id)
+    is_blocked = bool(cap is not None and int(cap) > 0 and month_spend >= int(cap))
+
+    return {
+        "dograh_org_id": customer.dograh_org_id,
+        "customer_id": customer.id,
+        "billing_org_id": customer.billing_org_id,
+        "monthly_spending_cap_paise": cap,
+        "concurrent_call_limit": concurrent_limit,
+        "current_month_spend_paise": month_spend,
+        "is_blocked_by_cap": is_blocked,
+    }
+
+@router.patch("/by-org/{dograh_org_id}/spending-limits")
+async def update_suborg_spending_limits(
+    dograh_org_id: int,
+    data: SubOrgSpendingLimitsRequest,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Configure monthly spending caps and concurrency limits for a sub-organization.
+    Restricted to Master Organization owners (and Talkar Admin/Service) to prevent
+    rogue sub-orgs from modifying their own caps and starving the fleet.
+    """
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    if not customer.billing_org_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Spending limits can only be configured for sub-organizations."
+        )
+
+    # Privileged action check: only master owner or admin/service can modify limits
+    if not is_admin_or_service_request(authorization, x_talkar_email):
+        caller_email = resolve_authenticated_email(authorization, x_talkar_email)
+        if not caller_email:
+            raise HTTPException(status_code=401, detail="Authentication required.")
+        if caller_email != "service":
+            master_res = await db.execute(select(Customer).where(Customer.id == customer.billing_org_id))
+            master = master_res.scalar_one_or_none()
+            is_master_owner = False
+            if master:
+                if master.contact_email and master.contact_email.strip().lower() == caller_email:
+                    is_master_owner = True
+                elif master.dograh_org_id:
+                    is_master_owner = bool(await dograh_client.verify_dograh_org_user(
+                        org_id=master.dograh_org_id,
+                        email=caller_email,
+                        require_owner=True
+                    ))
+            if not is_master_owner:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Sub-organization spending limits can only be managed by the Master Organization owner."
+                )
+
+    if data.monthly_spending_cap_paise is not None and data.monthly_spending_cap_paise < 0:
+        raise HTTPException(status_code=422, detail="monthly_spending_cap_paise cannot be negative.")
+    if data.concurrent_call_limit is not None and data.concurrent_call_limit < 1:
+        raise HTTPException(status_code=422, detail="concurrent_call_limit must be at least 1.")
+
+    from sqlalchemy.orm.attributes import flag_modified
+    form = dict(customer.onboarding_form or {})
+    if data.monthly_spending_cap_paise is not None:
+        form["monthly_spending_cap_paise"] = data.monthly_spending_cap_paise
+    if data.concurrent_call_limit is not None:
+        form["concurrent_call_limit"] = data.concurrent_call_limit
+
+    customer.onboarding_form = form
+    flag_modified(customer, "onboarding_form")
+    await db.commit()
+    await db.refresh(customer)
+
+    # Immediately synchronize Dograh call block/limits according to the new settings
+    from services.billing_service import sync_wallet_block_policy, get_customer_month_spend
+    await sync_wallet_block_policy(db, customer.id)
+
+    month_spend = await get_customer_month_spend(db, customer.id)
+    cap = form.get("monthly_spending_cap_paise")
+    is_blocked = bool(cap is not None and int(cap) > 0 and month_spend >= int(cap))
+
+    return {
+        "status": "ok",
+        "dograh_org_id": customer.dograh_org_id,
+        "customer_id": customer.id,
+        "billing_org_id": customer.billing_org_id,
+        "monthly_spending_cap_paise": form.get("monthly_spending_cap_paise"),
+        "concurrent_call_limit": form.get("concurrent_call_limit"),
+        "current_month_spend_paise": month_spend,
+        "is_blocked_by_cap": is_blocked,
+    }
+
+
+@router.get("/by-org/{dograh_org_id}/sub-orgs")
+async def get_master_sub_orgs(
+    dograh_org_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None),
+):
+    """
+    List all sub-organizations connected to the master customer,
+    including their monthly spending caps, concurrency limits, and current month spend.
+    """
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    await verify_customer_access(customer, db, x_talkar_email, authorization)
+
+    # If this customer itself is a sub-org, return empty list (sub-orgs don't have sub-orgs)
+    if customer.billing_org_id:
+        return {"sub_orgs": []}
+
+    sub_res = await db.execute(
+        select(Customer)
+        .where(Customer.billing_org_id == customer.id)
+        .order_by(Customer.company_name.asc())
+    )
+    sub_customers = sub_res.scalars().all()
+
+    from services.billing_service import get_customer_month_spend
+
+    items = []
+    for sub in sub_customers:
+        form = sub.onboarding_form or {}
+        cap = form.get("monthly_spending_cap_paise")
+        concurrent_limit = form.get("concurrent_call_limit")
+        month_spend = await get_customer_month_spend(db, sub.id)
+        is_blocked = bool(cap is not None and int(cap) > 0 and month_spend >= int(cap))
+
+        items.append({
+            "id": sub.id,
+            "company_name": sub.company_name or f"Sub-Org #{sub.dograh_org_id}",
+            "contact_name": sub.contact_name,
+            "contact_email": sub.contact_email,
+            "dograh_org_id": sub.dograh_org_id,
+            "status": sub.status,
+            "monthly_spending_cap_paise": cap,
+            "concurrent_call_limit": concurrent_limit,
+            "current_month_spend_paise": month_spend,
+            "is_blocked_by_cap": is_blocked,
+            "created_at": sub.created_at.isoformat() if sub.created_at else None,
+        })
+
+    return {"sub_orgs": items}

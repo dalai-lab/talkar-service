@@ -30,11 +30,16 @@ async def run_provisioning(customer_id: int, plan: str = None, db: AsyncSession 
             return
 
         # Resolve tier from DB
-        tier = None
+        tier = plan
+        master_sub = None
         if customer.billing_org_id:
             master_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.billing_org_id))
             master_sub = master_sub_res.scalar_one_or_none()
-            if master_sub:
+            if not tier:
+                # If tier was not explicitly passed, check approved_tier in onboarding_form
+                tier = customer.onboarding_form.get("approved_tier") if customer.onboarding_form else None
+            if not tier and master_sub:
+                # Fallback to master plan
                 tier = master_sub.plan
         
         if not tier:
@@ -45,15 +50,23 @@ async def run_provisioning(customer_id: int, plan: str = None, db: AsyncSession 
 
         logger.info(f"Starting provisioning for customer {customer_id} with tier {tier}")
         
-        from config import resolve_tier_config
+        from config import resolve_tier_config, TIER_CONFIG
         sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
         sub = sub_res.scalar_one_or_none()
         
-        if sub:
+        if customer.billing_org_id:
+            if not master_sub:
+                master_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.billing_org_id))
+                master_sub = master_sub_res.scalar_one_or_none()
+            # If the sub-org's tier is custom and master has custom plan, inherit custom config
+            if tier == "custom" and master_sub and master_sub.plan == "custom":
+                tier_cfg = resolve_tier_config(master_sub)
+            else:
+                tier_cfg = resolve_tier_config(tier)
+        elif sub:
             tier_cfg = resolve_tier_config(sub)
         else:
-            from config import TIER_CONFIG
-            tier_cfg = TIER_CONFIG.get(tier, TIER_CONFIG["starter"])
+            tier_cfg = resolve_tier_config(tier)
 
         # Step 1: Overwrite Dograh's auto-injected MPS config with Talkar keys
         # Uses the OrganizationAIModelConfigurationV2 schema that Dograh expects.
@@ -122,7 +135,18 @@ async def run_provisioning(customer_id: int, plan: str = None, db: AsyncSession 
         await dograh_client.upsert_org_config(customer.dograh_org_id, "TALKAR_ORG_TYPE", "customer")
 
         # Step 3: Write CONCURRENT_CALL_LIMIT and WORKFLOW_TIMEOUT_SECONDS based on tier
-        await dograh_client.upsert_org_config(customer.dograh_org_id, "CONCURRENT_CALL_LIMIT", {"value": tier_cfg["concurrent_call_limit"]})
+        call_limit = tier_cfg["concurrent_call_limit"]
+        form = customer.onboarding_form or {}
+        is_custom_cap = False
+        if form.get("concurrent_call_limit"):
+            try:
+                custom_limit = int(form["concurrent_call_limit"])
+                if custom_limit > 0:
+                    call_limit = min(call_limit, custom_limit)
+                    is_custom_cap = True
+            except (ValueError, TypeError):
+                pass
+        await dograh_client.upsert_org_config(customer.dograh_org_id, "CONCURRENT_CALL_LIMIT", {"value": call_limit, "is_custom_cap": is_custom_cap})
         await dograh_client.upsert_org_config(customer.dograh_org_id, "WORKFLOW_TIMEOUT_SECONDS", {"value": tier_cfg["max_call_duration_seconds"]})
 
         # Step 3b: Write CONCURRENCY_GROUP_ID so sub-orgs share master org's concurrency pool in Redis
@@ -151,16 +175,23 @@ async def run_provisioning(customer_id: int, plan: str = None, db: AsyncSession 
                 status="active",
                 per_minute_rate_paise=tier_cfg["per_minute_rate_paise"],
                 setup_fee_paid=True,
-                start_date=datetime.date.today()
+                start_date=datetime.date.today(),
+                custom_config=master_sub.custom_config if (customer.billing_org_id and master_sub and master_sub.plan == "custom") else (sub.custom_config if sub and sub.plan == "custom" else None),
+                custom_plan_label=master_sub.custom_plan_label if (customer.billing_org_id and master_sub and master_sub.plan == "custom") else (sub.custom_plan_label if sub and sub.plan == "custom" else None),
             )
             db.add(subscription)
         else:
             # Re-provisioning an existing customer (e.g. tier upgrade)
-            # For custom plans, preserve rate and plan — only update if it's a standard tier change.
-            if existing_sub.plan != "custom":
+            # For sub-org under custom master when sub-org tier is custom, sync custom_config and per_minute_rate_paise from master
+            if customer.billing_org_id and master_sub and master_sub.plan == "custom" and tier == "custom":
+                existing_sub.plan = "custom"
+                existing_sub.per_minute_rate_paise = tier_cfg["per_minute_rate_paise"]
+                existing_sub.custom_config = master_sub.custom_config
+                existing_sub.custom_plan_label = master_sub.custom_plan_label
+            elif existing_sub.plan != "custom" or tier != "custom":
                 existing_sub.plan = tier
                 existing_sub.per_minute_rate_paise = tier_cfg["per_minute_rate_paise"]
-            # If plan is 'custom', the sub row already has correct rate/config — do not overwrite.
+            # If master customer plan is 'custom', its sub row already has correct rate/config — do not overwrite.
 
         await db.commit()
 

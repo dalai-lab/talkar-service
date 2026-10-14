@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, func, text, delete, case
 from db.session import get_db
@@ -116,11 +116,23 @@ async def approve_application(customer_id: int, data: ApproveApplicationRequest,
     if not customer: raise HTTPException(404, "Customer not found")
     if customer.status not in ("under_review", "pending_approval", "info_requested"): raise HTTPException(400, "Customer is not under review, pending approval, or info requested")
     
-    # Store the integration fee in onboarding_form JSON
+    # Store the integration fee and approved_tier in onboarding_form JSON
     existing_form = customer.onboarding_form or {}
     existing_form["integration_fee_paise"] = data.integration_fee_paise
     existing_form["integration_description"] = data.integration_description
-    customer.onboarding_form = existing_form
+    existing_form["approved_tier"] = data.approved_tier
+    customer.onboarding_form = dict(existing_form)
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(customer, "onboarding_form")
+
+    # Update or create individual Subscription with approved tier
+    from config import resolve_tier_config
+    approved_tier_cfg = resolve_tier_config(data.approved_tier)
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+    sub = sub_res.scalar_one_or_none()
+    if sub:
+        sub.plan = data.approved_tier
+        sub.per_minute_rate_paise = approved_tier_cfg.get("per_minute_rate_paise", 600)
 
     if data.integration_fee_paise == 0:
         customer.status = "agent_building"
@@ -327,7 +339,7 @@ async def set_custom_pricing(customer_id: int, data: SetCustomPricingRequest, db
         flag_modified(sub_org, "onboarding_form")
         
         await db.commit()
-        if sub_org.status == "active" and data.trigger_reprovisioning:
+        if sub_org.dograh_org_id and data.trigger_reprovisioning:
             try:
                 from services.provisioning_service import run_provisioning
                 await run_provisioning(sub_org.id, None, db)
@@ -336,6 +348,13 @@ async def set_custom_pricing(customer_id: int, data: SetCustomPricingRequest, db
                 logger = logging.getLogger(__name__)
                 logger.error(f"Failed to cascade custom plan provisioning to sub-org {sub_org.id}: {e}")
                 
+    from services.billing_service import sync_wallet_block_policy
+    try:
+        await sync_wallet_block_policy(db, customer.id)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to sync wallet block policy after custom plan update for {customer.id}: {e}")
+
     return {"status": "success"}
 
 @router.patch("/customers/{customer_id}")
@@ -349,19 +368,75 @@ async def update_customer(customer_id: int, data: CustomerUpdateRequest, db: Asy
         customer.status = data.status
         await db.commit()
         # If admin is manually reactivating a suspended customer, restore their call capacity in Dograh
-        if prev_status == "suspended" and data.status == "active" and customer.dograh_org_id:
-            from services import dograh_client
+        if prev_status == "suspended" and data.status == "active":
+            master_id = customer.billing_org_id or customer.id
+            master_res = await db.execute(select(Customer).where(Customer.id == master_id))
+            master = master_res.scalar_one_or_none()
+            master_dograh_id = master.dograh_org_id if master else customer.dograh_org_id
+
             from config import resolve_tier_config
-            sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer_id))
+            sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == master_id))
             sub = sub_res.scalar_one_or_none()
             tier_cfg = resolve_tier_config(sub)
             concurrent_limit = tier_cfg.get("concurrent_call_limit", 2)
             tier = sub.plan if sub else "starter"
+
+            is_custom_cap = False
+            effective_limit = concurrent_limit
+            if customer.billing_org_id:
+                form = customer.onboarding_form or {}
+                if form.get("concurrent_call_limit"):
+                    try:
+                        custom_limit = int(form["concurrent_call_limit"])
+                        if custom_limit > 0:
+                            effective_limit = min(concurrent_limit, custom_limit)
+                            is_custom_cap = True
+                    except (ValueError, TypeError):
+                        pass
+
+            if customer.dograh_org_id:
+                from services import dograh_client
+                try:
+                    await dograh_client.restore_org_calls(
+                        customer.dograh_org_id,
+                        tier,
+                        effective_limit,
+                        group_id=master_dograh_id,
+                        is_custom_cap=is_custom_cap
+                    )
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).error(f"Failed to restore calls after admin unsuspend for org {customer.dograh_org_id}: {e}")
+
+            from services.billing_service import sync_wallet_block_policy
             try:
-                await dograh_client.restore_org_calls(customer.dograh_org_id, tier, concurrent_limit)
+                await sync_wallet_block_policy(db, master_id)
             except Exception as e:
                 import logging
-                logging.getLogger(__name__).error(f"Failed to restore calls after admin unsuspend for org {customer.dograh_org_id}: {e}")
+                logging.getLogger(__name__).error(f"Failed to sync wallet block policy after admin unsuspend for {master_id}: {e}")
+        elif data.status == "suspended":
+            from services import dograh_client
+            if customer.dograh_org_id:
+                try:
+                    await dograh_client.block_org_calls(customer.dograh_org_id)
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).error(f"Failed to block calls for org {customer.dograh_org_id}: {e}")
+            if customer.billing_org_id is None:
+                sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
+                for sub_org in sub_orgs_res.scalars().all():
+                    if sub_org.dograh_org_id:
+                        try:
+                            await dograh_client.block_org_calls(sub_org.dograh_org_id)
+                        except Exception as e:
+                            import logging
+                            logging.getLogger(__name__).error(f"Failed to block calls for sub-org {sub_org.dograh_org_id}: {e}")
+            from services.billing_service import sync_wallet_block_policy
+            try:
+                await sync_wallet_block_policy(db, customer.id)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Failed to sync wallet block policy after admin suspend for {customer.id}: {e}")
     if data.tier:
         if data.tier == "custom":
             raise HTTPException(400, "Use POST /customers/{id}/set-custom-pricing to set a custom plan.")
@@ -415,13 +490,20 @@ async def update_customer(customer_id: int, data: CustomerUpdateRequest, db: Asy
             flag_modified(sub_org, "onboarding_form")
             
             await db.commit()
-            if sub_org.status == "active":
+            if sub_org.dograh_org_id:
                 try:
                     from services.provisioning_service import run_provisioning
                     await run_provisioning(sub_org.id, data.tier, db)
                 except Exception as e:
                     import logging
                     logging.getLogger(__name__).error(f"Failed to cascade admin provisioning to sub-org {sub_org.id}: {e}")
+
+        from services.billing_service import sync_wallet_block_policy
+        try:
+            await sync_wallet_block_policy(db, customer.id)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to sync wallet block policy after admin tier update for {customer.id}: {e}")
     else:
         if not data.status:  # only commit if status block didn't already commit
             await db.commit()
@@ -438,8 +520,7 @@ async def get_customer_agents(customer_id: int, db: AsyncSession = Depends(get_d
     customer = res.scalar_one_or_none()
     
     if customer and customer.dograh_org_id:
-        from services.dograh_client import DograhSessionLocal
-        from sqlalchemy import text
+        from services import dograh_client
         
         # 2. Get existing Talkar agents
         existing_res = await db.execute(select(Agent).where(Agent.customer_id == customer_id))
@@ -447,25 +528,23 @@ async def get_customer_agents(customer_id: int, db: AsyncSession = Depends(get_d
         
         # 3. Sync from Dograh workflows
         try:
-            async with DograhSessionLocal() as ddb:
-                w_res = await ddb.execute(
-                    text("SELECT id, name, status, created_at FROM workflows WHERE organization_id = :org_id"),
-                    {"org_id": customer.dograh_org_id}
-                )
-                workflows = w_res.fetchall()
-                
-                for w in workflows:
-                    if w.id not in existing_agents:
-                        new_ag = Agent(
-                            customer_id=customer.id,
-                            name=w.name,
-                            dograh_workflow_id=w.id,
-                            dograh_org_id=customer.dograh_org_id,
-                            status=w.status,
-                            built_at=w.created_at
-                        )
-                        db.add(new_ag)
-                await db.commit()
+            workflows = await dograh_client.get_org_workflows(customer.dograh_org_id)
+            for w in workflows:
+                wf_id = w["id"] if isinstance(w, dict) else getattr(w, "id")
+                wf_name = w["name"] if isinstance(w, dict) else getattr(w, "name")
+                wf_status = w["status"] if isinstance(w, dict) else getattr(w, "status")
+                wf_created = w.get("created_at") if isinstance(w, dict) else getattr(w, "created_at", None)
+                if wf_id not in existing_agents:
+                    new_ag = Agent(
+                        customer_id=customer.id,
+                        name=wf_name,
+                        dograh_workflow_id=wf_id,
+                        dograh_org_id=customer.dograh_org_id,
+                        status=wf_status,
+                        built_at=wf_created
+                    )
+                    db.add(new_ag)
+            await db.commit()
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Failed to sync workflows for customer {customer_id}: {e}")
@@ -477,16 +556,85 @@ async def get_customer_agents(customer_id: int, db: AsyncSession = Depends(get_d
 @router.get("/customers/{customer_id}/subscription")
 async def get_customer_subscription(customer_id: int, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
     """Return the subscription record for a customer, including custom_config for the admin UI."""
+    cust_res = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = cust_res.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+
     result = await db.execute(select(Subscription).where(Subscription.customer_id == customer_id))
     sub = result.scalar_one_or_none()
+
+    # If sub-org has no direct subscription, inherit from master billing org
+    if not sub and customer.billing_org_id:
+        master_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.billing_org_id))
+        sub = master_sub_res.scalar_one_or_none()
+
     if not sub:
         raise HTTPException(404, "No subscription found for this customer")
+
     return {
         "id": sub.id,
         "plan": sub.plan,
         "per_minute_rate_paise": sub.per_minute_rate_paise,
         "custom_config": getattr(sub, "custom_config", None),
         "custom_plan_label": getattr(sub, "custom_plan_label", None),
+        "is_inherited": bool(customer.billing_org_id and sub.customer_id == customer.billing_org_id),
+        "billing_org_id": customer.billing_org_id,
+    }
+
+@router.get("/customers/{customer_id}/transactions")
+async def get_customer_transactions(
+    customer_id: int,
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin)
+):
+    """Return attributable wallet transactions for a customer or sub-org."""
+    cust_res = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = cust_res.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+
+    if customer.billing_org_id:
+        # Sub-org: return transactions attributed directly to this sub-org
+        base_query = select(WalletTransaction).where(
+            (WalletTransaction.sub_org_id == customer.id) |
+            (WalletTransaction.customer_id == customer.id)
+        )
+    else:
+        # Master: return transactions for master and all sub-orgs
+        base_query = select(WalletTransaction).where(
+            (WalletTransaction.customer_id == customer.id) |
+            (WalletTransaction.sub_org_id == customer.id)
+        )
+
+    count_result = await db.execute(select(func.count()).select_from(base_query.subquery()))
+    total = count_result.scalar() or 0
+
+    page_val = int(page.default if hasattr(page, "default") and not isinstance(page, (int, float)) else page)
+    limit_val = int(limit.default if hasattr(limit, "default") and not isinstance(limit, (int, float)) else limit)
+    page_query = base_query.order_by(WalletTransaction.created_at.desc()).offset((page_val - 1) * limit_val).limit(limit_val)
+    txn_res = await db.execute(page_query)
+    txns = txn_res.scalars().all()
+
+    return {
+        "transactions": [
+            {
+                "id": t.id,
+                "customer_id": t.customer_id,
+                "sub_org_id": t.sub_org_id,
+                "dograh_org_id": t.dograh_org_id,
+                "type": t.type,
+                "amount_paise": t.amount_paise,
+                "description": t.description,
+                "dograh_run_id": t.dograh_run_id,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+            }
+            for t in txns
+        ],
+        "total": total,
+        "page": page_val,
     }
 
 async def _resolve_agent_tts_provider(agent: Agent, db: AsyncSession) -> str:
@@ -514,6 +662,12 @@ async def _resolve_agent_tts_provider(agent: Agent, db: AsyncSession) -> str:
     try:
         sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == agent.customer_id))
         sub = sub_res.scalar_one_or_none()
+        if not sub:
+            c_res = await db.execute(select(Customer).where(Customer.id == agent.customer_id))
+            cust = c_res.scalar_one_or_none()
+            if cust and cust.billing_org_id:
+                master_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == cust.billing_org_id))
+                sub = master_sub_res.scalar_one_or_none()
         if not isinstance(sub, Subscription):
             sub = None
     except Exception:
@@ -685,8 +839,19 @@ async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: As
         TransactionType.CREDIT.value,
     }
     txn_type = data.type if data.type in valid_credit_types else TransactionType.MANUAL_CREDIT.value
+    sub_org_id = customer_id if customer_id != master_id else None
+    dograh_org_id = None
+    if sub_org_id:
+        try:
+            c_res = await db.execute(select(Customer.dograh_org_id).where(Customer.id == sub_org_id))
+            dograh_org_id = c_res.scalar_one_or_none()
+        except Exception:
+            pass
+
     txn = WalletTransaction(
         customer_id=master_id,
+        sub_org_id=sub_org_id,
+        dograh_org_id=dograh_org_id,
         type=txn_type,
         amount_paise=data.amount_paise,
         description=data.description
@@ -723,8 +888,13 @@ async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: As
 
         elif customer.status == "suspended":
             from config import CALL_BLOCK_THRESHOLD_PAISE
-            if wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE:
+            c_form = customer.onboarding_form or {}
+            if c_form.get("suspension_reason") in ("zero_balance", None, "") and wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE:
                 customer.status = "active"
+                c_dict = dict(c_form)
+                c_dict.pop("suspension_reason", None)
+                c_dict.pop("suspension_message", None)
+                customer.onboarding_form = c_dict
                 await db.commit()
                 try:
                     await run_provisioning(customer.id, None, db)
@@ -782,8 +952,13 @@ async def admin_deduct_customer(customer_id: int, data: AdminDeductRequest, db: 
         TransactionType.DEDUCTION.value,
     }
     txn_type = data.type if data.type in valid_deduct_types else TransactionType.MANUAL_DEDUCT.value
+    sub_org_id = customer_id if customer_id != master_id else None
+    dograh_org_id = customer.dograh_org_id if customer else None
+
     transaction = WalletTransaction(
         customer_id=master_id,
+        sub_org_id=sub_org_id,
+        dograh_org_id=dograh_org_id,
         type=txn_type,
         amount_paise=-data.amount_paise,
         description=f"Admin deduction: {data.reason} (by {current_admin.email})"
@@ -849,8 +1024,13 @@ async def admin_set_balance(customer_id: int, data: AdminSetBalanceRequest, db: 
     )
     wallet = result.scalar_one_or_none()
     
+    sub_org_id = customer_id if customer_id != master_id else None
+    dograh_org_id = customer.dograh_org_id if customer else None
+
     transaction = WalletTransaction(
         customer_id=master_id,
+        sub_org_id=sub_org_id,
+        dograh_org_id=dograh_org_id,
         type=TransactionType.MANUAL_SET_BALANCE.value,
         amount_paise=diff,
         description=f"Admin set balance: {data.reason} (by {current_admin.email})"
@@ -898,13 +1078,31 @@ async def suspend_customer(customer_id: int, data: SuspendCustomerRequest = Susp
     customer.onboarding_form = existing_form
     await db.commit()
     # Block calls in Dograh immediately
+    from services import dograh_client
     if customer.dograh_org_id:
-        from services import dograh_client
         try:
             await dograh_client.block_org_calls(customer.dograh_org_id)
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Failed to block calls for org {customer.dograh_org_id}: {e}")
+
+    # If this is a master account, cascade call blocks to all sub-orgs in Dograh
+    if customer.billing_org_id is None:
+        sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
+        for sub_org in sub_orgs_res.scalars().all():
+            if sub_org.dograh_org_id:
+                try:
+                    await dograh_client.block_org_calls(sub_org.dograh_org_id)
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).error(f"Failed to block calls for sub-org {sub_org.dograh_org_id}: {e}")
+
+    from services.billing_service import sync_wallet_block_policy
+    try:
+        await sync_wallet_block_policy(db, customer.id)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to sync wallet block policy after suspend for {customer.id}: {e}")
 
     # Notify customer of suspension
     import asyncio
@@ -925,20 +1123,57 @@ async def unsuspend_customer(customer_id: int, db: AsyncSession = Depends(get_db
     existing_form.pop("suspension_message", None)
     customer.onboarding_form = existing_form
     await db.commit()
-    # Restore calls in Dograh
+
+    # Determine master customer and subscription for accurate plan/limits and group pool linking
+    master_id = customer.billing_org_id or customer.id
+    master_res = await db.execute(select(Customer).where(Customer.id == master_id))
+    master = master_res.scalar_one_or_none()
+    master_dograh_id = master.dograh_org_id if master else customer.dograh_org_id
+
+    from config import resolve_tier_config
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == master_id))
+    sub = sub_res.scalar_one_or_none()
+    tier_cfg = resolve_tier_config(sub)
+    concurrent_limit = tier_cfg.get("concurrent_call_limit", 2)
+    tier = sub.plan if sub else "starter"
+
+    # Respect sub-org custom concurrency cap if configured
+    is_custom_cap = False
+    effective_limit = concurrent_limit
+    if customer.billing_org_id:
+        form = customer.onboarding_form or {}
+        if form.get("concurrent_call_limit"):
+            try:
+                custom_limit = int(form["concurrent_call_limit"])
+                if custom_limit > 0:
+                    effective_limit = min(concurrent_limit, custom_limit)
+                    is_custom_cap = True
+            except (ValueError, TypeError):
+                pass
+
+    # Restore calls in Dograh with master group_id and custom cap annotation
     if customer.dograh_org_id:
         from services import dograh_client
-        from config import resolve_tier_config
-        sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer_id))
-        sub = sub_res.scalar_one_or_none()
-        tier_cfg = resolve_tier_config(sub)
-        concurrent_limit = tier_cfg.get("concurrent_call_limit", 2)
-        tier = sub.plan if sub else "starter"
         try:
-            await dograh_client.restore_org_calls(customer.dograh_org_id, tier, concurrent_limit)
+            await dograh_client.restore_org_calls(
+                customer.dograh_org_id,
+                tier,
+                effective_limit,
+                group_id=master_dograh_id,
+                is_custom_cap=is_custom_cap
+            )
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Failed to restore calls after unsuspend for org {customer.dograh_org_id}: {e}")
+
+    # Synchronize wallet block policy across the fleet (restores active sub-orgs if master was unsuspended)
+    from services.billing_service import sync_wallet_block_policy
+    try:
+        await sync_wallet_block_policy(db, master_id)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to sync wallet block policy after unsuspend for {master_id}: {e}")
+
     return {"status": "active"}
 
 @router.post("/customers/{customer_id}/provision/retry")
@@ -1133,7 +1368,8 @@ async def mark_ready(customer_id: int, data: MarkReadyRequest, db: AsyncSession 
     from services.billing_service import get_billing_wallet
     wallet, _ = await get_billing_wallet(db, customer.id)
     
-    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+    effective_sub_id = customer.billing_org_id if customer.billing_org_id else customer.id
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == effective_sub_id))
     sub = sub_res.scalar_one_or_none()
     tier_name = sub.plan if sub else "starter"
     from config import TIER_CONFIG
@@ -1158,6 +1394,12 @@ async def mark_ready(customer_id: int, data: MarkReadyRequest, db: AsyncSession 
             # Sub-orgs inherit the tier, so just run provisioning
             from services.provisioning_service import run_provisioning
             await run_provisioning(customer.id, None, db)
+            from services.billing_service import sync_wallet_block_policy
+            try:
+                await sync_wallet_block_policy(db, customer.id)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Failed to sync wallet block policy on activating sub-org {customer.id}: {e}")
             
             await notification_service.send_email(
                 to_email=customer.contact_email,
@@ -1293,10 +1535,12 @@ from db.models import PhoneNumberRequest, PhoneNumber
 
 class AssignPhoneNumberRequest(BaseModel):
     number: str
-    plivo_number_id: str
+    plivo_number_id: Optional[str] = None
+    monthly_cost_paise: Optional[int] = None
 
 class ApprovePhoneNumberRequestBody(BaseModel):
     numbers: list[str]
+    monthly_cost_paise: Optional[int] = None
 
 class DenyPhoneNumberRequestBody(BaseModel):
     admin_note: str
@@ -1306,16 +1550,47 @@ async def get_customer_phone_numbers(customer_id: int, db: AsyncSession = Depend
     result = await db.execute(select(PhoneNumber).where(PhoneNumber.customer_id == customer_id))
     return result.scalars().all()
 
+@router.delete("/customers/{customer_id}/phone-numbers/{phone_number_id}")
+async def release_customer_phone_number(
+    customer_id: int,
+    phone_number_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin),
+):
+    result = await db.execute(
+        select(PhoneNumber).where(PhoneNumber.id == phone_number_id, PhoneNumber.customer_id == customer_id)
+    )
+    pn = result.scalar_one_or_none()
+    if not pn:
+        raise HTTPException(404, "Phone number not found")
+    pn.status = "released"
+    await db.commit()
+
+    if pn.number:
+        try:
+            cust_res = await db.execute(select(Customer).where(Customer.id == customer_id))
+            cust = cust_res.scalar_one_or_none()
+            if cust and cust.dograh_org_id:
+                await dograh_client.release_phone_number_from_dograh(cust.dograh_org_id, pn.number)
+        except Exception as e:
+            logger.warning(f"Failed to deactivate released phone number {pn.number} in Dograh for customer {customer_id}: {e}")
+
+    return {"status": "released"}
+
 @router.post("/customers/{customer_id}/assign-phone-number")
 async def assign_phone_number(customer_id: int, data: AssignPhoneNumberRequest, db: AsyncSession = Depends(get_db), current_admin: TalkarAdmin = Depends(get_current_admin)):
     result = await db.execute(select(Customer).where(Customer.id == customer_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
     
+    from config import DEFAULT_PHONE_NUMBER_MONTHLY_COST_PAISE
+    monthly_cost = data.monthly_cost_paise if (data.monthly_cost_paise is not None and data.monthly_cost_paise > 0) else DEFAULT_PHONE_NUMBER_MONTHLY_COST_PAISE
+
     pn = PhoneNumber(
         customer_id=customer_id,
         number=data.number,
-        plivo_number_id=data.plivo_number_id
+        plivo_number_id=data.plivo_number_id,
+        monthly_cost_paise=monthly_cost,
     )
     db.add(pn)
     await db.commit()
@@ -1334,6 +1609,13 @@ async def assign_phone_number(customer_id: int, data: AssignPhoneNumberRequest, 
             import logging
             logging.getLogger(__name__).error(f"Failed to sync phone number {data.number} to Dograh org {customer.dograh_org_id}: {e}")
 
+    try:
+        from services.billing_service import charge_initial_phone_number_lease
+        await charge_initial_phone_number_lease(db, customer_id, pn)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Initial lease charge bypassed or failed for phone {pn.number}: {e}")
+
     return {"status": "assigned"}
 
 @router.get("/phone-number-requests")
@@ -1350,12 +1632,18 @@ async def approve_phone_number_request(request_id: int, data: ApprovePhoneNumber
     req.status = "approved"
     req.resolved_at = func.now()
     
+    from config import DEFAULT_PHONE_NUMBER_MONTHLY_COST_PAISE
+    monthly_cost = data.monthly_cost_paise if (data.monthly_cost_paise is not None and data.monthly_cost_paise > 0) else DEFAULT_PHONE_NUMBER_MONTHLY_COST_PAISE
+
+    created_pns = []
     for number in data.numbers:
         pn = PhoneNumber(
             customer_id=req.customer_id,
             number=number,
+            monthly_cost_paise=monthly_cost,
         )
         db.add(pn)
+        created_pns.append(pn)
         
     await db.commit()
 
@@ -1377,6 +1665,14 @@ async def approve_phone_number_request(request_id: int, data: ApprovePhoneNumber
                 import logging
                 logging.getLogger(__name__).error(f"Failed to sync phone number {number} to Dograh org {customer.dograh_org_id}: {e}")
     
+    for pn in created_pns:
+        try:
+            from services.billing_service import charge_initial_phone_number_lease
+            await charge_initial_phone_number_lease(db, req.customer_id, pn)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Initial lease charge bypassed or failed for phone {pn.number}: {e}")
+
     import asyncio
     asyncio.create_task(notification_service.notify_customer_phone_approved(req.customer_id, data.numbers))
     

@@ -103,6 +103,40 @@ async def lifespan(app: FastAPI):
             """))
             await conn.execute(text("UPDATE subscriptions SET per_minute_rate_paise = 600 WHERE plan = 'starter' AND per_minute_rate_paise != 600;"))
             await conn.execute(text("UPDATE subscriptions SET per_minute_rate_paise = 1800 WHERE plan = 'pro' AND per_minute_rate_paise != 1800;"))
+            await conn.execute(text("ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS sub_org_id INTEGER REFERENCES customers(id) ON DELETE SET NULL;"))
+            await conn.execute(text("ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS dograh_org_id INTEGER;"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_wallet_transactions_sub_org ON wallet_transactions(sub_org_id, created_at DESC);"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_wallet_transactions_dograh_org ON wallet_transactions(dograh_org_id, created_at DESC);"))
+            await conn.execute(text("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS sub_org_id INTEGER REFERENCES customers(id) ON DELETE SET NULL;"))
+            await conn.execute(text("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS dograh_org_id INTEGER;"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_invoices_sub_org ON invoices(sub_org_id, created_at DESC);"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_invoices_dograh_org ON invoices(dograh_org_id, created_at DESC);"))
+            await conn.execute(text("""
+                UPDATE invoices i
+                SET sub_org_id = wt.sub_org_id,
+                    dograh_org_id = wt.dograh_org_id,
+                    customer_id = wt.sub_org_id
+                FROM wallet_transactions wt
+                WHERE i.wallet_transaction_id = wt.id
+                  AND wt.sub_org_id IS NOT NULL
+                  AND i.sub_org_id IS NULL;
+            """))
+            # Phone number lease recurring billing tracking (Issue 31)
+            await conn.execute(text("ALTER TABLE phone_numbers ADD COLUMN IF NOT EXISTS last_billed_at TIMESTAMPTZ;"))
+            # Foreign key ON DELETE SET NULL for billing_org_id (Issue 20/32)
+            await conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.table_constraints 
+                        WHERE constraint_name = 'customers_billing_org_id_fkey'
+                    ) THEN
+                        ALTER TABLE customers DROP CONSTRAINT customers_billing_org_id_fkey;
+                    END IF;
+                    ALTER TABLE customers ADD CONSTRAINT customers_billing_org_id_fkey 
+                    FOREIGN KEY (billing_org_id) REFERENCES customers(id) ON DELETE SET NULL;
+                END $$;
+            """))
     except Exception as e:
         _startup_log.critical(f"FATAL: Database migration / backfill failed on startup: {e}", exc_info=True)
         if is_prod:

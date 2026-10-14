@@ -30,10 +30,9 @@ async def get_invoices_by_org(
         authorization=authorization
     )
         
-    master_customer_id = customer.billing_org_id if customer.billing_org_id else customer.id
-
+    # Sub-orgs only see invoices issued directly to their customer_id, never master agency invoices
     invoices_res = await db.execute(
-        select(Invoice).where(Invoice.customer_id == master_customer_id).order_by(Invoice.created_at.desc())
+        select(Invoice).where(Invoice.customer_id == customer.id).order_by(Invoice.created_at.desc())
     )
     invoices = invoices_res.scalars().all()
     
@@ -46,7 +45,9 @@ async def get_invoices_by_org(
                 "status": inv.status,
                 "pdf_url": inv.pdf_url,
                 "created_at": inv.created_at,
-                "wallet_transaction_id": inv.wallet_transaction_id
+                "wallet_transaction_id": inv.wallet_transaction_id,
+                "sub_org_id": getattr(inv, "sub_org_id", None),
+                "dograh_org_id": getattr(inv, "dograh_org_id", None),
             } for inv in invoices
         ]
     }
@@ -75,16 +76,24 @@ async def get_invoice(
         authorization=authorization
     )
     
+    onboarding = customer.onboarding_form or {}
     return {
         "id": invoice.id,
         "invoice_number": invoice.invoice_number,
         "amount_paise": invoice.amount_paise,
         "status": invoice.status,
         "created_at": invoice.created_at,
+        "wallet_transaction_id": invoice.wallet_transaction_id,
+        "sub_org_id": getattr(invoice, "sub_org_id", None),
+        "dograh_org_id": getattr(invoice, "dograh_org_id", None),
         "customer": {
+            "id": customer.id,
             "company_name": customer.company_name,
             "contact_email": customer.contact_email,
-            "contact_name": customer.contact_name
+            "contact_name": customer.contact_name,
+            "contact_phone": customer.contact_phone,
+            "gstin": onboarding.get("gstin") or onboarding.get("tax_id"),
+            "billing_address": onboarding.get("billing_address") or onboarding.get("address"),
         }
     }
 

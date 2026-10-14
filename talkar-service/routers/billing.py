@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Request, Depends, HTTPException, Query, status, Header
+from fastapi.params import Header as HeaderParam
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, text, or_, case
@@ -76,17 +77,36 @@ class DograhDeductRequest(BaseModel):
 
 
 @router.post("/topup/create-order")
-async def create_topup_order(data: TopupRequest, db: AsyncSession = Depends(get_db)):
+async def create_topup_order(
+    data: TopupRequest,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
 
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+        )
+
     if customer.status not in ("active", "suspended", "pending_deposit", "pending_plan_selection", "approved"):
         raise HTTPException(400, "Account not eligible for top-up")
 
-    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+    billing_customer_id = customer.billing_org_id or customer.id
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == billing_customer_id))
     sub = sub_res.scalar_one_or_none()
+    if not sub and customer.billing_org_id:
+        sub_own_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+        sub = sub_own_res.scalar_one_or_none()
     
     from config import resolve_tier_config
     tier_cfg = resolve_tier_config(sub)
@@ -116,7 +136,12 @@ class UpgradeOrderRequest(BaseModel):
     requested_tier: str
 
 @router.post("/upgrade/create-order")
-async def create_upgrade_order(data: UpgradeOrderRequest, db: AsyncSession = Depends(get_db)):
+async def create_upgrade_order(
+    data: UpgradeOrderRequest,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
     from config import TIER_CONFIG
     tier_config = TIER_CONFIG.get(data.requested_tier)
     if not tier_config:
@@ -132,56 +157,109 @@ async def create_upgrade_order(data: UpgradeOrderRequest, db: AsyncSession = Dep
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+        )
         
-    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+    master_id = customer.billing_org_id if customer.billing_org_id else customer.id
+    if master_id != customer.id:
+        master_res = await db.execute(select(Customer).where(Customer.id == master_id))
+        master_customer = master_res.scalar_one_or_none()
+    else:
+        master_customer = customer
+
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == master_id))
     sub = sub_res.scalar_one_or_none()
     if sub and sub.plan == "custom":
         raise HTTPException(400, "Your plan is custom-configured. Contact Talkar support to modify it.")
         
     from services.billing_service import get_billing_wallet
-    wallet, master_id = await get_billing_wallet(db, customer.id, allow_suspended=True)
+    wallet, _ = await get_billing_wallet(db, customer.id, allow_suspended=True)
     
     if wallet and wallet.balance_paise >= activation_min:
+        from sqlalchemy.orm.attributes import flag_modified
+
         if sub:
             sub.plan = data.requested_tier
             sub.per_minute_rate_paise = tier_config["per_minute_rate_paise"]
+        else:
+            sub = Subscription(
+                customer_id=master_id,
+                plan=data.requested_tier,
+                per_minute_rate_paise=tier_config["per_minute_rate_paise"],
+                status="active"
+            )
+            db.add(sub)
             
-        existing_form = customer.onboarding_form or {}
-        existing_form["approved_tier"] = data.requested_tier
-        existing_form.pop("tier_upgrade_requested", None)
-        existing_form.pop("tier_upgrade_requested_at", None)
-        customer.onboarding_form = dict(existing_form)
-        await db.commit()
-        
-        from services.provisioning_service import run_provisioning
-        try:
-            await run_provisioning(customer.id, data.requested_tier, db)
-        except Exception as e:
-            logger.error(f"Provisioning failed after direct upgrade for customer {customer.id}: {e}")
+        if master_customer:
+            existing_form = master_customer.onboarding_form or {}
+            existing_form["approved_tier"] = data.requested_tier
+            existing_form.pop("tier_upgrade_requested", None)
+            existing_form.pop("tier_upgrade_requested_at", None)
+            master_customer.onboarding_form = dict(existing_form)
+            flag_modified(master_customer, "onboarding_form")
             
-        sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
-        from sqlalchemy.orm.attributes import flag_modified
+        sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == master_id))
+        sub_org_ids_to_provision = []
         for sub_org in sub_orgs_res.scalars().all():
             sub_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == sub_org.id))
             sub_sub = sub_sub_res.scalar_one_or_none()
             if sub_sub:
                 sub_sub.plan = data.requested_tier
                 sub_sub.per_minute_rate_paise = tier_config["per_minute_rate_paise"]
+            else:
+                sub_sub = Subscription(
+                    customer_id=sub_org.id,
+                    plan=data.requested_tier,
+                    per_minute_rate_paise=tier_config["per_minute_rate_paise"],
+                    status="active"
+                )
+                db.add(sub_sub)
                 
             sub_form = sub_org.onboarding_form or {}
             sub_form["approved_tier"] = data.requested_tier
+            sub_form.pop("tier_upgrade_requested", None)
+            sub_form.pop("tier_upgrade_requested_at", None)
             sub_org.onboarding_form = dict(sub_form)
             flag_modified(sub_org, "onboarding_form")
-            
-            await db.commit()
-            if sub_org.status == "active":
-                try:
-                    await run_provisioning(sub_org.id, data.requested_tier, db)
-                except Exception as e:
-                    logger.error(f"Failed to cascade provisioning to sub-org {sub_org.id}: {e}")
+            if sub_org.dograh_org_id:
+                sub_org_ids_to_provision.append(sub_org.id)
+
+        await db.commit()
+        
+        from services.provisioning_service import run_provisioning
+        if master_customer and master_customer.dograh_org_id:
+            try:
+                await run_provisioning(master_customer.id, data.requested_tier, db)
+            except Exception as e:
+                logger.error(f"Provisioning failed after direct upgrade for customer {master_customer.id}: {e}")
+                
+        for sub_org_id in sub_org_ids_to_provision:
+            try:
+                await run_provisioning(sub_org_id, data.requested_tier, db)
+            except Exception as e:
+                logger.error(f"Failed to cascade provisioning to sub-org {sub_org_id}: {e}")
+
+        from services.billing_service import sync_wallet_block_policy
+        try:
+            await sync_wallet_block_policy(db, master_id)
+        except Exception as e:
+            logger.error(f"Failed to sync wallet block policy after direct upgrade for {master_id}: {e}")
                     
         from services.notification_service import notify_customer_tier_upgraded
         await notify_customer_tier_upgraded(customer.id, data.requested_tier)
+        if master_customer and master_customer.id != customer.id:
+            try:
+                await notify_customer_tier_upgraded(master_customer.id, data.requested_tier)
+            except Exception as e:
+                logger.warning(f"Failed to notify master customer {master_customer.id}: {e}")
 
         return {
             "status": "upgraded_from_wallet",
@@ -258,7 +336,8 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
             select(WalletTransaction).where(or_(*dup_filters))
         )
         if existing_txn.scalar_one_or_none():
-            wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
+            master_id = customer.billing_org_id if customer.billing_org_id else customer.id
+            wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == master_id))
             w = wallet_res.scalar_one_or_none()
             return {"status": "already_processed", "new_balance_paise": w.balance_paise if w else 0}
 
@@ -304,7 +383,8 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
     except Exception as e:
         if "idx_wallet_transactions_razorpay" in str(e).lower() or "unique constraint" in str(e).lower() or "duplicate key" in str(e).lower():
             logger.info(f"Top-up for order {data.razorpay_order_id} already processed concurrently")
-            wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
+            master_id = customer.billing_org_id if customer.billing_org_id else customer.id
+            wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == master_id))
             w = wallet_res.scalar_one_or_none()
             return {"status": "already_processed", "new_balance_paise": w.balance_paise if w else 0}
         raise
@@ -315,55 +395,93 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
             raise HTTPException(400, "Cannot self-assign a custom plan.")
         from config import TIER_CONFIG
         if data.requested_tier in TIER_CONFIG:
-            sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
-            sub = sub_res.scalar_one_or_none()
-            if sub:
-                sub.plan = data.requested_tier
-                sub.per_minute_rate_paise = TIER_CONFIG[data.requested_tier]["per_minute_rate_paise"]
+            master_id = customer.billing_org_id if customer.billing_org_id else customer.id
+            if master_id != customer.id:
+                master_res = await db.execute(select(Customer).where(Customer.id == master_id))
+                master_customer = master_res.scalar_one_or_none()
+            else:
+                master_customer = customer
+
+            master_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == master_id))
+            master_sub = master_sub_res.scalar_one_or_none()
+            if master_sub:
+                master_sub.plan = data.requested_tier
+                master_sub.per_minute_rate_paise = TIER_CONFIG[data.requested_tier]["per_minute_rate_paise"]
+            else:
+                master_sub = Subscription(
+                    customer_id=master_id,
+                    plan=data.requested_tier,
+                    per_minute_rate_paise=TIER_CONFIG[data.requested_tier]["per_minute_rate_paise"],
+                    status="active"
+                )
+                db.add(master_sub)
                 
-            existing_form = customer.onboarding_form or {}
-            existing_form["approved_tier"] = data.requested_tier
-            existing_form.pop("tier_upgrade_requested", None)
-            existing_form.pop("tier_upgrade_requested_at", None)
-            customer.onboarding_form = dict(existing_form)
+            from sqlalchemy.orm.attributes import flag_modified
+            if master_customer:
+                existing_form = master_customer.onboarding_form or {}
+                existing_form["approved_tier"] = data.requested_tier
+                existing_form.pop("tier_upgrade_requested", None)
+                existing_form.pop("tier_upgrade_requested_at", None)
+                master_customer.onboarding_form = dict(existing_form)
+                flag_modified(master_customer, "onboarding_form")
             
             # Cascade to sub-orgs in memory
-            sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
-            from sqlalchemy.orm.attributes import flag_modified
-            active_sub_org_ids = []
+            sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == master_id))
+            sub_org_ids_to_provision = []
             for sub_org in sub_orgs_res.scalars().all():
                 sub_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == sub_org.id))
                 sub_sub = sub_sub_res.scalar_one_or_none()
                 if sub_sub:
                     sub_sub.plan = data.requested_tier
                     sub_sub.per_minute_rate_paise = TIER_CONFIG[data.requested_tier]["per_minute_rate_paise"]
+                else:
+                    sub_sub = Subscription(
+                        customer_id=sub_org.id,
+                        plan=data.requested_tier,
+                        per_minute_rate_paise=TIER_CONFIG[data.requested_tier]["per_minute_rate_paise"],
+                        status="active"
+                    )
+                    db.add(sub_sub)
                     
                 sub_form = sub_org.onboarding_form or {}
                 sub_form["approved_tier"] = data.requested_tier
+                sub_form.pop("tier_upgrade_requested", None)
+                sub_form.pop("tier_upgrade_requested_at", None)
                 sub_org.onboarding_form = dict(sub_form)
                 flag_modified(sub_org, "onboarding_form")
-                if sub_org.status == "active":
-                    active_sub_org_ids.append(sub_org.id)
+                if sub_org.dograh_org_id:
+                    sub_org_ids_to_provision.append(sub_org.id)
 
             # Atomic commit for entire customer fleet (master + sub-orgs)
             await db.commit()
             
             # Decoupled provisioning after atomic DB commit
             from services.provisioning_service import run_provisioning
-            try:
-                await run_provisioning(customer.id, data.requested_tier, db)
-            except Exception as e:
-                logger.error(f"Provisioning failed after topup for customer {customer.id}: {e}")
+            if master_customer and master_customer.dograh_org_id:
+                try:
+                    await run_provisioning(master_customer.id, data.requested_tier, db)
+                except Exception as e:
+                    logger.error(f"Provisioning failed after topup for master customer {master_customer.id}: {e}")
 
-            for sub_org_id in active_sub_org_ids:
+            for sub_org_id in sub_org_ids_to_provision:
                 try:
                     await run_provisioning(sub_org_id, data.requested_tier, db)
                 except Exception as e:
                     logger.error(f"Failed to cascade provisioning to sub-org {sub_org_id}: {e}")
+
+            from services.billing_service import sync_wallet_block_policy
+            try:
+                await sync_wallet_block_policy(db, master_id)
+            except Exception as e:
+                logger.error(f"Failed to sync wallet block policy after upgrade for master {master_id}: {e}")
     
     # 6. Auto-reactivate if suspended or pending_deposit
-    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+    master_id = customer.billing_org_id if customer.billing_org_id else customer.id
+    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == master_id))
     sub = sub_res.scalar_one_or_none()
+    if not sub and customer.billing_org_id:
+        sub_own_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+        sub = sub_own_res.scalar_one_or_none()
     from config import resolve_tier_config
     tier_cfg = resolve_tier_config(sub)
     activation_threshold = tier_cfg.get("activation_deposit_paise", 600000)
@@ -371,6 +489,10 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
     if customer.status == "pending_deposit":
         if wallet.balance_paise >= activation_threshold:
             customer.status = "active"
+            c_form = dict(customer.onboarding_form or {})
+            c_form.pop("suspension_reason", None)
+            c_form.pop("suspension_message", None)
+            customer.onboarding_form = c_form
             await db.commit()
             from services.provisioning_service import run_provisioning
             from services import dograh_client
@@ -393,8 +515,35 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
             )
     elif customer.status == "suspended":
         from config import CALL_BLOCK_THRESHOLD_PAISE
-        if wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE:
+        c_form = customer.onboarding_form or {}
+        if c_form.get("suspension_reason") in ("zero_balance", None, "") and wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE:
             customer.status = "active"
+            c_dict = dict(c_form)
+            c_dict.pop("suspension_reason", None)
+            c_dict.pop("suspension_message", None)
+            customer.onboarding_form = c_dict
+            if customer.billing_org_id:
+                master_res = await db.execute(select(Customer).where(Customer.id == customer.billing_org_id))
+                master_cust = master_res.scalar_one_or_none()
+                if master_cust and master_cust.status == "suspended":
+                    m_form = master_cust.onboarding_form or {}
+                    if m_form.get("suspension_reason") in ("zero_balance", None, ""):
+                        master_cust.status = "active"
+                        m_dict = dict(m_form)
+                        m_dict.pop("suspension_reason", None)
+                        m_dict.pop("suspension_message", None)
+                        master_cust.onboarding_form = m_dict
+            else:
+                sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id, Customer.status == "suspended"))
+                for s_org in sub_orgs_res.scalars().all():
+                    s_form = s_org.onboarding_form or {}
+                    if s_form.get("suspension_reason") in ("zero_balance", None, ""):
+                        s_org.status = "active"
+                        s_dict = dict(s_form)
+                        s_dict.pop("suspension_reason", None)
+                        s_dict.pop("suspension_message", None)
+                        s_org.onboarding_form = s_dict
+
             await db.commit()
             from services.provisioning_service import run_provisioning
             try:
@@ -405,7 +554,10 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
     # Synchronize wallet block policy unconditionally so Dograh CONCURRENT_CALL_LIMIT is restored
     # for all active customers (and any reactivated from suspended/pending_deposit)
     from services.billing_service import sync_wallet_block_policy
-    await sync_wallet_block_policy(db, customer.id)
+    try:
+        await sync_wallet_block_policy(db, customer.id)
+    except Exception as e:
+        logger.error(f"Failed to sync wallet block policy after top-up for {customer.id}: {e}")
 
     from services.notification_service import notify_customer_topup_successful
     await notify_customer_topup_successful(customer.id, credit_amount_paise, wallet.balance_paise)
@@ -537,7 +689,7 @@ async def razorpay_webhook(request: Request, db: AsyncSession = Depends(get_db))
                         return {"status": "duplicate top-up, ignored"}
                     raise
                 
-                requested_tier = notes.get("requested_tier")
+                requested_tier = notes.get("requested_tier") or notes.get("upgrade_tier")
                 if requested_tier:
                     from config import TIER_CONFIG
                     if requested_tier in TIER_CONFIG:
@@ -545,35 +697,62 @@ async def razorpay_webhook(request: Request, db: AsyncSession = Depends(get_db))
                         cust_result = await db.execute(select(Customer).where(Customer.id == customer_id))
                         upg_customer = cust_result.scalar_one_or_none()
                         if upg_customer:
-                            sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer_id))
-                            sub = sub_res.scalar_one_or_none()
-                            if sub:
-                                sub.plan = requested_tier
-                                sub.per_minute_rate_paise = TIER_CONFIG[requested_tier]["per_minute_rate_paise"]
+                            master_id = upg_customer.billing_org_id if upg_customer.billing_org_id else upg_customer.id
+                            if master_id != upg_customer.id:
+                                master_res = await db.execute(select(Customer).where(Customer.id == master_id))
+                                master_customer = master_res.scalar_one_or_none()
+                            else:
+                                master_customer = upg_customer
+
+                            master_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == master_id))
+                            master_sub = master_sub_res.scalar_one_or_none()
+                            if master_sub:
+                                master_sub.plan = requested_tier
+                                master_sub.per_minute_rate_paise = TIER_CONFIG[requested_tier]["per_minute_rate_paise"]
+                            else:
+                                master_sub = Subscription(
+                                    customer_id=master_id,
+                                    plan=requested_tier,
+                                    per_minute_rate_paise=TIER_CONFIG[requested_tier]["per_minute_rate_paise"],
+                                    status="active"
+                                )
+                                db.add(master_sub)
                                 
-                            existing_form = upg_customer.onboarding_form or {}
-                            existing_form["approved_tier"] = requested_tier
-                            existing_form.pop("tier_upgrade_requested", None)
-                            existing_form.pop("tier_upgrade_requested_at", None)
-                            upg_customer.onboarding_form = dict(existing_form)
+                            from sqlalchemy.orm.attributes import flag_modified
+                            if master_customer:
+                                existing_form = master_customer.onboarding_form or {}
+                                existing_form["approved_tier"] = requested_tier
+                                existing_form.pop("tier_upgrade_requested", None)
+                                existing_form.pop("tier_upgrade_requested_at", None)
+                                master_customer.onboarding_form = dict(existing_form)
+                                flag_modified(master_customer, "onboarding_form")
 
                             # Cascade to sub-orgs in memory
-                            sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == upg_customer.id))
-                            from sqlalchemy.orm.attributes import flag_modified
-                            active_sub_org_ids = []
+                            sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == master_id))
+                            sub_org_ids_to_provision = []
                             for sub_org in sub_orgs_res.scalars().all():
                                 sub_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == sub_org.id))
                                 sub_sub = sub_sub_res.scalar_one_or_none()
                                 if sub_sub:
                                     sub_sub.plan = requested_tier
                                     sub_sub.per_minute_rate_paise = TIER_CONFIG[requested_tier]["per_minute_rate_paise"]
+                                else:
+                                    sub_sub = Subscription(
+                                        customer_id=sub_org.id,
+                                        plan=requested_tier,
+                                        per_minute_rate_paise=TIER_CONFIG[requested_tier]["per_minute_rate_paise"],
+                                        status="active"
+                                    )
+                                    db.add(sub_sub)
                                     
                                 sub_form = sub_org.onboarding_form or {}
                                 sub_form["approved_tier"] = requested_tier
+                                sub_form.pop("tier_upgrade_requested", None)
+                                sub_form.pop("tier_upgrade_requested_at", None)
                                 sub_org.onboarding_form = dict(sub_form)
                                 flag_modified(sub_org, "onboarding_form")
-                                if sub_org.status == "active":
-                                    active_sub_org_ids.append(sub_org.id)
+                                if sub_org.dograh_org_id:
+                                    sub_org_ids_to_provision.append(sub_org.id)
 
                             # Atomic commit for entire customer fleet (master + sub-orgs)
                             await db.commit()
@@ -582,63 +761,116 @@ async def razorpay_webhook(request: Request, db: AsyncSession = Depends(get_db))
                             from services.provisioning_service import run_provisioning
                             from services import dograh_client
                             try:
-                                await run_provisioning(customer_id, requested_tier, db)
-                                if upg_customer.dograh_org_id:
-                                    sub_res2 = await db.execute(select(Subscription).where(Subscription.customer_id == customer_id))
-                                    upg_sub = sub_res2.scalar_one_or_none()
+                                if master_customer and master_customer.dograh_org_id:
+                                    await run_provisioning(master_customer.id, requested_tier, db)
                                     from config import resolve_tier_config
-                                    concurrent_limit = resolve_tier_config(upg_sub).get("concurrent_call_limit")
-                                    await dograh_client.restore_org_calls(upg_customer.dograh_org_id, requested_tier, concurrent_limit)
+                                    concurrent_limit = resolve_tier_config(master_sub).get("concurrent_call_limit")
+                                    await dograh_client.restore_org_calls(
+                                        master_customer.dograh_org_id,
+                                        requested_tier,
+                                        concurrent_limit,
+                                        group_id=master_customer.dograh_org_id
+                                    )
                             except Exception as e:
-                                logger.error(f"Provisioning/restore failed after webhook upgrade for {customer_id}: {e}")
+                                logger.error(f"Provisioning/restore failed after webhook upgrade for master {master_id}: {e}")
 
-                            # Provision active sub-orgs
-                            for sub_id in active_sub_org_ids:
+                            # Provision all sub-orgs with dograh_org_id
+                            for sub_id in sub_org_ids_to_provision:
                                 try:
                                     await run_provisioning(sub_id, requested_tier, db)
-                                    sub_org_res = await db.execute(select(Customer).where(Customer.id == sub_id))
-                                    sub_org_obj = sub_org_res.scalar_one_or_none()
-                                    if sub_org_obj and sub_org_obj.dograh_org_id:
-                                        sub_sub_res2 = await db.execute(select(Subscription).where(Subscription.customer_id == sub_id))
-                                        sub_sub2 = sub_sub_res2.scalar_one_or_none()
-                                        sub_concurrent = resolve_tier_config(sub_sub2).get("concurrent_call_limit")
-                                        await dograh_client.restore_org_calls(sub_org_obj.dograh_org_id, requested_tier, sub_concurrent)
                                 except Exception as e:
-                                    logger.error(f"Failed to cascade provisioning/restore to sub-org {sub_id}: {e}")
+                                    logger.error(f"Failed to cascade provisioning to sub-org {sub_id}: {e}")
+
+                            from services.billing_service import sync_wallet_block_policy
+                            try:
+                                await sync_wallet_block_policy(db, master_id)
+                            except Exception as e:
+                                logger.error(f"Failed to sync wallet block policy after webhook upgrade for {master_id}: {e}")
                 else:
                     # Regular top-up via webhook: auto-reactivate if suspended/pending_deposit and restore calls
                     cust_result = await db.execute(select(Customer).where(Customer.id == customer_id))
                     cust = cust_result.scalar_one_or_none()
                     if cust:
-                        wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer_id))
+                        master_id = cust.billing_org_id if cust.billing_org_id else cust.id
+                        wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == master_id))
                         wallet = wallet_res.scalar_one_or_none()
+                        if not wallet:
+                            wallet, _ = await billing_service.get_billing_wallet(db, cust.id, allow_suspended=True)
                         if wallet:
-                            sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer_id))
+                            sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == master_id))
                             sub = sub_res.scalar_one_or_none()
+                            if not sub and cust.billing_org_id:
+                                sub_own_res = await db.execute(select(Subscription).where(Subscription.customer_id == cust.id))
+                                sub = sub_own_res.scalar_one_or_none()
+
                             from config import resolve_tier_config, CALL_BLOCK_THRESHOLD_PAISE
                             tier_cfg = resolve_tier_config(sub)
                             activation_threshold = tier_cfg.get("activation_deposit_paise", 600000)
 
                             if cust.status == "pending_deposit" and wallet.balance_paise >= activation_threshold:
                                 cust.status = "active"
+                                c_form = dict(cust.onboarding_form or {})
+                                c_form.pop("suspension_reason", None)
+                                c_form.pop("suspension_message", None)
+                                cust.onboarding_form = c_form
                                 await db.commit()
                                 from services.provisioning_service import run_provisioning
                                 try:
                                     await run_provisioning(cust.id, None, db)
                                 except Exception as e:
                                     logger.error(f"Failed to provision after webhook activating customer {cust.id}: {e}")
-                            elif cust.status == "suspended" and wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE:
-                                cust.status = "active"
-                                await db.commit()
-                                from services.provisioning_service import run_provisioning
                                 try:
-                                    await run_provisioning(cust.id, None, db)
+                                    if cust.contact_email:
+                                        await notification_service.send_email(
+                                            to_email=cust.contact_email,
+                                            subject="Your Talkar Agent is Live!",
+                                            body="Your wallet is funded and your agent is now active!"
+                                        )
                                 except Exception as e:
-                                    logger.error(f"Failed to re-provision after webhook reactivating customer {cust.id}: {e}")
+                                    logger.error(f"Failed to send activation email to {cust.contact_email}: {e}")
+                            elif cust.status == "suspended":
+                                c_form = cust.onboarding_form or {}
+                                if c_form.get("suspension_reason") in ("zero_balance", None, "") and wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE:
+                                    cust.status = "active"
+                                    c_dict = dict(c_form)
+                                    c_dict.pop("suspension_reason", None)
+                                    c_dict.pop("suspension_message", None)
+                                    cust.onboarding_form = c_dict
+                                    if cust.billing_org_id:
+                                        master_res = await db.execute(select(Customer).where(Customer.id == cust.billing_org_id))
+                                        master_cust = master_res.scalar_one_or_none()
+                                        if master_cust and master_cust.status == "suspended":
+                                            m_form = master_cust.onboarding_form or {}
+                                            if m_form.get("suspension_reason") in ("zero_balance", None, ""):
+                                                master_cust.status = "active"
+                                                m_dict = dict(m_form)
+                                                m_dict.pop("suspension_reason", None)
+                                                m_dict.pop("suspension_message", None)
+                                                master_cust.onboarding_form = m_dict
+                                    else:
+                                        sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == cust.id, Customer.status == "suspended"))
+                                        for s_org in sub_orgs_res.scalars().all():
+                                            s_form = s_org.onboarding_form or {}
+                                            if s_form.get("suspension_reason") in ("zero_balance", None, ""):
+                                                s_org.status = "active"
+                                                s_dict = dict(s_form)
+                                                s_dict.pop("suspension_reason", None)
+                                                s_dict.pop("suspension_message", None)
+                                                s_org.onboarding_form = s_dict
+
+                                    await db.commit()
+                                    from services.provisioning_service import run_provisioning
+                                    try:
+                                        await run_provisioning(cust.id, None, db)
+                                    except Exception as e:
+                                        logger.error(f"Failed to re-provision after webhook reactivating customer {cust.id}: {e}")
 
                             # Synchronize wallet block policy unconditionally so call limits in Dograh are restored
                             from services.billing_service import sync_wallet_block_policy
-                            await sync_wallet_block_policy(db, cust.id)
+                            try:
+                                await sync_wallet_block_policy(db, cust.id)
+                            except Exception as e:
+                                logger.error(f"Failed to sync wallet block policy after top-up for {cust.id}: {e}")
 
     return {"status": "ok"}
 
@@ -702,6 +934,25 @@ async def check_quota(
     if data.mode == "textchat":
         return {"has_quota": True}
 
+    # Sub-Org Monthly Spending Cap Check (prevents rogue sub-orgs from draining master balance)
+    if customer.billing_org_id:
+        form = customer.onboarding_form or {}
+        sub_cap = form.get("monthly_spending_cap_paise")
+        if sub_cap is not None and int(sub_cap) > 0:
+            from services.billing_service import get_customer_month_spend
+            sub_spend = await get_customer_month_spend(db, customer.id)
+            if sub_spend >= int(sub_cap):
+                logger.warning(
+                    f"Quota check rejected: Sub-org {customer.id} (org {data.organization_id}) "
+                    f"exceeded monthly spending cap: {sub_spend} >= {sub_cap} paise"
+                )
+                return {
+                    "has_quota": False,
+                    "reason": "spending_cap_exceeded",
+                    "month_spend_paise": sub_spend,
+                    "monthly_spending_cap_paise": int(sub_cap),
+                }
+
     # 1. Minimum Reserve Check (Risk 1)
     # For sub-orgs, subscription and custom_config live on the master — use master_id.
     sub_customer_id = master_id  # master_id already resolved by get_billing_wallet above
@@ -711,9 +962,20 @@ async def check_quota(
     import math
     
     tier_cfg = resolve_tier_config(sub)
-    rate = sub.per_minute_rate_paise if sub else tier_cfg["per_minute_rate_paise"]
+    rate = (sub.per_minute_rate_paise if sub and sub.per_minute_rate_paise is not None else None) or tier_cfg.get("per_minute_rate_paise", 1000)
+    active_tts = tier_cfg.get("tts_provider", "deepgram")
+
+    if customer.billing_org_id:
+        form = customer.onboarding_form or {}
+        sub_tier = form.get("approved_tier")
+        from config import TIER_CONFIG
+        if sub_tier and sub_tier in TIER_CONFIG:
+            active_tts = TIER_CONFIG[sub_tier].get("tts_provider", active_tts)
+            sub_tier_cfg = resolve_tier_config(sub_tier)
+            rate = sub_tier_cfg.get("per_minute_rate_paise", rate)
 
     # Check for custom agent rate override
+    agent = None
     if data.workflow_id:
         from db.models import Agent
         agent_res = await db.execute(
@@ -732,16 +994,20 @@ async def check_quota(
             )
             agent = agent_res.scalar_one_or_none()
         if agent and agent.per_minute_rate_paise is not None and agent.per_minute_rate_paise > 0:
-            from config import get_minimum_rate_floor_paise
-            active_tts = tier_cfg.get("tts_provider", "deepgram")
-            floor = get_minimum_rate_floor_paise(active_tts)
-            if agent.per_minute_rate_paise < floor:
-                logger.warning(
-                    f"Agent {agent.id} rate {agent.per_minute_rate_paise} paise is below floor {floor} paise for {active_tts}. Clamping to floor."
-                )
-                rate = floor
-            else:
-                rate = agent.per_minute_rate_paise
+            rate = agent.per_minute_rate_paise
+
+    # Margin floor enforcement (Issue 9 Protection):
+    from config import get_minimum_rate_floor_paise, TIER_CONFIG
+    tts_floor = get_minimum_rate_floor_paise(active_tts)
+    if not (agent and agent.per_minute_rate_paise is not None and agent.per_minute_rate_paise > 0):
+        if "elevenlabs" in active_tts or "cartesia" in active_tts:
+            pro_rate = TIER_CONFIG.get("pro", {}).get("per_minute_rate_paise", 1800)
+            if rate < pro_rate:
+                rate = pro_rate
+
+    if rate < tts_floor:
+        rate = tts_floor
+
     max_duration_secs = tier_cfg.get("max_call_duration_seconds", 900)
     concurrent_call_limit = tier_cfg.get("concurrent_call_limit", 2)
     
@@ -775,6 +1041,24 @@ async def check_quota(
             "active_calls": concurrent_calls,
             "concurrent_call_limit": concurrent_call_limit,
         }
+
+    # Sub-Org Individual Concurrency Limit Check (prevents monopolization of fleet concurrency pool)
+    if customer.billing_org_id:
+        form = customer.onboarding_form or {}
+        sub_limit = form.get("concurrent_call_limit")
+        if sub_limit is not None and int(sub_limit) > 0:
+            effective_sub_limit = min(concurrent_call_limit, int(sub_limit))
+            if concurrent_calls > effective_sub_limit:
+                logger.warning(
+                    f"Quota check rejected: Sub-org {customer.id} (org {data.organization_id}) "
+                    f"exceeded sub-org concurrency limit: {concurrent_calls} > {effective_sub_limit}"
+                )
+                return {
+                    "has_quota": False,
+                    "reason": "sub_org_concurrency_limit_exceeded",
+                    "active_calls": concurrent_calls,
+                    "concurrent_call_limit": effective_sub_limit,
+                }
 
     total_required_reserve = concurrent_calls * max_call_cost
 
@@ -870,18 +1154,39 @@ async def deduct_for_run(
     active_plan = sub.plan if sub else "starter"
     active_tts = resolve_tier_config(sub).get("tts_provider", "deepgram")
 
+    # If sub-org, check if sub-org customer record itself indicates a higher tier or voice
+    if customer.billing_org_id:
+        form = customer.onboarding_form or {}
+        sub_tier = form.get("approved_tier")
+        if sub_tier and sub_tier in TIER_CONFIG:
+            active_tts = TIER_CONFIG[sub_tier].get("tts_provider", active_tts)
+            active_plan = sub_tier
+            sub_tier_cfg = resolve_tier_config(sub_tier)
+            rate = sub_tier_cfg.get("per_minute_rate_paise", rate)
+
     # Agent custom rate override:
     # If agent has a specific per_minute_rate_paise configured, use it instead of subscription rate
     if agent and agent.per_minute_rate_paise is not None and agent.per_minute_rate_paise > 0:
-        floor = get_minimum_rate_floor_paise(active_tts)
-        if agent.per_minute_rate_paise < floor:
-            logger.warning(
-                f"Agent {agent.id} rate {agent.per_minute_rate_paise} paise is below floor {floor} paise for {active_tts}. Clamping to floor on run {data.workflow_run_id}."
-            )
-            rate = floor
-        else:
-            rate = agent.per_minute_rate_paise
+        rate = agent.per_minute_rate_paise
         logger.info(f"Using effective agent rate {rate} paise/min for agent {agent.id} on run {data.workflow_run_id}")
+
+    # Margin floor enforcement (Issue 9 Protection):
+    tts_floor = get_minimum_rate_floor_paise(active_tts)
+    if not (agent and agent.per_minute_rate_paise is not None and agent.per_minute_rate_paise > 0):
+        if "elevenlabs" in active_tts or "cartesia" in active_tts:
+            pro_rate = TIER_CONFIG.get("pro", {}).get("per_minute_rate_paise", 1800)
+            if rate < pro_rate:
+                logger.warning(
+                    f"Sub-org {customer.id} run {data.workflow_run_id} used premium voice '{active_tts}' while on lower tier rate {rate} paise/min. "
+                    f"Up-rating to {pro_rate} paise/min to protect gross margins."
+                )
+                rate = pro_rate
+
+    if rate < tts_floor:
+        logger.warning(
+            f"Rate {rate} paise/min is below floor {tts_floor} paise/min for {active_tts} on org {data.organization_id}. Clamping to floor on run {data.workflow_run_id}."
+        )
+        rate = tts_floor
 
     # --- SOT edge case: zero-duration call (pipeline crash, abnormal termination) ---
     # SOT line 278: log it with cost=0, do not retry, alert admin
@@ -970,9 +1275,13 @@ async def deduct_for_run(
 
         # Add usage stats to wallet transaction description for ledger transparency
         description = f"Call deduction for run {data.workflow_run_id} ({data.duration_seconds}s)"
+        sub_org_id = customer.id if customer.billing_org_id else None
+        dograh_org_id = customer.dograh_org_id or data.organization_id
         
         txn = WalletTransaction(
             customer_id=master_id,
+            sub_org_id=sub_org_id,
+            dograh_org_id=dograh_org_id,
             amount_paise=-cost_paise,
             type="call_deduction",
             description=description,
@@ -1019,6 +1328,19 @@ async def deduct_for_run(
             # Block calls in Dograh immediately so the next call can't start.
             from services.billing_service import sync_wallet_block_policy
             await sync_wallet_block_policy(db, customer.id)
+        elif customer.billing_org_id:
+            form = customer.onboarding_form or {}
+            sub_cap = form.get("monthly_spending_cap_paise")
+            if sub_cap is not None and int(sub_cap) > 0:
+                from services.billing_service import get_customer_month_spend
+                sub_spend = await get_customer_month_spend(db, customer.id)
+                if sub_spend >= int(sub_cap):
+                    logger.warning(
+                        f"Sub-org {customer.id} reached or exceeded monthly spending cap "
+                        f"({sub_spend} >= {sub_cap} paise). Enforcing sub-org block."
+                    )
+                    from services.billing_service import sync_wallet_block_policy
+                    await sync_wallet_block_policy(db, customer.id)
             
     except ValueError as ve:
         logger.warning(f"Billing deduction for run {data.workflow_run_id} encountered ValueError: {ve}")
@@ -1079,6 +1401,8 @@ async def get_wallet_by_org(
         "plan_status": sub.status if sub else "active",
         "custom_plan_label": getattr(sub, "custom_plan_label", None) if sub else None,
         "customer_status": customer.status,
+        "is_sub_org": bool(customer.billing_org_id),
+        "can_manage_billing": not bool(customer.billing_org_id),
     }
 
 class CreateRazorpayCustomerRequest(BaseModel):
@@ -1087,12 +1411,31 @@ class CreateRazorpayCustomerRequest(BaseModel):
     email: str
 
 @router.post("/razorpay-customer/create")
-async def create_razorpay_customer(data: CreateRazorpayCustomerRequest, db: AsyncSession = Depends(get_db)):
+async def create_razorpay_customer(
+    data: CreateRazorpayCustomerRequest,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None)
+):
     """Step 1: Create a Razorpay customer record linked to their wallet."""
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
+
+    if customer.billing_org_id:
+        raise HTTPException(403, "Payment cards can only be managed by the Master Organization owner.")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+            require_owner=True,
+        )
     
     from services.billing_service import get_billing_wallet
     wallet, master_id = await get_billing_wallet(db, customer.id, allow_suspended=True)
@@ -1121,13 +1464,32 @@ class AddCardSessionRequest(BaseModel):
     dograh_org_id: int
 
 @router.post("/wallet/add-card/session")
-async def create_add_card_session(data: AddCardSessionRequest, db: AsyncSession = Depends(get_db)):
+async def create_add_card_session(
+    data: AddCardSessionRequest,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None)
+):
     """Creates an RBI-compliant e-mandate verification order for card tokenization."""
     import time
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
+        
+    if customer.billing_org_id:
+        raise HTTPException(403, "Payment cards can only be managed by the Master Organization owner.")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+            require_owner=True,
+        )
         
     from services.billing_service import get_billing_wallet
     wallet, master_id = await get_billing_wallet(db, customer.id, allow_suspended=True)
@@ -1188,12 +1550,31 @@ class ConfirmAddCardRequest(BaseModel):
     razorpay_signature: Optional[str] = None
 
 @router.post("/confirm-add-card")
-async def confirm_add_card(data: ConfirmAddCardRequest, db: AsyncSession = Depends(get_db)):
+async def confirm_add_card(
+    data: ConfirmAddCardRequest,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None)
+):
     """Verifies signature, captures token/payment method ID from Razorpay, and saves it to the wallet."""
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
+        
+    if customer.billing_org_id:
+        raise HTTPException(403, "Payment cards can only be managed by the Master Organization owner.")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+            require_owner=True,
+        )
         
     from services.billing_service import get_billing_wallet
     wallet, master_id = await get_billing_wallet(db, customer.id, allow_suspended=True)
@@ -1222,12 +1603,28 @@ async def confirm_add_card(data: ConfirmAddCardRequest, db: AsyncSession = Depen
     token_id = None
     try:
         payment = await asyncio.to_thread(razorpay_client.client.payment.fetch, data.razorpay_payment_id)
+        if payment:
+            pay_order_id = payment.get("order_id")
+            if pay_order_id and data.razorpay_order_id and pay_order_id != data.razorpay_order_id:
+                logger.warning(
+                    f"Security: Mismatched order_id in confirm_add_card. Expected {data.razorpay_order_id}, got {pay_order_id}"
+                )
+                raise HTTPException(400, "Payment does not match the add-card order session.")
+            pay_customer_id = payment.get("customer_id")
+            if pay_customer_id and wallet.razorpay_customer_id and pay_customer_id != wallet.razorpay_customer_id:
+                logger.warning(
+                    f"Security: Mismatched customer_id in confirm_add_card. Expected {wallet.razorpay_customer_id}, got {pay_customer_id}"
+                )
+                raise HTTPException(403, "Payment does not belong to this organization's payment profile.")
+
         token_id = payment.get("token_id") or payment.get("token")
         if not token_id and wallet.razorpay_customer_id and hasattr(razorpay_client.client, "token"):
             tokens_res = await asyncio.to_thread(razorpay_client.client.token.all, wallet.razorpay_customer_id)
             items = tokens_res.get("items", []) if isinstance(tokens_res, dict) else tokens_res
             if items:
                 token_id = items[-1].get("id")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching payment {data.razorpay_payment_id} from Razorpay: {e}")
 
@@ -1282,12 +1679,19 @@ async def save_card(
     if not customer:
         raise HTTPException(404, "Customer not found")
 
-    await verify_customer_access(
-        customer=customer,
-        db=db,
-        x_talkar_email=x_talkar_email,
-        authorization=authorization
-    )
+    if customer.billing_org_id:
+        raise HTTPException(403, "Payment cards can only be managed by the Master Organization owner.")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+            require_owner=True,
+        )
     
     if data.razorpay_payment_method_id and str(data.razorpay_payment_method_id).startswith("pay_"):
         raise HTTPException(
@@ -1309,12 +1713,65 @@ async def save_card(
     
     return {"status": "card_saved"}
 
-@router.get("/subscription/by-org/{org_id}")
-async def get_subscription_by_org(org_id: int, db: AsyncSession = Depends(get_db)):
+@router.post("/wallet/remove-card/by-org/{org_id}")
+async def remove_saved_card(
+    org_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None)
+):
+    """Removes the saved card token and disables auto-recharge on the master wallet."""
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
+
+    if customer.billing_org_id:
+        raise HTTPException(403, "Payment cards can only be managed by the Master Organization owner.")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+            require_owner=True,
+        )
+
+    from services.billing_service import get_billing_wallet
+    wallet, master_id = await get_billing_wallet(db, customer.id, allow_suspended=True)
+    if not wallet:
+        raise HTTPException(404, "Wallet not found")
+
+    wallet.razorpay_payment_method_id = None
+    wallet.auto_recharge_enabled = False
+    await db.commit()
+
+    return {"status": "card_removed"}
+
+@router.get("/subscription/by-org/{org_id}")
+async def get_subscription_by_org(
+    org_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
+    result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+        )
     
     # For sub-orgs, subscription + custom config live on the billing master
     billing_customer_id = customer.billing_org_id if customer.billing_org_id else customer.id
@@ -1340,27 +1797,68 @@ async def get_transactions_by_org(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     type: Optional[str] = Query(None),
-    db: AsyncSession = Depends(get_db)
+    sub_org_id: Optional[int] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None)
 ):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(404, "Customer not found")
     
-    # Unified ledger: resolve billing master and all sub-orgs
-    master_id = customer.billing_org_id if customer.billing_org_id else customer.id
-    sub_orgs_res = await db.execute(select(Customer.id).where(Customer.billing_org_id == master_id))
-    customer_ids = list(set([master_id] + list(sub_orgs_res.scalars().all())))
-    
-    base_query = select(WalletTransaction).where(WalletTransaction.customer_id.in_(customer_ids))
-    matched_types = resolve_transaction_types(type)
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+        )
+
+    if customer.billing_org_id:
+        # Sub-org user: isolated ledger - see all transactions belonging to this workspace
+        sub_run_ids_res = await db.execute(
+            select(CallLog.dograh_run_id).where(CallLog.customer_id == customer.id)
+        )
+        sub_run_ids = [r for r in sub_run_ids_res.scalars().all() if r is not None]
+        conditions = [
+            WalletTransaction.customer_id == customer.id,
+            WalletTransaction.sub_org_id == customer.id,
+        ]
+        if customer.dograh_org_id:
+            conditions.append(WalletTransaction.dograh_org_id == customer.dograh_org_id)
+        if sub_run_ids:
+            conditions.append(WalletTransaction.dograh_run_id.in_(sub_run_ids))
+        base_query = select(WalletTransaction).where(or_(*conditions))
+    else:
+        # Master / Single-org: unified ledger across master and all sub-orgs
+        master_id = customer.id
+        sub_orgs_res = await db.execute(select(Customer.id).where(Customer.billing_org_id == master_id))
+        customer_ids = list(set([master_id] + list(sub_orgs_res.scalars().all())))
+        base_query = select(WalletTransaction).where(
+            (WalletTransaction.customer_id.in_(customer_ids)) |
+            (WalletTransaction.sub_org_id.in_(customer_ids))
+        )
+        effective_sub_org_id = sub_org_id if isinstance(sub_org_id, int) else (sub_org_id.default if hasattr(sub_org_id, "default") and isinstance(sub_org_id.default, int) else None)
+        if effective_sub_org_id:
+            base_query = base_query.where(
+                (WalletTransaction.sub_org_id == effective_sub_org_id) |
+                (WalletTransaction.customer_id == effective_sub_org_id)
+            )
+
+    type_val = type if isinstance(type, str) else (type.default if hasattr(type, "default") and isinstance(type.default, str) else None)
+    matched_types = resolve_transaction_types(type_val)
     if matched_types:
         base_query = base_query.where(WalletTransaction.type.in_(matched_types))
     
     count_result = await db.execute(select(func.count()).select_from(base_query.subquery()))
-    total = count_result.scalar()
+    total = count_result.scalar() or 0
     
-    page_query = base_query.order_by(WalletTransaction.created_at.desc()).offset((page - 1) * limit).limit(limit)
+    page_val = int(page.default if hasattr(page, "default") and not isinstance(page, (int, float)) else page)
+    limit_val = int(limit.default if hasattr(limit, "default") and not isinstance(limit, (int, float)) else limit)
+    page_query = base_query.order_by(WalletTransaction.created_at.desc()).offset((page_val - 1) * limit_val).limit(limit_val)
     txn_result = await db.execute(page_query)
     transactions = txn_result.scalars().all()
     
@@ -1368,22 +1866,28 @@ async def get_transactions_by_org(
         "transactions": [
             {
                 "id": t.id,
+                "customer_id": t.customer_id,
+                "sub_org_id": t.sub_org_id,
+                "dograh_org_id": t.dograh_org_id,
                 "type": t.type,
                 "amount_paise": t.amount_paise,
                 "description": t.description,
+                "dograh_run_id": t.dograh_run_id,
                 "created_at": t.created_at.isoformat() if t.created_at else None,
             }
             for t in transactions
         ],
         "total": total,
-        "page": page,
+        "page": page_val,
     }
 
 @router.get("/usage/by-org/{org_id}")
 async def get_usage_by_org(
     org_id: int,
     month: Optional[str] = Query(None),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None)
 ):
     from datetime import datetime
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == org_id))
@@ -1391,19 +1895,34 @@ async def get_usage_by_org(
     if not customer:
         raise HTTPException(404, "Customer not found")
     
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+        )
+
     now = datetime.utcnow()
-    if month:
-        year, mon = map(int, month.split("-"))
+    month_str = month if isinstance(month, str) else None
+    if month_str:
+        year, mon = map(int, month_str.split("-"))
     else:
         year, mon = now.year, now.month
     
     month_start = datetime(year, mon, 1)
     month_end = datetime(year + 1, 1, 1) if mon == 12 else datetime(year, mon + 1, 1)
     
-    # Unified ledger: resolve billing master and all sub-orgs
-    master_id = customer.billing_org_id if customer.billing_org_id else customer.id
-    sub_orgs_res = await db.execute(select(Customer.id).where(Customer.billing_org_id == master_id))
-    customer_ids = list(set([master_id] + list(sub_orgs_res.scalars().all())))
+    if customer.billing_org_id:
+        # Sub-org workspace: strictly aggregate calls made by this specific workspace
+        customer_ids = [customer.id]
+    else:
+        # Master / Single-org: resolve master and all sub-orgs
+        master_id = customer.id
+        sub_orgs_res = await db.execute(select(Customer.id).where(Customer.billing_org_id == master_id))
+        customer_ids = list(set([master_id] + list(sub_orgs_res.scalars().all())))
     
     logs_result = await db.execute(
         select(CallLog).where(
@@ -1445,12 +1964,19 @@ async def update_auto_recharge(
     if not customer:
         raise HTTPException(404, "Customer not found")
 
-    await verify_customer_access(
-        customer=customer,
-        db=db,
-        x_talkar_email=x_talkar_email,
-        authorization=authorization
-    )
+    if customer.billing_org_id:
+        raise HTTPException(403, "Auto-recharge settings can only be managed by the Master Organization owner.")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(
+            customer=customer,
+            db=db,
+            x_talkar_email=email_str,
+            authorization=auth_str,
+            require_owner=True,
+        )
     
     from services.billing_service import get_billing_wallet
     wallet, master_id = await get_billing_wallet(db, customer.id, allow_suspended=True)

@@ -60,6 +60,7 @@ settings = Settings()
 
 # V2 Config Additions
 CALL_BLOCK_THRESHOLD_PAISE = 50000  # ₹500
+DEFAULT_PHONE_NUMBER_MONTHLY_COST_PAISE = 50000  # ₹500/month per additional phone number lease (Issue 31)
 
 TIER_CONFIG = {
     "starter": {
@@ -104,20 +105,50 @@ TIER_CONFIG = {
         "activation_deposit_paise": 2500000,
         "disabled": True,
     },
+    "custom": {
+        "per_minute_rate_paise": 1800,
+        "concurrent_call_limit": 10,
+        "max_call_duration_seconds": 1800,
+        "llm_model": "gpt-4o-mini",
+        "tts_provider": "elevenlabs",
+        "stt_provider": "deepgram",
+        "free_phone_numbers": 2,
+        "activation_deposit_paise": 800000,
+    },
 }
 
 def resolve_tier_config(subscription=None) -> dict:
     """
-    Returns the effective tier config dict for a given subscription row.
+    Returns the effective tier config dict for a given subscription row or tier name.
     For custom plans, merges the stored custom_config over sane starter defaults.
     For standard plans, returns from TIER_CONFIG directly.
     Pass None to get the starter fallback.
     """
-    plan = getattr(subscription, "plan", None)
-    if subscription and plan == "custom" and getattr(subscription, "custom_config", None):
-        base = dict(TIER_CONFIG["starter"])
-        base.update(subscription.custom_config)
+    if isinstance(subscription, str):
+        plan = subscription
+        custom_config = None
+        rate = None
+    elif subscription is not None:
+        plan = getattr(subscription, "plan", None)
+        custom_config = getattr(subscription, "custom_config", None)
+        rate = getattr(subscription, "per_minute_rate_paise", None)
+    else:
+        plan = "starter"
+        custom_config = None
+        rate = None
+
+    if plan == "custom":
+        base = dict(TIER_CONFIG["custom"])
+        if isinstance(custom_config, dict):
+            base.update(custom_config)
+        if rate is not None and rate > 0:
+            base["per_minute_rate_paise"] = rate
+        tts_provider = base.get("tts_provider")
+        floor = get_minimum_rate_floor_paise(tts_provider)
+        if base.get("per_minute_rate_paise", 0) < floor:
+            base["per_minute_rate_paise"] = floor
         return base
+
     effective_plan = plan or "starter"
     return TIER_CONFIG.get(effective_plan, TIER_CONFIG["starter"])
 

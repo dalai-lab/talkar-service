@@ -271,9 +271,15 @@ async def send_email(to_email: str, subject: str, body: str, cc: str | None = No
     result = await send_bulk_emails([{"to_email": to_email, "subject": subject, "body": body, "cc": cc}])
     return result.get("sent", 0) > 0
 
-async def push_notification(customer_id: int, title: str, body: str, notification_type: str = "info"):
-    """Push an in-app notification to the database."""
-    from db.models import Notification, NotificationCategory
+async def push_notification(
+    customer_id: int,
+    title: str,
+    body: str,
+    notification_type: str = "info",
+    cascade_to_suborgs: bool = False,
+):
+    """Push an in-app notification to the database, optionally cascading to sub-orgs in the fleet."""
+    from db.models import Customer, Notification, NotificationCategory
     from db.session import AsyncSessionLocal
     try:
         async with AsyncSessionLocal() as db:
@@ -284,11 +290,45 @@ async def push_notification(customer_id: int, title: str, body: str, notificatio
                 type=notification_type
             )
             db.add(notif)
+
+            if cascade_to_suborgs:
+                cust_res = await db.execute(select(Customer).where(Customer.id == customer_id))
+                cust = cust_res.scalar_one_or_none()
+                if cust:
+                    master_id = cust.billing_org_id or cust.id
+                    sub_res = await db.execute(
+                        select(Customer.id).where(Customer.billing_org_id == master_id)
+                    )
+                    sub_ids = sub_res.scalars().all()
+
+                    target_ids = set(sub_ids)
+                    target_ids.add(master_id)
+                    target_ids.discard(customer_id)
+
+                    for tid in target_ids:
+                        db.add(
+                            Notification(
+                                customer_id=tid,
+                                title=title,
+                                body=body,
+                                type=notification_type,
+                                is_read=False
+                            )
+                        )
             await db.commit()
     except Exception as e:
         logger.error(f"Failed to push notification for customer {customer_id}: {e}")
 
-async def send_email_and_push(customer_id: int, to_email: str, subject: str, body: str, notification_type: str = "info", push_body: str | None = None, cc: str | None = None):
+async def send_email_and_push(
+    customer_id: int,
+    to_email: str,
+    subject: str,
+    body: str,
+    notification_type: str = "info",
+    push_body: str | None = None,
+    cc: str | None = None,
+    cascade_to_suborgs: bool = False,
+):
     """Helper to send an email AND push an in-app notification simultaneously."""
     await send_email(to_email, subject, body, cc=cc)
     
@@ -299,7 +339,13 @@ async def send_email_and_push(customer_id: int, to_email: str, subject: str, bod
         lines = [l.strip() for l in body.split('\n') if l.strip() and not l.startswith("Hi ") and not l.startswith("The Talkar Team")]
         pb = lines[0] if lines else subject
         
-    await push_notification(customer_id, subject, pb, notification_type)
+    await push_notification(
+        customer_id=customer_id,
+        title=subject,
+        body=pb,
+        notification_type=notification_type,
+        cascade_to_suborgs=cascade_to_suborgs,
+    )
 
 
 
@@ -414,7 +460,8 @@ async def notify_customer_auto_recharge_failed(customer_id: int, error_detail: s
         subject=subject,
         body=body,
         notification_type="warning",
-        push_body=push_body
+        push_body=push_body,
+        cascade_to_suborgs=True,
     )
 
 
@@ -464,7 +511,8 @@ async def notify_customer_low_balance(customer_id: int, balance_paise: int):
                     customer_id=customer_id,
                     title="Low Balance Warning: Talkar Wallet",
                     body=f"Low balance: ₹{balance_rs:.2f}. Please add credits.",
-                    notification_type="warning"
+                    notification_type="warning",
+                    cascade_to_suborgs=True,
                 )
                 return
             cc_email = (_rep.get("cc_email") or "").strip() or None
@@ -483,6 +531,7 @@ async def notify_customer_low_balance(customer_id: int, balance_paise: int):
         notification_type="warning",
         push_body=f"Low balance: ₹{balance_rs:.2f}. Please add credits.",
         cc=cc_email,
+        cascade_to_suborgs=True,
     )
 
 
@@ -515,7 +564,8 @@ async def notify_customer_service_paused(customer_id: int):
             f"The Talkar Team"
         ),
         notification_type="warning",
-        push_body="Service paused due to low balance. Please top up."
+        push_body="Service paused due to low balance. Please top up.",
+        cascade_to_suborgs=True,
     )
 
 async def notify_customer_topup_successful(customer_id: int, amount_paise: int, new_balance_paise: int):
@@ -640,6 +690,36 @@ async def notify_customer_phone_denied(customer_id: int, admin_note: str):
         push_body=f"Your phone number request was denied: {note}"
     )
 
+async def notify_customer_phone_number_lease_billed(
+    customer_id: int,
+    number: str,
+    amount_paise: int,
+    new_balance_paise: int,
+    is_renewal: bool = True,
+):
+    info = await _get_customer_email(customer_id)
+    if not info:
+        return
+    email, name = info
+    action = "renewed" if is_renewal else "activated"
+    amount_rupees = amount_paise // 100
+    balance_rupees = new_balance_paise / 100.0
+    await send_email_and_push(
+        customer_id=customer_id,
+        to_email=email,
+        subject=f"Phone Number Lease {action.capitalize()}: {number}",
+        body=(
+            f"Hi {name},\n\n"
+            f"Your dedicated phone number {number} lease has been {action}.\n\n"
+            f"Monthly Lease Amount: ₹{amount_rupees}\n"
+            f"Current Wallet Balance: ₹{balance_rupees:.2f}\n\n"
+            f"Thank you for using Talkar!\n\n"
+            f"The Talkar Team"
+        ),
+        notification_type="billing",
+        push_body=f"Phone number {number} lease {action} (₹{amount_rupees}). Balance: ₹{balance_rupees:.2f}",
+    )
+
 async def notify_customer_support_replied(customer_id: int, subject: str, admin_note: str, status: str):
     info = await _get_customer_email(customer_id)
     if not info: return
@@ -689,7 +769,8 @@ async def notify_customer_suspended(customer_id: int, reason: str = "zero_balanc
         subject="Important: Your Talkar Workspace has been Suspended",
         body=body,
         notification_type="warning",
-        push_body=f"Your workspace has been suspended ({reason_label}). Top up to reactivate."
+        push_body=f"Your workspace has been suspended ({reason_label}). Top up to reactivate.",
+        cascade_to_suborgs=True,
     )
 
 async def notify_customer_credit_granted(customer_id: int, amount_paise: int, description: str):
@@ -797,10 +878,18 @@ async def get_organization_report_data(
     db: AsyncSession,
     customer_id: int,
     period_start: datetime,
-    period_end: datetime
+    period_end: datetime,
+    customer: Optional[Any] = None
 ) -> Dict[str, Any]:
     """Pure SQL deterministic metrics calculation for an organization."""
-    from sqlalchemy import text
+    from sqlalchemy import text, select
+    from db.models import Customer
+
+    if customer is None:
+        c_res = await db.execute(select(Customer).where(Customer.id == customer_id))
+        customer = c_res.scalar_one_or_none()
+
+    is_sub_org = bool(customer and customer.billing_org_id)
     
     # 1. Overall Call Metrics
     call_query = text("""
@@ -863,10 +952,25 @@ async def get_organization_report_data(
         for r in agent_res.fetchall()
     ]
 
-    # 3. Wallet Balance
-    from services.billing_service import get_billing_wallet
-    wallet, _ = await get_billing_wallet(db, customer_id)
-    current_balance_paise = int(wallet.balance_paise or 0) if wallet else 0
+    # 3. Wallet Balance vs Sub-Org Budget Isolation (Issue 16)
+    # Master float balance must NEVER be exposed to sub-org clients in scheduled reports.
+    current_balance_paise = None
+    formatted_balance = None
+    monthly_cap_paise = None
+    formatted_cap = None
+
+    if is_sub_org:
+        form = (customer.onboarding_form or {}) if customer else {}
+        sub_cap = form.get("monthly_spending_cap_paise")
+        if sub_cap is not None and int(sub_cap) > 0:
+            monthly_cap_paise = int(sub_cap)
+            formatted_cap = format_report_inr(monthly_cap_paise)
+        formatted_balance = "Managed by Master Organization"
+    else:
+        from services.billing_service import get_billing_wallet
+        wallet, _ = await get_billing_wallet(db, customer_id)
+        current_balance_paise = int(wallet.balance_paise or 0) if wallet else 0
+        formatted_balance = format_report_inr(current_balance_paise)
 
     return {
         "total_calls": total_calls,
@@ -879,13 +983,28 @@ async def get_organization_report_data(
         "formatted_avg_duration": format_report_duration(avg_call_duration_sec),
         "total_cost_paise": total_cost_paise,
         "formatted_cost": format_report_inr(total_cost_paise),
+        "is_sub_org": is_sub_org,
         "current_balance_paise": current_balance_paise,
-        "formatted_balance": format_report_inr(current_balance_paise),
+        "formatted_balance": formatted_balance,
+        "monthly_cap_paise": monthly_cap_paise,
+        "formatted_cap": formatted_cap,
         "agents": agents_data
     }
 
 def render_report_html(data: Dict[str, Any], company_name: str, period_label: str, date_range_str: str) -> str:
     """Generate a pixel-perfect, responsive Talkar-branded HTML email."""
+    if data.get("is_sub_org"):
+        if data.get("formatted_cap"):
+            balance_note = f"Monthly Cap: {data['formatted_cap']}"
+        else:
+            balance_note = "Billing: Central Master Account"
+        cta_url = "https://talkar.in/dashboard"
+        cta_text = "View Live Analytics"
+    else:
+        balance_note = f"Wallet Balance: {data.get('formatted_balance', '₹0.00')}"
+        cta_url = "https://talkar.in/wallet"
+        cta_text = "View Live Analytics & Wallet"
+
     agent_rows_html = ""
     if data["agents"]:
         for ag in data["agents"]:
@@ -973,7 +1092,7 @@ def render_report_html(data: Dict[str, Any], company_name: str, period_label: st
                         <td class="kpi-card" width="50%">
                             <p class="kpi-label">Total Spent</p>
                             <p class="kpi-value">{data['formatted_cost']}</p>
-                            <span style="font-size: 11px; color: #71717a;">Wallet Balance: {data['formatted_balance']}</span>
+                            <span style="font-size: 11px; color: #71717a;">{balance_note}</span>
                         </td>
                     </tr>
                 </table>
@@ -1000,7 +1119,7 @@ def render_report_html(data: Dict[str, Any], company_name: str, period_label: st
 
                 <!-- CTA Button -->
                 <div style="text-align: center; margin-top: 32px;">
-                    <a href="https://talkar.in/wallet" class="btn-cta" target="_blank">View Live Analytics & Wallet</a>
+                    <a href="{cta_url}" class="btn-cta" target="_blank">{cta_text}</a>
                 </div>
             </div>
 
@@ -1042,7 +1161,8 @@ async def send_organization_report(
         db=db,
         customer_id=customer.id,
         period_start=start_time,
-        period_end=now_utc
+        period_end=now_utc,
+        customer=customer
     )
 
     company_name = customer.company_name or "Your Organization"
