@@ -159,6 +159,57 @@ async def test_check_elevenlabs_past_due_is_critical():
 
 
 @pytest.mark.asyncio
+async def test_check_deepgram_403_returns_payg_active():
+    """STT key is valid for projects, but balances returns 403 (e.g. member key or card-billed account)."""
+    mock_client = AsyncMock()
+    bal_resp = MagicMock()
+    bal_resp.status_code = 403
+    mock_client.get.return_value = bal_resp
+
+    with patch("services.vendor_balance_service.settings") as mock_settings:
+        mock_settings.TALKAR_DEEPGRAM_KEY = "dg_secret"
+        mock_settings.TALKAR_DEEPGRAM_PROJECT_ID = "71ee6f19-22d0-456e-9199-2a5f6c132a91"
+
+        service = VendorBalanceService(http_client=mock_client)
+        result = await service.check_deepgram()
+
+        assert result.vendor == "deepgram"
+        assert result.status == "payg_active"
+        assert result.balance is None
+        assert "Active STT key" in (result.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_check_smallest_subscription_healthy():
+    """Verify Smallest AI official /atoms/v1/user/subscription endpoint parses currentCredits."""
+    mock_client = AsyncMock()
+    sub_resp = MagicMock()
+    sub_resp.status_code = 200
+    sub_resp.json.return_value = {
+        "status": True,
+        "data": {
+            "currentCredits": 850.5,
+            "totalCredits": 1000.0,
+            "subscriptionActive": True,
+            "renewalDate": "2026-11-15T09:30:00Z",
+        },
+    }
+    mock_client.get.return_value = sub_resp
+
+    with patch("services.vendor_balance_service.settings") as mock_settings:
+        mock_settings.TALKAR_SMALLEST_AI_KEY = "sm_secret"
+
+        service = VendorBalanceService(http_client=mock_client)
+        result = await service.check_smallest(warning_threshold=500.0, critical_threshold=50.0)
+
+        assert result.vendor == "smallest"
+        assert result.status == "healthy"
+        assert result.balance == 850.5
+        assert result.quota_limit == 1000.0
+        assert result.next_reset_at is not None
+
+
+@pytest.mark.asyncio
 async def test_check_smallest_502_returns_error_not_exhausted():
     mock_client = AsyncMock()
     err_resp = MagicMock()

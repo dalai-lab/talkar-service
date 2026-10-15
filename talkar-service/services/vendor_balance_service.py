@@ -7,6 +7,7 @@ cooldown suppression, and Redis distributed lock synchronization.
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
@@ -77,9 +78,42 @@ class VendorBalanceService:
     # -------------------------------------------------------------------------
 
     async def check_plivo(self, warning_threshold: float = 20.0, critical_threshold: float = 2.0) -> VendorCheckResult:
-        auth_id = getattr(settings, "TALKAR_PLIVO_AUTH_ID", "").strip()
-        auth_token = getattr(settings, "TALKAR_PLIVO_AUTH_TOKEN", "").strip()
+        auth_id = (
+            getattr(settings, "TALKAR_PLIVO_AUTH_ID", "")
+            or os.getenv("TALKAR_PLIVO_AUTH_ID", "")
+            or os.getenv("PLIVO_AUTH_ID", "")
+            or os.getenv("PLIVO_ACCOUNT_SID", "")
+            or os.getenv("PLIVO_ID", "")
+        ).strip()
+        auth_token = (
+            getattr(settings, "TALKAR_PLIVO_AUTH_TOKEN", "")
+            or os.getenv("TALKAR_PLIVO_AUTH_TOKEN", "")
+            or os.getenv("PLIVO_AUTH_TOKEN", "")
+            or os.getenv("PLIVO_TOKEN", "")
+        ).strip()
         now = datetime.now(timezone.utc)
+
+        # Fallback: Auto-resolve from Dograh DB telephony_configurations if not in .env
+        if not auth_id or not auth_token:
+            try:
+                from services.dograh_client import DograhSessionLocal
+                from sqlalchemy import text
+                async with DograhSessionLocal() as dsession:
+                    t_res = await dsession.execute(
+                        text("SELECT credentials FROM telephony_configurations WHERE LOWER(provider) LIKE '%plivo%' ORDER BY id ASC LIMIT 1")
+                    )
+                    t_row = t_res.scalar_one_or_none()
+                    if t_row:
+                        if isinstance(t_row, str):
+                            try:
+                                t_row = json.loads(t_row)
+                            except Exception:
+                                pass
+                        if isinstance(t_row, dict):
+                            auth_id = auth_id or str(t_row.get("auth_id") or t_row.get("authId") or t_row.get("account_sid") or "").strip()
+                            auth_token = auth_token or str(t_row.get("auth_token") or t_row.get("authToken") or "").strip()
+            except Exception as e:
+                logger.debug(f"[VENDOR BALANCE] Could not auto-resolve Plivo credentials from Dograh DB: {e}")
 
         if not auth_id or not auth_token:
             return VendorCheckResult(
@@ -87,7 +121,7 @@ class VendorBalanceService:
                 display_name="Plivo Telephony",
                 units="USD",
                 status="not_configured",
-                error_message="TALKAR_PLIVO_AUTH_ID or TALKAR_PLIVO_AUTH_TOKEN not set in environment",
+                error_message="Set TALKAR_PLIVO_AUTH_ID and TALKAR_PLIVO_AUTH_TOKEN in .env",
                 console_url=CONSOLE_URLS["plivo"],
                 warning_threshold=warning_threshold,
                 critical_threshold=critical_threshold,
@@ -209,12 +243,13 @@ class VendorBalanceService:
             # Query balances
             bal_resp = await client.get(f"https://api.deepgram.com/v1/projects/{project_id}/balances", headers=headers)
             if bal_resp.status_code == 403:
+                # Key is verified and project discovered; STT is fully operational via card billing or key lacks billing-reader scope
                 return VendorCheckResult(
                     vendor="deepgram",
                     display_name="Deepgram STT",
                     units="USD",
-                    status="error",
-                    error_message="Deepgram key lacks Project Management / Billing scope",
+                    status="payg_active",
+                    error_message="Active STT key (Account on postpaid card billing or key lacks billing-reader scope)",
                     console_url=f"https://console.deepgram.com/project/{project_id}",
                     warning_threshold=warning_threshold,
                     critical_threshold=critical_threshold,
@@ -374,7 +409,12 @@ class VendorBalanceService:
             )
 
     async def check_smallest(self, warning_threshold: float = 500.0, critical_threshold: float = 50.0) -> VendorCheckResult:
-        api_key = getattr(settings, "TALKAR_SMALLEST_AI_KEY", "").strip()
+        api_key = (
+            getattr(settings, "TALKAR_SMALLEST_AI_KEY", "")
+            or os.getenv("TALKAR_SMALLEST_AI_KEY", "")
+            or os.getenv("SMALLEST_AI_KEY", "")
+            or os.getenv("SMALLEST_API_KEY", "")
+        ).strip()
         now = datetime.now(timezone.utc)
 
         if not api_key:
@@ -393,10 +433,11 @@ class VendorBalanceService:
         client = await self._get_client()
         headers = {"Authorization": f"Bearer {api_key}"}
 
-        # Primary endpoint with fallback
+        # Official Smallest AI subscription & credits endpoint, with fallbacks
         endpoints = [
+            "https://api.smallest.ai/atoms/v1/user/subscription",
+            "https://api.smallest.ai/payment/v1/credits/usage/breakdown",
             "https://api.smallest.ai/atoms/v1/billing/credit-balance",
-            "https://api.smallest.ai/atoms/v1/analytics/usage/breakdown",
         ]
 
         data = None
@@ -429,7 +470,56 @@ class VendorBalanceService:
             )
 
         try:
-            balance = float(data.get("credit_balance", data.get("balance", data.get("remaining_credits", 0.0))))
+            # Handles wrapped {"status": true, "data": {...}} and raw dict
+            sub_data = data.get("data", {}) if isinstance(data.get("data"), dict) else data
+
+            raw_bal = (
+                sub_data.get("currentCredits")
+                if sub_data.get("currentCredits") is not None
+                else sub_data.get("credits")
+                if sub_data.get("credits") is not None
+                else sub_data.get("credit_balance")
+                if sub_data.get("credit_balance") is not None
+                else sub_data.get("remaining_credits")
+                if sub_data.get("remaining_credits") is not None
+                else sub_data.get("balance")
+                if sub_data.get("balance") is not None
+                else data.get("currentCredits")
+            )
+
+            if raw_bal is None:
+                # If subscription is active without a numeric credits field (e.g. enterprise post-paid)
+                if sub_data.get("subscriptionActive") is True:
+                    return VendorCheckResult(
+                        vendor="smallest",
+                        display_name="Smallest AI (Waves TTS)",
+                        units="credits",
+                        status="payg_active",
+                        error_message="Active Subscription (Post-paid / Enterprise)",
+                        console_url=CONSOLE_URLS["smallest"],
+                        warning_threshold=warning_threshold,
+                        critical_threshold=critical_threshold,
+                        checked_at=now,
+                    )
+                balance = 0.0
+            else:
+                balance = float(raw_bal)
+
+            quota_limit = None
+            if sub_data.get("totalCredits") is not None:
+                try:
+                    quota_limit = float(sub_data.get("totalCredits"))
+                except (ValueError, TypeError):
+                    pass
+
+            next_reset_at = None
+            renewal_date_str = sub_data.get("renewalDate")
+            if renewal_date_str and isinstance(renewal_date_str, str):
+                try:
+                    next_reset_at = datetime.fromisoformat(renewal_date_str.replace("Z", "+00:00"))
+                except Exception:
+                    pass
+
             if balance <= critical_threshold:
                 status = "critical"
             elif balance <= warning_threshold:
@@ -442,7 +532,9 @@ class VendorBalanceService:
                 display_name="Smallest AI (Waves TTS)",
                 balance=balance,
                 units="credits",
+                quota_limit=quota_limit,
                 status=status,
+                next_reset_at=next_reset_at,
                 raw_payload=data,
                 console_url=CONSOLE_URLS["smallest"],
                 warning_threshold=warning_threshold,

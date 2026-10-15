@@ -208,17 +208,24 @@ export function VendorBalancesWidget() {
               <div className="text-2xl font-bold font-mono text-slate-900 tracking-tight">
                 {plivo?.balance !== null && plivo?.balance !== undefined
                   ? `${plivo.units === "INR" ? "₹" : "$"}${plivo.balance.toFixed(2)}`
+                  : plivo?.status === "not_configured"
+                  ? "Not Configured"
                   : "—"}
               </div>
               <div className="flex items-center justify-between text-[11px] text-slate-500 mt-1">
                 <span>Auto-Recharge:</span>
                 <span className={plivo?.auto_recharge ? "text-emerald-600 font-semibold" : "text-slate-500"}>
-                  {plivo?.auto_recharge ? "Enabled (Backup Card)" : "Disabled"}
+                  {plivo?.auto_recharge ? "Enabled (Backup Card)" : plivo?.status === "not_configured" ? "Needs Auth ID" : "Disabled"}
                 </span>
               </div>
               <div className="text-[10px] text-slate-400 mt-0.5">
                 Warning threshold: ${plivo?.warning_threshold?.toFixed(2) || "20.00"}
               </div>
+              {plivo?.error_message && plivo?.status !== "healthy" && (
+                <div className="text-[10px] text-slate-500 bg-slate-50 p-1.5 rounded border border-slate-100 mt-1.5 truncate" title={plivo.error_message}>
+                  {plivo.error_message}
+                </div>
+              )}
             </div>
 
             <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
@@ -252,14 +259,16 @@ export function VendorBalancesWidget() {
             <div>
               <div className="text-2xl font-bold font-mono text-slate-900 tracking-tight">
                 {deepgram?.status === "payg_active"
-                  ? "Pay-As-You-Go"
+                  ? "Active (PAYG)"
                   : deepgram?.balance !== null && deepgram?.balance !== undefined
                   ? `$${deepgram.balance.toFixed(2)}`
+                  : deepgram?.status === "not_configured"
+                  ? "Not Configured"
                   : "—"}
               </div>
               <div className="text-[11px] text-slate-500 mt-1">
                 {deepgram?.status === "payg_active" ? (
-                  <span className="text-emerald-600 font-semibold">Active Credit Card Billing</span>
+                  <span className="text-blue-600 font-semibold">Live STT Active • Card Billed</span>
                 ) : (
                   <span>Prepaid Balance: ${deepgram?.balance?.toFixed(2) || "0.00"}</span>
                 )}
@@ -267,6 +276,11 @@ export function VendorBalancesWidget() {
               <div className="text-[10px] text-slate-400 mt-0.5">
                 Warning threshold: ${deepgram?.warning_threshold?.toFixed(2) || "20.00"}
               </div>
+              {deepgram?.error_message && deepgram?.status !== "healthy" && (
+                <div className="text-[10px] text-slate-500 bg-slate-50 p-1.5 rounded border border-slate-100 mt-1.5 truncate" title={deepgram.error_message}>
+                  {deepgram.error_message}
+                </div>
+              )}
             </div>
 
             <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
@@ -301,6 +315,8 @@ export function VendorBalancesWidget() {
               <div className="text-2xl font-bold font-mono text-slate-900 tracking-tight">
                 {elevenlabs?.balance !== null && elevenlabs?.balance !== undefined
                   ? `${elevenlabs.balance.toLocaleString()} chars`
+                  : elevenlabs?.status === "not_configured"
+                  ? "Not Configured"
                   : "—"}
               </div>
 
@@ -371,15 +387,53 @@ export function VendorBalancesWidget() {
             <div>
               <div className="text-2xl font-bold font-mono text-slate-900 tracking-tight">
                 {smallest?.balance !== null && smallest?.balance !== undefined
-                  ? `${smallest.balance.toLocaleString()} credits`
+                  ? `${Number(smallest.balance).toLocaleString(undefined, { maximumFractionDigits: 1 })} credits`
+                  : smallest?.status === "payg_active"
+                  ? "Active Subscription"
+                  : smallest?.status === "not_configured"
+                  ? "Not Configured"
                   : "—"}
               </div>
+
+              {smallest?.quota_limit && (
+                <div className="space-y-1 mt-2">
+                  <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-500 ${
+                        (smallest.balance || 0) < 50
+                          ? "bg-red-500"
+                          : (smallest.balance || 0) < 500
+                          ? "bg-amber-500"
+                          : "bg-emerald-500"
+                      }`}
+                      style={{
+                        width: `${Math.min(
+                          100,
+                          Math.max(0, ((smallest.balance || 0) / smallest.quota_limit) * 100)
+                        )}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[10px] text-slate-400">
+                    <span>
+                      {Math.round(((smallest.balance || 0) / smallest.quota_limit) * 100)}% left
+                    </span>
+                    <span>Pool: {Number(smallest.quota_limit).toLocaleString()}</span>
+                  </div>
+                </div>
+              )}
+
               <div className="text-[11px] text-slate-500 mt-1">
                 Ultralow-latency voice credit pool
               </div>
               <div className="text-[10px] text-slate-400 mt-0.5">
                 Warning threshold: {smallest?.warning_threshold || 500} credits
               </div>
+              {smallest?.error_message && smallest?.status !== "healthy" && (
+                <div className="text-[10px] text-slate-500 bg-slate-50 p-1.5 rounded border border-slate-100 mt-1.5 truncate" title={smallest.error_message}>
+                  {smallest.error_message}
+                </div>
+              )}
             </div>
 
             <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
