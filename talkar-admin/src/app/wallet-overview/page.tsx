@@ -6,6 +6,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Wallet, AlertTriangle } from "lucide-react";
+import { VendorBalancesWidget } from "@/components/VendorBalancesWidget";
 
 export default function WalletOverviewPage() {
   const [totalBalance, setTotalBalance] = useState<number>(0);
@@ -53,6 +54,9 @@ export default function WalletOverviewPage() {
           </p>
         </div>
       </div>
+      
+      {/* Upstream Infrastructure & Vendor Balances Bento Grid */}
+      <VendorBalancesWidget />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card className="bg-white border border-slate-200/80 rounded-xl shadow-none">

@@ -8,7 +8,8 @@ from jobs.cron import (
     cleanup_abandoned_signups,
     dispatch_scheduled_reports,
     dispatch_scheduled_announcements,
-    bill_monthly_phone_numbers
+    bill_monthly_phone_numbers,
+    poll_vendor_balances
 )
 from db.session import engine
 from config import settings
@@ -61,7 +62,10 @@ class WorkerSettings:
         cron(dispatch_scheduled_announcements, minute=None, second=0),
 
         # 8G: Telephony DID Monthly Lease Billing (Daily at 3:30 AM UTC = 9:00 AM IST)
-        cron(bill_monthly_phone_numbers, minute=30, hour=3)
+        cron(bill_monthly_phone_numbers, minute=30, hour=3),
+
+        # 8H: Upstream Vendor Infrastructure Balance Monitoring (Every 30 minutes)
+        cron(poll_vendor_balances, minute={0, 30})
     ]
     redis_settings = redis_settings
     on_startup = startup

@@ -498,4 +498,20 @@ async def bill_monthly_phone_numbers(ctx):
             logger.error(f"Error during phone number lease billing: {e}", exc_info=True)
 
 
+async def poll_vendor_balances(ctx):
+    """
+    Periodic Infrastructure Check:
+    Queries Plivo, Deepgram, ElevenLabs, and Smallest AI balances,
+    stores snapshots, evaluates thresholds, and alerts it@4thorbit.com.
+    """
+    logger.info("Starting periodic upstream vendor balance check...")
+    from services.vendor_balance_service import VendorBalanceService
+    service = VendorBalanceService()
+    try:
+        results = await service.sync_all_vendors(force=False)
+        logger.info(f"Vendor balance check completed: overall_healthy={results.get('overall_healthy')}")
+    except Exception as e:
+        logger.error(f"Error during periodic vendor balance check: {e}", exc_info=True)
+
+
 

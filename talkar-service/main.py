@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import health, customers, wallet, billing, provisioning, admin, notifications, announcements, automation, invoices
+from routers import health, customers, wallet, billing, provisioning, admin, notifications, announcements, automation, invoices, vendor_balances
 from contextlib import asynccontextmanager
 from services import redis_client
 
@@ -137,6 +137,55 @@ async def lifespan(app: FastAPI):
                     FOREIGN KEY (billing_org_id) REFERENCES customers(id) ON DELETE SET NULL;
                 END $$;
             """))
+
+            # Migration v8: Vendor Infrastructure Balance Monitoring (Separate statements for asyncpg)
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS vendor_balance_snapshots (
+                    id SERIAL PRIMARY KEY,
+                    vendor VARCHAR(32) NOT NULL,
+                    balance_numeric NUMERIC(14, 4),
+                    units VARCHAR(16) NOT NULL,
+                    quota_limit NUMERIC(14, 4),
+                    status VARCHAR(32) NOT NULL,
+                    auto_recharge_enabled BOOLEAN DEFAULT FALSE,
+                    overages_enabled BOOLEAN DEFAULT FALSE,
+                    next_reset_at TIMESTAMP WITH TIME ZONE,
+                    error_message TEXT,
+                    raw_payload JSONB,
+                    checked_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                );
+            """))
+
+            await conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_vendor_balance_vendor_checked 
+                ON vendor_balance_snapshots (vendor, checked_at DESC);
+            """))
+
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS vendor_alert_states (
+                    vendor VARCHAR(32) PRIMARY KEY,
+                    current_tier VARCHAR(32) NOT NULL DEFAULT 'healthy',
+                    last_alert_sent_at TIMESTAMP WITH TIME ZONE,
+                    last_alert_tier VARCHAR(32),
+                    alerts_sent_in_window INT DEFAULT 0,
+                    window_start_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    warning_threshold NUMERIC(14, 4) NOT NULL,
+                    critical_threshold NUMERIC(14, 4) NOT NULL,
+                    last_delivery_status VARCHAR(16) DEFAULT 'success',
+                    last_delivery_error TEXT,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                );
+            """))
+
+            await conn.execute(text("""
+                INSERT INTO vendor_alert_states (vendor, current_tier, warning_threshold, critical_threshold)
+                VALUES 
+                    ('plivo', 'healthy', 20.00, 2.00),
+                    ('deepgram', 'healthy', 20.00, 2.00),
+                    ('elevenlabs', 'healthy', 50000, 5000),
+                    ('smallest', 'healthy', 500, 50)
+                ON CONFLICT (vendor) DO NOTHING;
+            """))
     except Exception as e:
         _startup_log.critical(f"FATAL: Database migration / backfill failed on startup: {e}", exc_info=True)
         if is_prod:
@@ -174,6 +223,7 @@ app.include_router(admin.router, prefix="/admin", tags=["Admin"])
 app.include_router(notifications.router, prefix="/notifications", tags=["Notifications"])
 app.include_router(announcements.router)
 app.include_router(invoices.router, prefix="/invoices", tags=["Invoices"])
+app.include_router(vendor_balances.router)
 app.middleware("http")(automation.audit_log_middleware)
 app.include_router(automation.router, prefix="/automation/v1", tags=["Automation"])
 
