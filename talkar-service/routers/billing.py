@@ -887,8 +887,8 @@ async def check_quota(
         return {"has_quota": False, "reason": "unknown_organization"}
         
     if customer.status != "active":
-        # Allow zero-cost web/text chat playground testing during agent_building, but block all telephony
-        if customer.status == "agent_building" and data.mode in ("textchat", "webrtc", "smallwebrtc"):
+        # Allow zero-cost web/text chat playground testing or mock soak testing during agent_building, but block all telephony
+        if customer.status == "agent_building" and data.mode in ("textchat", "webrtc", "smallwebrtc", "mock"):
             # Enforce playground concurrency cap (max 2 concurrent sessions) to prevent credit abuse
             active_calls = data.active_calls if (data.active_calls is not None and data.active_calls >= 1) else 1
             PLAYGROUND_CONCURRENT_LIMIT = 2
@@ -928,10 +928,10 @@ async def check_quota(
             asyncio.create_task(trigger_auto_recharge_background(master_id))
         return {"has_quota": False, "reason": "insufficient_balance", "balance_paise": wallet.balance_paise if wallet else 0}
 
-    # Text chat is non-voice / zero-audio interaction — allow without telephony reserve / concurrency limits.
+    # Text chat and mock simulation are non-voice / simulated zero-cost modes — allow without telephony reserve / concurrency limits.
     # Voice WebRTC modes (webrtc, smallwebrtc) consume live STT/LLM/TTS and are billed per-minute;
     # they MUST proceed through tier concurrency limits and wallet reserve validation below.
-    if data.mode == "textchat":
+    if data.mode in ("textchat", "mock"):
         return {"has_quota": True}
 
     # Sub-Org Monthly Spending Cap Check (prevents rogue sub-orgs from draining master balance)
@@ -1207,10 +1207,11 @@ async def deduct_for_run(
         logger.warning(f"Zero-duration call for run {data.workflow_run_id} — logged with 0 cost")
         return {"status": "zero_duration_logged"}
 
-    # --- Free web/text chat playground testing during agent_building ---
+    # --- Free web/text chat playground testing or mock simulation runs ---
     # During agent_building, playground runs (webrtc, smallwebrtc, textchat) are free.
+    # Mock simulation runs (mode="mock") are always free ($0 cost).
     # Log the call with ₹0 cost in CallLog, but DO NOT deduct from wallet or trigger auto-recharge/block.
-    if customer.status == "agent_building" and run_mode in ("textchat", "webrtc", "smallwebrtc"):
+    if run_mode == "mock" or (customer.status == "agent_building" and run_mode in ("textchat", "webrtc", "smallwebrtc")) :
         call_log = CallLog(
             customer_id=customer.id,
             agent_id=agent.id if agent else None,
