@@ -27,7 +27,12 @@ class Settings(BaseSettings):
     TALKAR_ELEVENLABS_KEY: str = ""
     TALKAR_DEEPGRAM_KEY: str = ""
     TALKAR_SMALLEST_AI_KEY: str = ""
-
+    TALKAR_PLIVO_AUTH_ID: str = ""
+    TALKAR_PLIVO_AUTH_TOKEN: str = ""
+    TALKAR_DEEPGRAM_PROJECT_ID: str = ""
+    VENDOR_ALERT_EMAIL: str = "it@4thorbit.com"
+    VENDOR_BALANCE_POLL_INTERVAL_MINUTES: int = 30
+    VENDOR_BALANCE_MANUAL_REFRESH_COOLDOWN_SECONDS: int = 30
     # Admin auth
     TALKAR_ADMIN_JWT_SECRET: str = "change-me-in-production-admin-secret"
 

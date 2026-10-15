@@ -1,5 +1,5 @@
 from typing import Optional, List
-from sqlalchemy import Column, Integer, String, Text, Boolean, BigInteger, Date, DateTime, JSON, ForeignKey, Index
+from sqlalchemy import Column, Integer, String, Text, Boolean, BigInteger, Date, DateTime, JSON, ForeignKey, Index, Numeric
 from sqlalchemy.sql import func
 from db.session import Base
 import enum
@@ -288,3 +288,40 @@ class Invoice(Base):
     status = Column(Text, nullable=False, default="paid")
     pdf_url = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class VendorBalanceSnapshot(Base):
+    __tablename__ = "vendor_balance_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    vendor = Column(String(32), nullable=False)
+    balance_numeric = Column(Numeric(14, 4), nullable=True)
+    units = Column(String(16), nullable=False)
+    quota_limit = Column(Numeric(14, 4), nullable=True)
+    status = Column(String(32), nullable=False)
+    auto_recharge_enabled = Column(Boolean, default=False)
+    overages_enabled = Column(Boolean, default=False)
+    next_reset_at = Column(DateTime(timezone=True), nullable=True)
+    error_message = Column(Text, nullable=True)
+    raw_payload = Column(JSON, nullable=True)
+    checked_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_vendor_balance_vendor_checked", "vendor", checked_at.desc()),
+    )
+
+
+class VendorAlertState(Base):
+    __tablename__ = "vendor_alert_states"
+
+    vendor = Column(String(32), primary_key=True)
+    current_tier = Column(String(32), nullable=False, default="healthy")
+    last_alert_sent_at = Column(DateTime(timezone=True), nullable=True)
+    last_alert_tier = Column(String(32), nullable=True)
+    alerts_sent_in_window = Column(Integer, default=0)
+    window_start_at = Column(DateTime(timezone=True), server_default=func.now())
+    warning_threshold = Column(Numeric(14, 4), nullable=False)
+    critical_threshold = Column(Numeric(14, 4), nullable=False)
+    last_delivery_status = Column(String(16), default="success")
+    last_delivery_error = Column(Text, nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

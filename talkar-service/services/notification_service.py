@@ -1220,3 +1220,74 @@ async def send_organization_report(
             success = False
 
     return success
+
+
+async def send_vendor_balance_alert(
+    vendor: str,
+    display_name: str,
+    tier: str,
+    balance: float | None,
+    units: str,
+    threshold: float,
+    auto_recharge: bool = False,
+    overages_enabled: bool = False,
+    next_reset_at: datetime | None = None,
+    console_url: str = "",
+    recipient: str | None = None,
+) -> bool:
+    """Send priority infrastructure balance alert to it@4thorbit.com."""
+    to_addr = recipient or getattr(settings, "VENDOR_ALERT_EMAIL", "it@4thorbit.com")
+    balance_str = f"{balance:,.2f}" if balance is not None else "Unknown"
+
+    if tier == "critical":
+        subject = f"🚨 [CRITICAL] {display_name} Balance Exhausted: {balance_str} {units}"
+        urgency = "URGENT ACTION REQUIRED: Provider balance is at or below critical threshold. Active campaigns and inbound calls relying on this service may fail immediately."
+    elif tier == "warning":
+        subject = f"⚠️ [WARNING] {display_name} Balance Low: {balance_str} {units} remaining"
+        urgency = "ATTENTION REQUIRED: Provider balance has dropped below the safety threshold. Please refill promptly to prevent campaign disruption."
+    elif tier == "recovered":
+        subject = f"✅ [RESOLVED] {display_name} Balance Restored: {balance_str} {units}"
+        urgency = "STATUS NORMAL: Provider credits have been replenished comfortably above the safety threshold."
+    else:
+        subject = f"ℹ️ [NOTICE] {display_name} Infrastructure Status Update"
+        urgency = "Infrastructure status notification."
+
+    lines = [
+        "Hello Infrastructure Team,",
+        "",
+        urgency,
+        "",
+        "Infrastructure Service Details:",
+        f"- Vendor: {display_name} ({vendor})",
+        f"- Current Balance: {balance_str} {units}",
+        f"- Safety Threshold: {threshold:,.2f} {units}",
+    ]
+
+    if auto_recharge:
+        lines.append("- Auto-Recharge: ENABLED (Backup payment method is on file)")
+    if overages_enabled:
+        lines.append("- Usage Overages: ACTIVE (Account is configured for pay-as-you-go overflow)")
+    if next_reset_at:
+        lines.append(f"- Scheduled Renewal: {next_reset_at.strftime('%Y-%m-%d %H:%M UTC')}")
+    if console_url:
+        lines.append(f"- Console Top-Up Link: {console_url}")
+
+    lines.extend([
+        "",
+        "Please review the Talkar Admin Dashboard for live fleet status:",
+        "https://talkar.in/admin",
+        "",
+        "The Talkar Team",
+    ])
+
+    body_text = "\n".join(lines)
+    try:
+        sent = await send_email(to_email=to_addr, subject=subject, body=body_text)
+        if sent:
+            logger.info(f"Vendor balance alert sent to {to_addr} for {vendor} (tier={tier})")
+        else:
+            logger.warning(f"Failed to dispatch vendor balance alert to {to_addr} for {vendor}")
+        return sent
+    except Exception as e:
+        logger.error(f"Error sending vendor balance alert for {vendor} to {to_addr}: {e}")
+        return False
