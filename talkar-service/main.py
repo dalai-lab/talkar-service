@@ -138,7 +138,7 @@ async def lifespan(app: FastAPI):
                 END $$;
             """))
 
-            # Migration v8: Vendor Infrastructure Balance Monitoring
+            # Migration v8: Vendor Infrastructure Balance Monitoring (Separate statements for asyncpg)
             await conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS vendor_balance_snapshots (
                     id SERIAL PRIMARY KEY,
@@ -154,9 +154,14 @@ async def lifespan(app: FastAPI):
                     raw_payload JSONB,
                     checked_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                 );
+            """))
+
+            await conn.execute(text("""
                 CREATE INDEX IF NOT EXISTS idx_vendor_balance_vendor_checked 
                 ON vendor_balance_snapshots (vendor, checked_at DESC);
+            """))
 
+            await conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS vendor_alert_states (
                     vendor VARCHAR(32) PRIMARY KEY,
                     current_tier VARCHAR(32) NOT NULL DEFAULT 'healthy',
@@ -170,7 +175,9 @@ async def lifespan(app: FastAPI):
                     last_delivery_error TEXT,
                     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                 );
+            """))
 
+            await conn.execute(text("""
                 INSERT INTO vendor_alert_states (vendor, current_tier, warning_threshold, critical_threshold)
                 VALUES 
                     ('plivo', 'healthy', 20.00, 2.00),

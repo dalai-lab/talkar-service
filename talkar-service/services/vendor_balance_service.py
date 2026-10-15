@@ -668,65 +668,87 @@ class VendorBalanceService:
     async def get_latest_summary(self) -> dict[str, Any]:
         """Returns the most recent snapshot for each vendor from database."""
         now = datetime.now(timezone.utc)
-        async with AsyncSessionLocal() as session:
-            # Get latest snapshot per vendor
-            vendors_dict = {}
-            for vendor_name in ("plivo", "deepgram", "elevenlabs", "smallest"):
-                snap_res = await session.execute(
-                    select(VendorBalanceSnapshot)
-                    .where(VendorBalanceSnapshot.vendor == vendor_name)
-                    .order_by(desc(VendorBalanceSnapshot.checked_at))
-                    .limit(1)
-                )
-                snap = snap_res.scalars().first()
+        display_names = {
+            "plivo": "Plivo Telephony",
+            "deepgram": "Deepgram STT",
+            "elevenlabs": "ElevenLabs Voice TTS",
+            "smallest": "Smallest AI (Waves TTS)",
+        }
 
-                state_res = await session.execute(select(VendorAlertState).where(VendorAlertState.vendor == vendor_name))
-                state = state_res.scalars().first()
+        try:
+            async with AsyncSessionLocal() as session:
+                # Get latest snapshot per vendor
+                vendors_dict = {}
+                for vendor_name in ("plivo", "deepgram", "elevenlabs", "smallest"):
+                    snap_res = await session.execute(
+                        select(VendorBalanceSnapshot)
+                        .where(VendorBalanceSnapshot.vendor == vendor_name)
+                        .order_by(desc(VendorBalanceSnapshot.checked_at))
+                        .limit(1)
+                    )
+                    snap = snap_res.scalars().first()
 
-                warning_th = float(state.warning_threshold) if state else DEFAULT_THRESHOLDS[vendor_name]["warning"]
-                critical_th = float(state.critical_threshold) if state else DEFAULT_THRESHOLDS[vendor_name]["critical"]
+                    state_res = await session.execute(select(VendorAlertState).where(VendorAlertState.vendor == vendor_name))
+                    state = state_res.scalars().first()
 
-                display_names = {
-                    "plivo": "Plivo Telephony",
-                    "deepgram": "Deepgram STT",
-                    "elevenlabs": "ElevenLabs Voice TTS",
-                    "smallest": "Smallest AI (Waves TTS)",
+                    warning_th = float(state.warning_threshold) if state else DEFAULT_THRESHOLDS[vendor_name]["warning"]
+                    critical_th = float(state.critical_threshold) if state else DEFAULT_THRESHOLDS[vendor_name]["critical"]
+
+                    if snap:
+                        vendors_dict[vendor_name] = {
+                            "vendor": vendor_name,
+                            "display_name": display_names[vendor_name],
+                            "balance": float(snap.balance_numeric) if snap.balance_numeric is not None else None,
+                            "units": snap.units,
+                            "quota_limit": float(snap.quota_limit) if snap.quota_limit is not None else None,
+                            "status": snap.status,
+                            "auto_recharge": snap.auto_recharge_enabled or False,
+                            "overages_enabled": snap.overages_enabled or False,
+                            "next_reset_at": snap.next_reset_at.isoformat() if snap.next_reset_at else None,
+                            "error_message": snap.error_message,
+                            "console_url": CONSOLE_URLS[vendor_name],
+                            "warning_threshold": warning_th,
+                            "critical_threshold": critical_th,
+                            "checked_at": snap.checked_at.isoformat() if snap.checked_at else now.isoformat(),
+                        }
+                    else:
+                        vendors_dict[vendor_name] = {
+                            "vendor": vendor_name,
+                            "display_name": display_names[vendor_name],
+                            "balance": None,
+                            "units": "units",
+                            "status": "not_configured",
+                            "console_url": CONSOLE_URLS[vendor_name],
+                            "warning_threshold": warning_th,
+                            "critical_threshold": critical_th,
+                            "checked_at": now.isoformat(),
+                        }
+
+                return {
+                    "updated_at": now.isoformat(),
+                    "overall_healthy": all(
+                        v["status"] in ("healthy", "payg_active", "not_configured") for v in vendors_dict.values()
+                    ),
+                    "vendors": vendors_dict,
                 }
-
-                if snap:
-                    vendors_dict[vendor_name] = {
-                        "vendor": vendor_name,
-                        "display_name": display_names[vendor_name],
-                        "balance": float(snap.balance_numeric) if snap.balance_numeric is not None else None,
-                        "units": snap.units,
-                        "quota_limit": float(snap.quota_limit) if snap.quota_limit is not None else None,
-                        "status": snap.status,
-                        "auto_recharge": snap.auto_recharge_enabled or False,
-                        "overages_enabled": snap.overages_enabled or False,
-                        "next_reset_at": snap.next_reset_at.isoformat() if snap.next_reset_at else None,
-                        "error_message": snap.error_message,
-                        "console_url": CONSOLE_URLS[vendor_name],
-                        "warning_threshold": warning_th,
-                        "critical_threshold": critical_th,
-                        "checked_at": snap.checked_at.isoformat() if snap.checked_at else now.isoformat(),
-                    }
-                else:
-                    vendors_dict[vendor_name] = {
-                        "vendor": vendor_name,
-                        "display_name": display_names[vendor_name],
+        except Exception as e:
+            logger.error(f"[VENDOR BALANCE] Failed to get latest summary from DB: {e}")
+            return {
+                "updated_at": now.isoformat(),
+                "overall_healthy": True,
+                "vendors": {
+                    v: {
+                        "vendor": v,
+                        "display_name": display_names[v],
                         "balance": None,
                         "units": "units",
                         "status": "not_configured",
-                        "console_url": CONSOLE_URLS[vendor_name],
-                        "warning_threshold": warning_th,
-                        "critical_threshold": critical_th,
+                        "console_url": CONSOLE_URLS[v],
+                        "warning_threshold": DEFAULT_THRESHOLDS[v]["warning"],
+                        "critical_threshold": DEFAULT_THRESHOLDS[v]["critical"],
                         "checked_at": now.isoformat(),
+                        "error_message": "Initializing vendor balance snapshot store...",
                     }
-
-            return {
-                "updated_at": now.isoformat(),
-                "overall_healthy": all(
-                    v["status"] in ("healthy", "payg_active", "not_configured") for v in vendors_dict.values()
-                ),
-                "vendors": vendors_dict,
+                    for v in display_names
+                },
             }
