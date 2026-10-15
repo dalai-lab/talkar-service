@@ -177,6 +177,8 @@ async def reject_application(customer_id: int, data: RejectApplicationRequest, d
     existing_form = customer.onboarding_form or {}
     existing_form["rejection_reason"] = data.reason
     existing_form["reapply_countdown_days"] = data.reapply_countdown_days
+    from datetime import datetime, timezone
+    existing_form["rejected_at"] = datetime.now(timezone.utc).isoformat()
     customer.onboarding_form = existing_form
     await db.commit()
     
@@ -366,9 +368,30 @@ async def update_customer(customer_id: int, data: CustomerUpdateRequest, db: Asy
     if data.status:
         prev_status = customer.status
         customer.status = data.status
+        if data.status == "suspended":
+            customer.suspended_at = func.now()
+        elif data.status == "active":
+            customer.suspended_at = None
         await db.commit()
         # If admin is manually reactivating a suspended customer, restore their call capacity in Dograh
         if prev_status == "suspended" and data.status == "active":
+            c_form = dict(customer.onboarding_form or {})
+            c_form.pop("suspension_reason", None)
+            c_form.pop("suspension_message", None)
+            customer.onboarding_form = c_form
+
+            # If master account is unsuspended, also restore child sub-orgs to active
+            if customer.billing_org_id is None:
+                sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id, Customer.status == "suspended"))
+                for sub_org in sub_orgs_res.scalars().all():
+                    sub_org.status = "active"
+                    sub_org.suspended_at = None
+                    s_form = dict(sub_org.onboarding_form or {})
+                    s_form.pop("suspension_reason", None)
+                    s_form.pop("suspension_message", None)
+                    sub_org.onboarding_form = s_form
+            await db.commit()
+
             master_id = customer.billing_org_id or customer.id
             master_res = await db.execute(select(Customer).where(Customer.id == master_id))
             master = master_res.scalar_one_or_none()
@@ -425,12 +448,21 @@ async def update_customer(customer_id: int, data: CustomerUpdateRequest, db: Asy
             if customer.billing_org_id is None:
                 sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
                 for sub_org in sub_orgs_res.scalars().all():
+                    sub_org.status = "suspended"
+                    sub_org.suspended_at = func.now()
+                    s_form = dict(sub_org.onboarding_form or {})
+                    if customer.onboarding_form and "suspension_reason" in customer.onboarding_form:
+                        s_form["suspension_reason"] = customer.onboarding_form["suspension_reason"]
+                    if customer.onboarding_form and "suspension_message" in customer.onboarding_form:
+                        s_form["suspension_message"] = customer.onboarding_form["suspension_message"]
+                    sub_org.onboarding_form = s_form
                     if sub_org.dograh_org_id:
                         try:
                             await dograh_client.block_org_calls(sub_org.dograh_org_id)
                         except Exception as e:
                             import logging
                             logging.getLogger(__name__).error(f"Failed to block calls for sub-org {sub_org.dograh_org_id}: {e}")
+                await db.commit()
             from services.billing_service import sync_wallet_block_policy
             try:
                 await sync_wallet_block_policy(db, customer.id)
@@ -878,13 +910,51 @@ async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: As
         from services.provisioning_service import run_provisioning
         from services.billing_service import sync_wallet_block_policy
 
-        if customer.status == "pending_deposit" and wallet.balance_paise >= activation_threshold:
-            customer.status = "active"
-            await db.commit()
-            try:
-                await run_provisioning(customer.id, None, db)
-            except Exception as e:
-                import logging; logging.getLogger(__name__).error(f"[AdminCredit] Provisioning failed for customer {customer.id}: {e}")
+        if wallet.balance_paise >= activation_threshold:
+            # 1. Activate master if pending_deposit
+            master_res = await db.execute(select(Customer).where(Customer.id == master_id))
+            master_cust = master_res.scalar_one_or_none()
+            if master_cust and master_cust.status == "pending_deposit":
+                master_cust.status = "active"
+                m_form = dict(master_cust.onboarding_form or {})
+                m_form.pop("suspension_reason", None)
+                m_form.pop("suspension_message", None)
+                master_cust.onboarding_form = m_form
+                await db.commit()
+                try:
+                    await run_provisioning(master_cust.id, None, db)
+                except Exception as e:
+                    import logging; logging.getLogger(__name__).error(f"[AdminCredit] Provisioning failed for master {master_cust.id}: {e}")
+
+            # 2. Activate caller customer if sub-org in pending_deposit
+            if customer.id != master_id and customer.status == "pending_deposit":
+                customer.status = "active"
+                c_form = dict(customer.onboarding_form or {})
+                c_form.pop("suspension_reason", None)
+                c_form.pop("suspension_message", None)
+                customer.onboarding_form = c_form
+                await db.commit()
+                try:
+                    await run_provisioning(customer.id, None, db)
+                except Exception as e:
+                    import logging; logging.getLogger(__name__).error(f"[AdminCredit] Provisioning failed for customer {customer.id}: {e}")
+
+            # 3. Cascade activation to all sub-orgs under this master that are in pending_deposit
+            sub_pending_res = await db.execute(
+                select(Customer).where(Customer.billing_org_id == master_id, Customer.status == "pending_deposit")
+            )
+            for sub_p in sub_pending_res.scalars().all():
+                if sub_p.id != customer.id:
+                    sub_p.status = "active"
+                    s_form = dict(sub_p.onboarding_form or {})
+                    s_form.pop("suspension_reason", None)
+                    s_form.pop("suspension_message", None)
+                    sub_p.onboarding_form = s_form
+                    await db.commit()
+                    try:
+                        await run_provisioning(sub_p.id, None, db)
+                    except Exception as e:
+                        import logging; logging.getLogger(__name__).error(f"[AdminCredit] Provisioning failed for cascaded sub-org {sub_p.id}: {e}")
 
         elif customer.status == "suspended":
             from config import CALL_BLOCK_THRESHOLD_PAISE
@@ -1071,6 +1141,7 @@ async def suspend_customer(customer_id: int, data: SuspendCustomerRequest = Susp
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
     customer.status = "suspended"
+    customer.suspended_at = func.now()
     # Store suspension reason in onboarding_form for audit trail
     existing_form = dict(customer.onboarding_form or {})
     existing_form["suspension_reason"] = data.reason
@@ -1090,12 +1161,19 @@ async def suspend_customer(customer_id: int, data: SuspendCustomerRequest = Susp
     if customer.billing_org_id is None:
         sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
         for sub_org in sub_orgs_res.scalars().all():
+            sub_org.status = "suspended"
+            sub_org.suspended_at = func.now()
+            s_form = dict(sub_org.onboarding_form or {})
+            s_form["suspension_reason"] = data.reason
+            s_form["suspension_message"] = data.custom_message or ""
+            sub_org.onboarding_form = s_form
             if sub_org.dograh_org_id:
                 try:
                     await dograh_client.block_org_calls(sub_org.dograh_org_id)
                 except Exception as e:
                     import logging
                     logging.getLogger(__name__).error(f"Failed to block calls for sub-org {sub_org.dograh_org_id}: {e}")
+        await db.commit()
 
     from services.billing_service import sync_wallet_block_policy
     try:
@@ -1117,11 +1195,22 @@ async def unsuspend_customer(customer_id: int, db: AsyncSession = Depends(get_db
     if not customer: raise HTTPException(404, "Customer not found")
     if customer.status != "suspended": raise HTTPException(400, "Customer is not suspended")
     customer.status = "active"
+    customer.suspended_at = None
     # Clear suspension reason from onboarding_form
     existing_form = dict(customer.onboarding_form or {})
     existing_form.pop("suspension_reason", None)
     existing_form.pop("suspension_message", None)
     customer.onboarding_form = existing_form
+
+    if customer.billing_org_id is None:
+        sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id, Customer.status == "suspended"))
+        for sub_org in sub_orgs_res.scalars().all():
+            sub_org.status = "active"
+            sub_org.suspended_at = None
+            s_form = dict(sub_org.onboarding_form or {})
+            s_form.pop("suspension_reason", None)
+            s_form.pop("suspension_message", None)
+            sub_org.onboarding_form = s_form
     await db.commit()
 
     # Determine master customer and subscription for accurate plan/limits and group pool linking
@@ -1372,9 +1461,19 @@ async def mark_ready(customer_id: int, data: MarkReadyRequest, db: AsyncSession 
     sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == effective_sub_id))
     sub = sub_res.scalar_one_or_none()
     tier_name = sub.plan if sub else "starter"
-    from config import TIER_CONFIG
+    from config import TIER_CONFIG, CALL_BLOCK_THRESHOLD_PAISE
     activation_min = TIER_CONFIG.get(tier_name, TIER_CONFIG["starter"]).get("activation_deposit_paise", 600000)
-    is_funded = wallet and wallet.balance_paise >= activation_min
+    is_funded = False
+    if wallet:
+        if customer.billing_org_id:
+            master_cust_res = await db.execute(select(Customer).where(Customer.id == customer.billing_org_id))
+            master_cust = master_cust_res.scalar_one_or_none()
+            if master_cust and master_cust.status == "active":
+                is_funded = wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE
+            else:
+                is_funded = wallet.balance_paise >= activation_min
+        else:
+            is_funded = wallet.balance_paise >= activation_min
 
     from db.models import PhoneNumber
     pn_res = await db.execute(select(PhoneNumber).where(PhoneNumber.customer_id == customer.id))
@@ -1411,6 +1510,16 @@ async def mark_ready(customer_id: int, data: MarkReadyRequest, db: AsyncSession 
             # Fall back to pending_deposit if master wallet is drained
             customer.status = "pending_deposit"
             await db.commit()
+
+            # Provision the agent so AI keys are injected and it's testable/configurable
+            from services.provisioning_service import run_provisioning
+            from services import dograh_client
+            await run_provisioning(customer.id, None, db)
+
+            # Immediately block calls (CONCURRENT_CALL_LIMIT=0) until master pays deposit
+            if customer.dograh_org_id:
+                await dograh_client.block_org_calls(customer.dograh_org_id)
+
             await notification_service.send_email(
                 to_email=customer.contact_email,
                 subject="Your New AI Agent is Ready! 🚀 (Top up required)",
@@ -1582,6 +1691,8 @@ async def assign_phone_number(customer_id: int, data: AssignPhoneNumberRequest, 
     result = await db.execute(select(Customer).where(Customer.id == customer_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
+    if customer.status != "active":
+        raise HTTPException(400, f"Cannot assign phone numbers to customer with status '{customer.status}'. Customer must be active.")
     
     from config import DEFAULT_PHONE_NUMBER_MONTHLY_COST_PAISE
     monthly_cost = data.monthly_cost_paise if (data.monthly_cost_paise is not None and data.monthly_cost_paise > 0) else DEFAULT_PHONE_NUMBER_MONTHLY_COST_PAISE
@@ -1628,6 +1739,13 @@ async def approve_phone_number_request(request_id: int, data: ApprovePhoneNumber
     result = await db.execute(select(PhoneNumberRequest).where(PhoneNumberRequest.id == request_id))
     req = result.scalar_one_or_none()
     if not req: raise HTTPException(404, "Request not found")
+
+    # Blocker 22: verify customer is active before approving number requests
+    cust_res = await db.execute(select(Customer).where(Customer.id == req.customer_id))
+    customer = cust_res.scalar_one_or_none()
+    if not customer: raise HTTPException(404, "Customer not found")
+    if customer.status != "active":
+        raise HTTPException(400, f"Cannot approve phone number request for customer with status '{customer.status}'. Customer must be active.")
     
     req.status = "approved"
     req.resolved_at = func.now()
@@ -1648,8 +1766,6 @@ async def approve_phone_number_request(request_id: int, data: ApprovePhoneNumber
     await db.commit()
 
     # Sync approved numbers to Dograh
-    cust_res = await db.execute(select(Customer).where(Customer.id == req.customer_id))
-    customer = cust_res.scalar_one_or_none()
     if customer and customer.dograh_org_id:
         agent_res = await db.execute(
             select(Agent.dograh_workflow_id)
@@ -2383,9 +2499,13 @@ async def factory_reset_logs(
         )
         results["notifications_deleted"] = r.rowcount
 
-        await db.commit()
-        
-        # Step 8: Suspend and block calls
+        # Step 8: Suspend and block calls (Blocker 32: Cascade to child sub-orgs)
+        customer.status = "suspended"
+        customer.suspended_at = func.now()
+        existing_form = dict(customer.onboarding_form or {})
+        existing_form.setdefault("suspension_reason", "zero_balance")
+        customer.onboarding_form = existing_form
+
         if customer.dograh_org_id:
             try:
                 from services import dograh_client
@@ -2394,6 +2514,23 @@ async def factory_reset_logs(
             except Exception as e:
                 logger.error(f"[FactoryReset] block_org_calls failed: {e}")
                 results["calls_blocked"] = False
+
+        if customer.billing_org_id is None:
+            sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
+            for sub in sub_orgs_res.scalars().all():
+                sub.status = "suspended"
+                sub.suspended_at = func.now()
+                s_form = dict(sub.onboarding_form or {})
+                s_form.setdefault("suspension_reason", "zero_balance")
+                sub.onboarding_form = s_form
+                if sub.dograh_org_id:
+                    try:
+                        from services import dograh_client
+                        await dograh_client.block_org_calls(sub.dograh_org_id)
+                    except Exception as e:
+                        logger.error(f"[FactoryReset] block_org_calls failed for sub-org {sub.dograh_org_id}: {e}")
+
+        await db.commit()
     except Exception as e:
         await db.rollback()
         logger.error(f"[FactoryReset] Talkar DB wipe failed for customer {customer_id}: {e}")

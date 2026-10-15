@@ -15,6 +15,7 @@ CREATE TABLE customers (
   dograh_org_id         INTEGER,
   dograh_user_id        INTEGER,
   setup_fee_order_id    TEXT,
+  suspended_at          TIMESTAMPTZ,
   created_at            TIMESTAMPTZ DEFAULT now(),
   updated_at            TIMESTAMPTZ DEFAULT now()
 );

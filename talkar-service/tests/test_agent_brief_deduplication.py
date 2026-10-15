@@ -76,7 +76,7 @@ async def test_save_agent_brief_returning_customer_with_active_master():
     with patch("services.notification_service.send_email", AsyncMock()) as mock_email:
         result = await save_agent_brief(dograh_org_id=123, data=data, db=mock_db)
 
-    assert result.status == "under_review"
+    assert result.status == "agent_building"  # Blocker 16: preserved
     assert result.documents == ["https://s3.amazonaws.com/doc1.pdf"]
     # Preserves approved_tier while updating new form fields
     assert result.onboarding_form["approved_tier"] == "pro"
@@ -101,7 +101,7 @@ async def test_save_agent_brief_standalone_customer():
         company_name="Startup IO",
         billing_org_id=None,
         onboarding_form={},
-        status="agent_building"
+        status="pending_approval"
     )
 
     mock_db = MagicMock()

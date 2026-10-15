@@ -204,6 +204,18 @@ async def restore_org_calls(org_id: int, tier: str = "starter", limit: int = Non
     logger.info(f"Restored calls for Dograh org {org_id} to limit={limit} (group={group_id}, tier={tier}, is_custom_cap={is_custom_cap})")
 
 
+async def invalidate_dograh_concurrency_group(org_id: int):
+    """Invalidate memory and Redis concurrency group cache in Dograh for an organization (Blocker 25)."""
+    try:
+        resp = await _request_dograh_api("POST", f"/api/v1/internal/concurrency-group/{org_id}/invalidate")
+        if resp and resp.status_code == 200:
+            logger.info(f"Successfully invalidated Dograh concurrency group cache for org {org_id}")
+            return
+    except Exception as e:
+        logger.debug(f"REST call to Dograh failed for invalidate_dograh_concurrency_group ({org_id}): {e}")
+
+
+
 async def get_run(run_id: int):
     """Get a specific run from Dograh by ID via REST API with DB fallback."""
     try:

@@ -85,7 +85,7 @@ async def create_customer(
                 raise HTTPException(403, "Only organization owners/admins can link an organization to a shared billing wallet.")
 
             ESTABLISHED_STATUSES = ["active", "agent_building", "approved", "pending_deposit",
-                                    "pending_plan_selection", "under_review", "suspended"]
+                                    "under_review", "suspended"]
             res_m = await db.execute(
                 select(Customer)
                 .where(Customer.contact_email == data.email)
@@ -118,7 +118,7 @@ async def create_customer(
     # Stale pending_approval or rejected records (e.g. from old test runs or failed
     # applications) should NOT cause a new workspace to be treated as a sub-org.
     ESTABLISHED_STATUSES = ["active", "agent_building", "approved", "pending_deposit",
-                            "pending_plan_selection", "under_review", "suspended"]
+                            "under_review", "suspended"]
     result_email = await db.execute(
         select(Customer)
         .where(Customer.contact_email == data.email)
@@ -281,7 +281,7 @@ async def set_billing_account_type(
     acct_type = data.account_type.strip().lower()
     if acct_type == "independent":
         customer.billing_org_id = None
-        # If customer is already active or in agent building, make sure dedicated wallet and subscription exist
+        # Blocker 12: If workspace is active or in agent building, detach to pending_deposit and block calls
         if customer.status in ("active", "agent_building"):
             from db.models import Wallet
             w_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
@@ -298,6 +298,33 @@ async def set_billing_account_type(
                     setup_fee_paid=True,
                     start_date=date.today()
                 ))
+            customer.status = "pending_deposit"
+            if customer.dograh_org_id:
+                try:
+                    await dograh_client.block_org_calls(customer.dograh_org_id)
+                except Exception as e:
+                    logger.error(f"Failed to block calls for detached org {customer.dograh_org_id}: {e}")
+
+        # Blocker 11: When switching to independent, update CONCURRENCY_GROUP_ID to own org ID and invalidate Redis
+        if customer.dograh_org_id:
+            try:
+                await dograh_client.upsert_org_config(
+                    customer.dograh_org_id,
+                    "CONCURRENCY_GROUP_ID",
+                    {"value": customer.dograh_org_id}
+                )
+            except Exception as e:
+                logger.error(f"Failed to reset CONCURRENCY_GROUP_ID for org {customer.dograh_org_id}: {e}")
+            try:
+                from services.redis_client import invalidate_concurrency_group
+                await invalidate_concurrency_group(customer.dograh_org_id)
+            except Exception as e:
+                logger.error(f"Failed to invalidate redis concurrency group for org {customer.dograh_org_id}: {e}")
+            try:
+                await dograh_client.invalidate_dograh_concurrency_group(customer.dograh_org_id)
+            except Exception as e:
+                logger.error(f"Failed to invalidate Dograh concurrency group for org {customer.dograh_org_id}: {e}")
+
         await db.commit()
         await db.refresh(customer)
         logger.info(f"Customer {customer.id} (org {dograh_org_id}) set to independent billing account")
@@ -306,7 +333,10 @@ async def set_billing_account_type(
             "account_type": "independent",
             "is_sub_org": False,
             "billing_org_id": None,
-            "customer_id": customer.id
+            "customer_id": customer.id,
+            "customer_status": customer.status,
+            "redirect_url": "/wallet?deposit_required=true" if customer.status == "pending_deposit" else None,
+            "message": "Independent account detached. Please fund your wallet to activate service." if customer.status == "pending_deposit" else "Switched to independent account."
         }
 
     elif acct_type in ("shared", "sub_org", "linked"):
@@ -328,7 +358,7 @@ async def set_billing_account_type(
                 raise HTTPException(status_code=404, detail="Specified master billing account not found")
         else:
             ESTABLISHED_STATUSES = ["active", "agent_building", "approved", "pending_deposit",
-                                    "pending_plan_selection", "under_review", "suspended"]
+                                    "under_review", "suspended"]
             email_to_match = customer.contact_email or caller_email
             res_m = await db.execute(
                 select(Customer)
@@ -350,7 +380,70 @@ async def set_billing_account_type(
         if target_master_id == customer.id:
             raise HTTPException(status_code=400, detail="Cannot link customer to itself.")
 
+        master_dograh_id = master_cust.dograh_org_id
+        if master_cust.id != target_master_id:
+            t_res = await db.execute(select(Customer).where(Customer.id == target_master_id))
+            target_master_cust = t_res.scalar_one_or_none()
+            if target_master_cust and target_master_cust.dograh_org_id:
+                master_dograh_id = target_master_cust.dograh_org_id
+
         customer.billing_org_id = target_master_id
+
+        # Blocker 17: Transfer any positive balance in customer's independent wallet to master wallet
+        from db.models import Wallet, WalletTransaction
+        try:
+            c_wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
+            c_wallet = c_wallet_res.scalar_one_or_none() if c_wallet_res else None
+        except (StopIteration, StopAsyncIteration):
+            c_wallet = None
+
+        if c_wallet and c_wallet.balance_paise > 0:
+            transfer_amount = c_wallet.balance_paise
+            c_wallet.balance_paise = 0
+
+            try:
+                m_wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == target_master_id))
+                m_wallet = m_wallet_res.scalar_one_or_none() if m_wallet_res else None
+            except (StopIteration, StopAsyncIteration):
+                m_wallet = None
+
+            if not m_wallet:
+                m_wallet = Wallet(customer_id=target_master_id, balance_paise=0)
+                db.add(m_wallet)
+
+            m_wallet.balance_paise += transfer_amount
+
+            txn = WalletTransaction(
+                customer_id=target_master_id,
+                sub_org_id=customer.id,
+                dograh_org_id=customer.dograh_org_id,
+                type="credit_transfer",
+                amount_paise=transfer_amount,
+                description=f"Transferred stranded balance of ₹{transfer_amount / 100:.2f} from independent workspace (org {customer.dograh_org_id}) upon linking to shared wallet",
+            )
+            db.add(txn)
+            logger.info(f"Transferred stranded balance of {transfer_amount} paise from customer {customer.id} to master {target_master_id}")
+
+        # Blocker 11: When linking to a shared wallet, update CONCURRENCY_GROUP_ID to master_dograh_id and invalidate Redis
+        if customer.dograh_org_id and master_dograh_id:
+            try:
+                await dograh_client.upsert_org_config(
+                    customer.dograh_org_id,
+                    "CONCURRENCY_GROUP_ID",
+                    {"value": master_dograh_id}
+                )
+            except Exception as e:
+                logger.error(f"Failed to set CONCURRENCY_GROUP_ID for org {customer.dograh_org_id}: {e}")
+            try:
+                from services.redis_client import invalidate_concurrency_group
+                await invalidate_concurrency_group(customer.dograh_org_id)
+            except Exception as e:
+                logger.error(f"Failed to invalidate redis concurrency group for org {customer.dograh_org_id}: {e}")
+            try:
+                await dograh_client.invalidate_dograh_concurrency_group(customer.dograh_org_id)
+            except Exception as e:
+                logger.error(f"Failed to invalidate Dograh concurrency group for org {customer.dograh_org_id}: {e}")
+
         await db.commit()
         await db.refresh(customer)
         logger.info(f"Customer {customer.id} (org {dograh_org_id}) linked to master {target_master_id} (shared wallet)")
@@ -403,7 +496,7 @@ async def get_existing_customer(
         .where(Customer.contact_email == contact_email)
         .where(Customer.status.in_([
             "active", "agent_building", "pending_deposit",
-            "pending_plan_selection", "under_review", "approved", "suspended"
+            "under_review", "approved", "suspended"
         ]))
         # Prefer billing-master orgs (no billing_org_id)
         .order_by(Customer.billing_org_id.asc().nullsfirst(), Customer.id.asc())
@@ -486,7 +579,9 @@ async def save_agent_brief(dograh_org_id: int, data: dict, db: AsyncSession = De
                 master_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == master.id))
                 master_sub = master_sub_res.scalar_one_or_none()
             
-    customer.status = "under_review"
+    # Blocker 16: Only set to under_review if currently pending_approval; preserve active/agent_building
+    if customer.status in ("pending_approval", None):
+        customer.status = "under_review"
     await db.commit()
     await db.refresh(customer)
 
@@ -692,6 +787,7 @@ async def get_customer_status(
     sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == billing_customer_id))
     sub = sub_res.scalar_one_or_none()
     resp["plan"] = sub.plan if sub else None
+    resp["master_plan"] = sub.plan if customer.billing_org_id and sub else None
     resp["custom_plan_label"] = getattr(sub, "custom_plan_label", None) if sub and sub.plan == "custom" else None
 
     if customer.status == "rejected" and customer.onboarding_form:
@@ -708,10 +804,18 @@ async def get_customer_status(
             wallet, _ = await get_billing_wallet(db, customer.id, allow_suspended=True)
         resp["balance_paise"] = wallet.balance_paise if wallet else 0
         form = customer.onboarding_form or {}
-        if "suspension_reason" in form:
-            resp["suspension_reason"] = form.get("suspension_reason")
-        if "suspension_message" in form:
-            resp["suspension_message"] = form.get("suspension_message")
+        susp_reason = form.get("suspension_reason")
+        susp_msg = form.get("suspension_message")
+        if not susp_reason and customer.billing_org_id:
+            m_res = await db.execute(select(Customer).where(Customer.id == customer.billing_org_id))
+            m_cust = m_res.scalar_one_or_none()
+            if m_cust and m_cust.onboarding_form:
+                susp_reason = m_cust.onboarding_form.get("suspension_reason")
+                if not susp_msg:
+                    susp_msg = m_cust.onboarding_form.get("suspension_message")
+        resp["suspension_reason"] = susp_reason or "zero_balance"
+        if susp_msg:
+            resp["suspension_message"] = susp_msg
     return resp
 
 
@@ -983,16 +1087,84 @@ async def send_test_org_report(
     return {"status": "ok", "message": "Test report dispatched successfully"}
 
 @router.post("/by-org/{dograh_org_id}/onboarding")
-async def submit_onboarding_by_org(dograh_org_id: int, data: dict, db: AsyncSession = Depends(get_db)):
+async def submit_onboarding_by_org(
+    dograh_org_id: int,
+    data: dict,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email")
+):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
     customer = result.scalar_one_or_none()
+    form_data = data.get("form", {})
     if not customer:
-        raise HTTPException(status_code=404, detail="Customer not found for this org")
-    if customer.status not in ("pending_approval", "info_requested"):
+        # Blocker 6: Create customer on-the-fly if missing due to unsynced webhook
+        email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+        contact_email = (
+            form_data.get("email")
+            or form_data.get("contactEmail")
+            or form_data.get("contact_email")
+            or email_str
+            or f"org_{dograh_org_id}@talkar.in"
+        )
+        company_name = (
+            form_data.get("businessName")
+            or form_data.get("company_name")
+            or f"Organization {dograh_org_id}"
+        )
+        customer = Customer(
+            dograh_org_id=dograh_org_id,
+            company_name=company_name,
+            contact_email=contact_email,
+            contact_name=form_data.get("pocName") or form_data.get("contact_name") or "",
+            contact_phone=form_data.get("pocPhone") or form_data.get("contact_phone") or "",
+            industry=form_data.get("industry") or "",
+            status="under_review",
+            onboarding_form=form_data,
+            documents=data.get("documents", [])
+        )
+        db.add(customer)
+        await db.commit()
+        await db.refresh(customer)
+        await notification_service.send_email(
+            to_email=settings.ADMIN_EMAIL,
+            subject=f"New Application: {customer.company_name}",
+            body=f"{customer.company_name} ({customer.contact_email}) submitted their onboarding form. Review at talkar.in/admin"
+        )
+        return customer
+    if customer.status not in ("pending_approval", "info_requested", "rejected"):
         # Customer is already past the submission stage — silently succeed so the
         # frontend doesn't break, but DO NOT overwrite status or form data.
         # Critically: do NOT allow agent_building/approved/active to be reset to under_review.
         return customer
+
+    # Blocker 15: If rejected, verify reapply countdown has elapsed or is 0
+    if customer.status == "rejected":
+        old_form = customer.onboarding_form or {}
+        countdown_days = int(old_form.get("reapply_countdown_days", 0) or 0)
+        if countdown_days > 0:
+            rejected_at_str = old_form.get("rejected_at")
+            ref_time = None
+            if rejected_at_str:
+                try:
+                    from datetime import datetime
+                    ref_time = datetime.fromisoformat(rejected_at_str)
+                except Exception:
+                    pass
+            if not ref_time and customer.updated_at:
+                ref_time = customer.updated_at
+
+            if ref_time:
+                from datetime import datetime, timezone, timedelta
+                now = datetime.now(timezone.utc)
+                if ref_time.tzinfo is None:
+                    ref_time = ref_time.replace(tzinfo=timezone.utc)
+                if now < ref_time + timedelta(days=countdown_days):
+                    remaining_days = max(1, ((ref_time + timedelta(days=countdown_days)) - now).days)
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Reapplication is locked for {remaining_days} more day(s)."
+                    )
+
     form_data = data.get("form", {})
     customer.onboarding_form = form_data
     if form_data.get("businessName"):
@@ -1024,8 +1196,36 @@ async def submit_onboarding_by_id(customer_id: int, data: dict, db: AsyncSession
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
-    if customer.status not in ("pending_approval", "info_requested"):
+    if customer.status not in ("pending_approval", "info_requested", "rejected"):
         return customer # D-14: Silent success if already processed
+
+    # Blocker 15: If rejected, verify reapply countdown has elapsed or is 0
+    if customer.status == "rejected":
+        old_form = customer.onboarding_form or {}
+        countdown_days = int(old_form.get("reapply_countdown_days", 0) or 0)
+        if countdown_days > 0:
+            rejected_at_str = old_form.get("rejected_at")
+            ref_time = None
+            if rejected_at_str:
+                try:
+                    from datetime import datetime
+                    ref_time = datetime.fromisoformat(rejected_at_str)
+                except Exception:
+                    pass
+            if not ref_time and customer.updated_at:
+                ref_time = customer.updated_at
+
+            if ref_time:
+                from datetime import datetime, timezone, timedelta
+                now = datetime.now(timezone.utc)
+                if ref_time.tzinfo is None:
+                    ref_time = ref_time.replace(tzinfo=timezone.utc)
+                if now < ref_time + timedelta(days=countdown_days):
+                    remaining_days = max(1, ((ref_time + timedelta(days=countdown_days)) - now).days)
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Reapplication is locked for {remaining_days} more day(s)."
+                    )
     form_data = data.get("form", {})
     customer.onboarding_form = form_data
     if form_data.get("businessName"):
@@ -1425,10 +1625,12 @@ async def request_tier_upgrade(
             authorization=auth_str,
         )
     
-    if customer.status not in ["active", "pending_plan_selection"]:
+    if customer.status != "active":
         raise HTTPException(400, f"Customer must be active to upgrade tier (current status: {customer.status})")
-    
-    is_activating = (customer.status == "pending_plan_selection")
+
+    # Blocker 23: Enforce Master Agency Ownership on request_tier_upgrade
+    if customer.billing_org_id is not None:
+        raise HTTPException(403, "Sub-organizations cannot change agency-wide billing plans. Only the Master Organization owner can upgrade or modify tiers.")
     
     master_id = customer.billing_org_id if customer.billing_org_id else customer.id
     master_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == master_id))
@@ -1489,17 +1691,7 @@ async def request_tier_upgrade(
             master.onboarding_form = dict(m_form)
             flag_modified(master, "onboarding_form")
 
-    if is_activating:
-        customer.status = "active"
-        
     await db.commit()
-    
-    if is_activating:
-        await notification_service.send_email(
-            to_email=customer.contact_email,
-            subject="Your Talkar Agent is Live!",
-            body=f"Hi {customer.contact_name}, your AI agent is fully active on the {data.requested_tier} tier!"
-        )
     
     # Run best-effort synchronous provisioning to sync to Dograh
     from services.provisioning_service import run_provisioning

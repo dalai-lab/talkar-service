@@ -64,7 +64,7 @@ async def test_assign_phone_number_syncs_to_dograh():
     mock_db.commit = AsyncMock()
     mock_db.add = MagicMock()
 
-    customer = Customer(id=1, dograh_org_id=99, company_name="Test Corp")
+    customer = Customer(id=1, dograh_org_id=99, company_name="Test Corp", status="active")
     cust_res = MagicMock()
     cust_res.scalar_one_or_none.return_value = customer
 
@@ -96,7 +96,7 @@ async def test_approve_phone_number_request_syncs_all_numbers():
     req_res = MagicMock()
     req_res.scalar_one_or_none.return_value = req
 
-    customer = Customer(id=1, dograh_org_id=99, company_name="Test Corp")
+    customer = Customer(id=1, dograh_org_id=99, company_name="Test Corp", status="active")
     cust_res = MagicMock()
     cust_res.scalar_one_or_none.return_value = customer
 

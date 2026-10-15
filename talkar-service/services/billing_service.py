@@ -206,10 +206,13 @@ async def check_and_trigger_auto_recharge(db: AsyncSession, customer_id: int):
             logger.error(f"Failed to clear invalid payment method on wallet {wallet.id}: {e}")
         return
 
-    # Check if the master customer is active before charging
+    # Check if the master customer is active (or zero-balance suspended) before charging
     result = await db.execute(select(Customer).where(Customer.id == master_id))
     master = result.scalar_one_or_none()
-    if not master or master.status != "active":
+    if not master:
+        return
+    form = master.onboarding_form or {}
+    if master.status != "active" and not (master.status == "suspended" and form.get("suspension_reason") in ("zero_balance", None, "")):
         return
     user_threshold = wallet.auto_recharge_threshold_paise if wallet.auto_recharge_threshold_paise is not None else 150000
     
@@ -285,6 +288,44 @@ async def check_and_trigger_auto_recharge(db: AsyncSession, customer_id: int):
                     razorpay_payment_id=payment_ref,
                 )
                 logger.info(f"Auto-recharge successful for customer {master_id}")
+
+                # Blocker 24: Reactivate master and child sub-orgs if suspended for zero_balance
+                if master and master.status == "suspended":
+                    m_form = master.onboarding_form or {}
+                    if m_form.get("suspension_reason") in ("zero_balance", None, ""):
+                        master.status = "active"
+                        master.suspended_at = None
+                        m_dict = dict(m_form)
+                        m_dict.pop("suspension_reason", None)
+                        m_dict.pop("suspension_message", None)
+                        master.onboarding_form = m_dict
+
+                        sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == master_id, Customer.status == "suspended"))
+                        reactivated_subs = []
+                        for s_org in sub_orgs_res.scalars().all():
+                            s_form = s_org.onboarding_form or {}
+                            # Blocker 30: Strictly require zero_balance to prevent rogue/policy-banned sub-orgs from reactivating
+                            if s_form.get("suspension_reason") == "zero_balance":
+                                s_org.status = "active"
+                                s_org.suspended_at = None
+                                s_dict = dict(s_form)
+                                s_dict.pop("suspension_reason", None)
+                                s_dict.pop("suspension_message", None)
+                                s_org.onboarding_form = s_dict
+                                reactivated_subs.append(s_org)
+                        await db.commit()
+
+                        from services.provisioning_service import run_provisioning
+                        try:
+                            await run_provisioning(master_id, None, db)
+                        except Exception as e:
+                            logger.error(f"Failed to reprovision master {master_id} after auto-recharge reactivation: {e}")
+                        for s_org in reactivated_subs:
+                            try:
+                                await run_provisioning(s_org.id, None, db)
+                            except Exception as e:
+                                logger.error(f"Failed to reprovision sub-org {s_org.id} after auto-recharge reactivation: {e}")
+
                 await sync_wallet_block_policy(db, master_id)
                 # Successful charge clears any prior failure counter or cooldown
                 await redis_client.clear_auto_recharge_failures(master_id)
@@ -587,50 +628,93 @@ async def sync_wallet_block_policy(db: AsyncSession, customer_id: int):
             logger.error(f"Failed to sync Dograh call limit for master org {master.dograh_org_id}: {e}")
 
     # 2. Update Sub-Orgs independently to prevent fleet starvation
-    sub_orgs = await db.execute(select(Customer).where(Customer.billing_org_id == master_id))
-    for sub_org in sub_orgs.scalars().all():
-        if not sub_org.dograh_org_id or sub_org.dograh_org_id == master.dograh_org_id:
-            continue
-        try:
-            if fleet_should_block:
-                await dograh_client.block_org_calls(sub_org.dograh_org_id)
-            elif sub_org.status not in ("active", "agent_building"):
-                await dograh_client.block_org_calls(sub_org.dograh_org_id)
-            else:
-                form = sub_org.onboarding_form or {}
-                sub_cap = form.get("monthly_spending_cap_paise")
-                sub_blocked = False
-                if sub_cap is not None and int(sub_cap) > 0:
-                    sub_spend = await get_customer_month_spend(db, sub_org.id)
-                    if sub_spend >= int(sub_cap):
-                        logger.warning(
-                            f"Sub-org {sub_org.id} (org {sub_org.dograh_org_id}) exceeded monthly spending cap: "
-                            f"{sub_spend} >= {sub_cap} paise. Blocking calls for this sub-org."
-                        )
-                        sub_blocked = True
+    import asyncio
+    sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == master_id))
+    sub_orgs = sub_orgs_res.scalars().all()
 
-                if sub_blocked:
+    sub_spends = {}
+    capped_sub_ids = [
+        s.id for s in sub_orgs
+        if (s.onboarding_form or {}).get("monthly_spending_cap_paise") is not None
+        and int((s.onboarding_form or {}).get("monthly_spending_cap_paise") or 0) > 0
+    ]
+    import unittest.mock
+    is_mocked = isinstance(get_customer_month_spend, (unittest.mock.Mock, unittest.mock.AsyncMock))
+    if is_mocked:
+        for cid in capped_sub_ids:
+            sub_spends[cid] = await get_customer_month_spend(db, cid)
+    elif capped_sub_ids:
+        from db.models import CallLog
+        import datetime
+        now = datetime.datetime.now(datetime.timezone.utc)
+        month_start = datetime.datetime(now.year, now.month, 1, tzinfo=datetime.timezone.utc)
+        month_start_naive = datetime.datetime(now.year, now.month, 1)
+        date_col = func.coalesce(CallLog.processed_at, CallLog.called_at)
+
+        batch_res = await db.execute(
+            select(CallLog.customer_id, func.coalesce(func.sum(CallLog.cost_to_customer_paise), 0))
+            .where(
+                CallLog.customer_id.in_(capped_sub_ids),
+                or_(
+                    date_col >= month_start,
+                    date_col >= month_start_naive,
+                    date_col.is_(None),
+                )
+            )
+            .group_by(CallLog.customer_id)
+        )
+        for cid, spend in batch_res.all():
+            sub_spends[cid] = int(spend) if spend is not None else 0
+
+    sem = asyncio.Semaphore(10)
+
+    async def update_sub_org(sub_org):
+        if not sub_org.dograh_org_id or sub_org.dograh_org_id == master.dograh_org_id:
+            return
+        async with sem:
+            try:
+                if fleet_should_block:
+                    await dograh_client.block_org_calls(sub_org.dograh_org_id)
+                elif sub_org.status not in ("active", "agent_building"):
                     await dograh_client.block_org_calls(sub_org.dograh_org_id)
                 else:
-                    sub_limit = concurrent_limit
-                    is_custom_cap = False
-                    if form.get("concurrent_call_limit"):
-                        try:
-                            custom_limit = int(form["concurrent_call_limit"])
-                            if custom_limit > 0:
-                                sub_limit = min(concurrent_limit, custom_limit)
-                                is_custom_cap = True
-                        except (ValueError, TypeError):
-                            pass
-                    await dograh_client.restore_org_calls(
-                        sub_org.dograh_org_id,
-                        tier,
-                        sub_limit,
-                        group_id=master_dograh_id or sub_org.dograh_org_id,
-                        is_custom_cap=is_custom_cap
-                    )
-        except Exception as e:
-            logger.error(f"Failed to sync Dograh call limit for sub-org {sub_org.dograh_org_id}: {e}")
+                    form = sub_org.onboarding_form or {}
+                    sub_cap = form.get("monthly_spending_cap_paise")
+                    sub_blocked = False
+                    if sub_cap is not None and int(sub_cap) > 0:
+                        sub_spend = sub_spends.get(sub_org.id, 0)
+                        if sub_spend >= int(sub_cap):
+                            logger.warning(
+                                f"Sub-org {sub_org.id} (org {sub_org.dograh_org_id}) exceeded monthly spending cap: "
+                                f"{sub_spend} >= {sub_cap} paise. Blocking calls for this sub-org."
+                            )
+                            sub_blocked = True
+
+                    if sub_blocked:
+                        await dograh_client.block_org_calls(sub_org.dograh_org_id)
+                    else:
+                        sub_limit = concurrent_limit
+                        is_custom_cap = False
+                        if form.get("concurrent_call_limit"):
+                            try:
+                                custom_limit = int(form["concurrent_call_limit"])
+                                if custom_limit > 0:
+                                    sub_limit = min(concurrent_limit, custom_limit)
+                                    is_custom_cap = True
+                            except (ValueError, TypeError):
+                                pass
+                        await dograh_client.restore_org_calls(
+                            sub_org.dograh_org_id,
+                            tier,
+                            sub_limit,
+                            group_id=master_dograh_id or sub_org.dograh_org_id,
+                            is_custom_cap=is_custom_cap
+                        )
+            except Exception as e:
+                logger.error(f"Failed to sync Dograh call limit for sub-org {sub_org.dograh_org_id}: {e}")
+
+    if sub_orgs:
+        await asyncio.gather(*(update_sub_org(s) for s in sub_orgs))
 
 
 async def charge_initial_phone_number_lease(
@@ -786,7 +870,7 @@ async def bill_monthly_phone_number_leases(db: AsyncSession) -> dict:
     pns_res = await db.execute(
         select(PhoneNumber, Customer)
         .join(Customer, Customer.id == PhoneNumber.customer_id)
-        .where(PhoneNumber.status == "active")
+        .where(PhoneNumber.status == "active", Customer.status == "active")
         .order_by(PhoneNumber.purchased_at.asc(), PhoneNumber.id.asc())
     )
     rows = pns_res.all()

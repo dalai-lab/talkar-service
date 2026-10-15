@@ -759,17 +759,34 @@ async def notify_customer_suspended(customer_id: int, reason: str = "zero_balanc
     )
     if custom_message:
         body += f"Additional information from Talkar:\n{custom_message}\n\n"
-    body += (
-        f"To reactivate your account, please top up your wallet or contact our support team.\n\n"
-        f"The Talkar Team"
-    )
+
+    # Blocker 20: render messages dynamically based on suspension_reason
+    if reason in ("policy_violation", "fraud", "terms_of_service", "abuse"):
+        body += (
+            f"To appeal this suspension or request an administrative review, please contact our support team at support@talkar.in.\n\n"
+            f"The Talkar Team"
+        )
+        push_action = "Contact support for assistance."
+    elif reason == "zero_balance":
+        body += (
+            f"To reactivate your account, please top up your wallet.\n\n"
+            f"The Talkar Team"
+        )
+        push_action = "Top up to reactivate."
+    else:
+        body += (
+            f"To reactivate your account, please top up your wallet or contact our support team.\n\n"
+            f"The Talkar Team"
+        )
+        push_action = "Top up to reactivate or contact support."
+
     await send_email_and_push(
         customer_id=customer_id,
         to_email=email,
         subject="Important: Your Talkar Workspace has been Suspended",
         body=body,
         notification_type="warning",
-        push_body=f"Your workspace has been suspended ({reason_label}). Top up to reactivate.",
+        push_body=f"Your workspace has been suspended ({reason_label}). {push_action}",
         cascade_to_suborgs=True,
     )
 

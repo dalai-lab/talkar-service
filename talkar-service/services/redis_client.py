@@ -206,3 +206,18 @@ async def get_redis():
             pass
     return redis_client
 
+
+async def invalidate_concurrency_group(dograh_org_id: int):
+    """
+    Invalidates cached org_concurrency_group in Redis when an organization's
+    concurrency/billing group changes (Issue 11).
+    """
+    try:
+        redis = await get_redis()
+        if redis:
+            await redis.delete(f"org_concurrency_group:{dograh_org_id}")
+            logger.info(f"Invalidated Redis org_concurrency_group for Dograh org {dograh_org_id}")
+    except Exception as e:
+        logger.error(f"Error invalidating org_concurrency_group in Redis for org {dograh_org_id}: {e}")
+
+

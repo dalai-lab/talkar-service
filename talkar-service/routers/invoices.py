@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from typing import Optional
 from db.session import get_db
 from db.models import Customer, Invoice
@@ -30,10 +30,19 @@ async def get_invoices_by_org(
         authorization=authorization
     )
         
-    # Sub-orgs only see invoices issued directly to their customer_id, never master agency invoices
-    invoices_res = await db.execute(
-        select(Invoice).where(Invoice.customer_id == customer.id).order_by(Invoice.created_at.desc())
-    )
+    # Blocker 31: Include Sub-Org Attributed Invoices in Master Agency Query
+    if customer.billing_org_id is None:
+        sub_ids_query = select(Customer.id).where(Customer.billing_org_id == customer.id)
+        invoices_res = await db.execute(
+            select(Invoice).where(
+                or_(Invoice.customer_id == customer.id, Invoice.customer_id.in_(sub_ids_query))
+            ).order_by(Invoice.created_at.desc())
+        )
+    else:
+        # Sub-orgs only see invoices issued directly to their customer_id, never master agency invoices
+        invoices_res = await db.execute(
+            select(Invoice).where(Invoice.customer_id == customer.id).order_by(Invoice.created_at.desc())
+        )
     invoices = invoices_res.scalars().all()
     
     return {

@@ -164,13 +164,51 @@ async def credit_customer(
     from services import dograh_client
     from services.provisioning_service import run_provisioning
 
-    if customer.status == "pending_deposit" and wallet.balance_paise >= activation_threshold:
-        customer.status = "active"
-        await db.commit()
-        try:
-            await run_provisioning(customer.id, None, db)
-        except Exception:
-            pass
+    if wallet.balance_paise >= activation_threshold:
+        # 1. Activate master if pending_deposit
+        master_res = await db.execute(select(Customer).where(Customer.id == master_id))
+        master_cust = master_res.scalar_one_or_none()
+        if master_cust and master_cust.status == "pending_deposit":
+            master_cust.status = "active"
+            m_form = dict(master_cust.onboarding_form or {})
+            m_form.pop("suspension_reason", None)
+            m_form.pop("suspension_message", None)
+            master_cust.onboarding_form = m_form
+            await db.commit()
+            try:
+                await run_provisioning(master_cust.id, None, db)
+            except Exception:
+                pass
+
+        # 2. Activate caller customer if sub-org in pending_deposit
+        if customer.id != master_id and customer.status == "pending_deposit":
+            customer.status = "active"
+            c_form = dict(customer.onboarding_form or {})
+            c_form.pop("suspension_reason", None)
+            c_form.pop("suspension_message", None)
+            customer.onboarding_form = c_form
+            await db.commit()
+            try:
+                await run_provisioning(customer.id, None, db)
+            except Exception:
+                pass
+
+        # 3. Cascade activation to all sub-orgs under this master that are in pending_deposit
+        sub_pending_res = await db.execute(
+            select(Customer).where(Customer.billing_org_id == master_id, Customer.status == "pending_deposit")
+        )
+        for sub_p in sub_pending_res.scalars().all():
+            if sub_p.id != customer.id:
+                sub_p.status = "active"
+                s_form = dict(sub_p.onboarding_form or {})
+                s_form.pop("suspension_reason", None)
+                s_form.pop("suspension_message", None)
+                sub_p.onboarding_form = s_form
+                await db.commit()
+                try:
+                    await run_provisioning(sub_p.id, None, db)
+                except Exception:
+                    pass
 
     elif customer.status == "suspended":
         from config import CALL_BLOCK_THRESHOLD_PAISE
@@ -339,10 +377,28 @@ async def suspend_customer(
         raise HTTPException(400, f"Customer is {customer.status}, not active")
 
     customer.status = "suspended"
+    customer.suspended_at = func.now()
     existing_form = dict(customer.onboarding_form or {})
     existing_form["suspension_reason"] = data.reason
     existing_form["suspension_message"] = data.custom_message or ""
     customer.onboarding_form = existing_form
+
+    from services import dograh_client
+    if customer.billing_org_id is None:
+        sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
+        for sub_org in sub_orgs_res.scalars().all():
+            sub_org.status = "suspended"
+            sub_org.suspended_at = func.now()
+            s_form = dict(sub_org.onboarding_form or {})
+            s_form["suspension_reason"] = data.reason
+            s_form["suspension_message"] = data.custom_message or ""
+            sub_org.onboarding_form = s_form
+            if sub_org.dograh_org_id:
+                try:
+                    await dograh_client.block_org_calls(sub_org.dograh_org_id)
+                except Exception:
+                    pass
+
     await db.commit()
     
     from services.billing_service import sync_wallet_block_policy
@@ -381,6 +437,15 @@ async def unsuspend_customer(
     existing_form.pop("suspension_reason", None)
     existing_form.pop("suspension_message", None)
     customer.onboarding_form = existing_form
+
+    if customer.billing_org_id is None:
+        sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id, Customer.status == "suspended"))
+        for sub_org in sub_orgs_res.scalars().all():
+            sub_org.status = "active"
+            s_form = dict(sub_org.onboarding_form or {})
+            s_form.pop("suspension_reason", None)
+            s_form.pop("suspension_message", None)
+            sub_org.onboarding_form = s_form
     await db.commit()
     
     from services.billing_service import sync_wallet_block_policy

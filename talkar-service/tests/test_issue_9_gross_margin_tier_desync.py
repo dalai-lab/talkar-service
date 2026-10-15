@@ -231,8 +231,8 @@ async def test_check_quota_scales_reserve_for_elevenlabs_sub_org():
 
 
 @pytest.mark.asyncio
-async def test_request_tier_upgrade_from_sub_org_upgrades_master_and_cascades():
-    """Calling request_tier_upgrade on a sub-org updates master subscription and cascades down to all sub-orgs."""
+async def test_request_tier_upgrade_from_sub_org_rejected_and_master_cascades():
+    """Calling request_tier_upgrade on a sub-org is rejected (403), while master upgrade cascades down to all sub-orgs."""
     mock_db = MagicMock()
     mock_db.commit = AsyncMock()
 
@@ -244,25 +244,33 @@ async def test_request_tier_upgrade_from_sub_org_upgrades_master_and_cascades():
     sub_sub_1 = Subscription(id=2, customer_id=2, plan="starter", per_minute_rate_paise=600)
     sub_sub_2 = Subscription(id=3, customer_id=3, plan="starter", per_minute_rate_paise=600)
 
-    res_cust = MagicMock()
-    res_cust.scalar_one_or_none.return_value = sub_org_1
+    # 1. Sub-org attempt must be rejected with 403 (Blocker 23)
+    res_sub_cust = MagicMock()
+    res_sub_cust.scalar_one_or_none.return_value = sub_org_1
+    mock_db.execute = AsyncMock(return_value=res_sub_cust)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await request_tier_upgrade(org_id=20, data=TierUpgradeRequest(requested_tier="growth"), db=mock_db)
+    assert exc_info.value.status_code == 403
+    assert "Sub-organizations cannot change agency-wide billing plans" in exc_info.value.detail
+
+    # 2. Master org upgrade succeeds and cascades to sub-orgs
+    res_master_cust = MagicMock()
+    res_master_cust.scalar_one_or_none.return_value = master
     res_master_sub = MagicMock()
     res_master_sub.scalar_one_or_none.return_value = master_sub
-    res_sub_sub = MagicMock()
-    res_sub_sub.scalar_one_or_none.return_value = sub_sub_1
-    res_master = MagicMock()
-    res_master.scalar_one_or_none.return_value = master
     res_suborgs = MagicMock()
     res_suborgs.scalars.return_value.all.return_value = [sub_org_1, sub_org_2]
+    res_sub_sub_1 = MagicMock()
+    res_sub_sub_1.scalar_one_or_none.return_value = sub_sub_1
     res_sub_sub_2 = MagicMock()
     res_sub_sub_2.scalar_one_or_none.return_value = sub_sub_2
 
     mock_db.execute = AsyncMock(side_effect=[
-        res_cust,
+        res_master_cust,
         res_master_sub,
-        res_sub_sub,
-        res_master,
         res_suborgs,
+        res_sub_sub_1,
         res_sub_sub_2,
     ])
 
@@ -270,8 +278,9 @@ async def test_request_tier_upgrade_from_sub_org_upgrades_master_and_cascades():
         patch("services.provisioning_service.run_provisioning", AsyncMock()),
         patch("services.notification_service.send_email", AsyncMock()),
     ):
-        result = await request_tier_upgrade(org_id=20, data=TierUpgradeRequest(requested_tier="growth"), db=mock_db)
+        result = await request_tier_upgrade(org_id=10, data=TierUpgradeRequest(requested_tier="growth"), db=mock_db)
         assert result["status"] == "success"
         assert master_sub.plan == "growth"
         assert sub_sub_1.plan == "growth"
         assert sub_sub_2.plan == "growth"
+
