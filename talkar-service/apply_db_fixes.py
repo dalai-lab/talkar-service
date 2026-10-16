@@ -45,6 +45,49 @@ async def apply_fixes():
             # 7. Fix E-02: Add zero_balance_since to wallets
             print("Applying E-02: Adding zero_balance_since to wallets...")
             await session.execute(text("ALTER TABLE wallets ADD COLUMN IF NOT EXISTS zero_balance_since TIMESTAMPTZ;"))
+
+            # 8. Migration v8: Add suspended_at to customers
+            print("Applying v8: Adding suspended_at to customers...")
+            await session.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;"))
+
+            # 9. Migration v8: Vendor Balance Monitoring Tables
+            print("Applying v8: Creating vendor balance monitoring tables...")
+            await session.execute(text("""
+                CREATE TABLE IF NOT EXISTS vendor_balance_snapshots (
+                    id SERIAL PRIMARY KEY,
+                    vendor VARCHAR(32) NOT NULL,
+                    balance_numeric NUMERIC(14, 4),
+                    units VARCHAR(16) NOT NULL,
+                    quota_limit NUMERIC(14, 4),
+                    status VARCHAR(32) NOT NULL,
+                    auto_recharge_enabled BOOLEAN DEFAULT FALSE,
+                    overages_enabled BOOLEAN DEFAULT FALSE,
+                    next_reset_at TIMESTAMP WITH TIME ZONE,
+                    error_message TEXT,
+                    raw_payload JSONB,
+                    checked_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                );
+            """))
+            await session.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_vendor_balance_vendor_checked 
+                ON vendor_balance_snapshots (vendor, checked_at DESC);
+            """))
+            await session.execute(text("""
+                CREATE TABLE IF NOT EXISTS vendor_alert_states (
+                    vendor VARCHAR(32) PRIMARY KEY,
+                    current_tier VARCHAR(32) NOT NULL DEFAULT 'healthy',
+                    last_alert_sent_at TIMESTAMP WITH TIME ZONE,
+                    last_alert_tier VARCHAR(32),
+                    alerts_sent_in_window INT DEFAULT 0,
+                    window_start_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    warning_threshold NUMERIC(14, 4) NOT NULL,
+                    critical_threshold NUMERIC(14, 4) NOT NULL,
+                    warning_cooldown_hours INT NOT NULL DEFAULT 4,
+                    critical_cooldown_hours INT NOT NULL DEFAULT 1,
+                    last_resolved_at TIMESTAMP WITH TIME ZONE,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                );
+            """))
                     
             await session.commit()
             print("Successfully applied DB fixes.")
