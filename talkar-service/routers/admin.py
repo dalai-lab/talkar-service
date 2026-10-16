@@ -246,20 +246,6 @@ async def get_customer(customer_id: int, db: AsyncSession = Depends(get_db), cur
         {"id": s.id, "company_name": s.company_name, "contact_email": s.contact_email, "status": s.status}
         for s in sub_orgs_res.all()
     ]
-    customer.is_email_verified = True
-    if customer.dograh_user_id:
-        try:
-            from services.dograh_client import DograhSessionLocal
-            async with DograhSessionLocal() as ddb:
-                u_res = await ddb.execute(
-                    text("SELECT is_verified FROM users WHERE id = :uid"),
-                    {"uid": customer.dograh_user_id}
-                )
-                row = u_res.first()
-                if row is not None and row[0] is not None:
-                    customer.is_email_verified = bool(row[0])
-        except Exception:
-            pass
     return customer
 
 @router.post("/customers/{customer_id}/impersonate")
@@ -3203,59 +3189,5 @@ async def delete_customer_account(
         "deleted_entities": master_res,
         "suborg_entities": deleted_suborgs,
     }
-
-
-@router.post("/customers/{customer_id}/verify-email-override")
-async def verify_customer_email_override(
-    customer_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_admin: TalkarAdmin = Depends(get_current_admin),
-):
-    """
-    Superadmin override to manually mark a customer's email as verified.
-    Used when customer's corporate mail servers block transactional OTP emails.
-    """
-    res = await db.execute(select(Customer).where(Customer.id == customer_id))
-    customer = res.scalar_one_or_none()
-    if not customer:
-        raise HTTPException(404, "Customer not found")
-
-    dograh_user_id = customer.dograh_user_id
-    if dograh_user_id:
-        try:
-            from services.dograh_client import DograhSessionLocal
-            async with DograhSessionLocal() as ddb:
-                await ddb.execute(
-                    text("""
-                        UPDATE users
-                        SET is_verified = TRUE,
-                            verification_code_hash = NULL,
-                            verification_attempts = 0
-                        WHERE id = :uid
-                    """),
-                    {"uid": dograh_user_id}
-                )
-                await ddb.commit()
-        except Exception as e:
-            logger.error(f"[VerifyEmailOverride] Error updating Dograh user {dograh_user_id}: {e}")
-            raise HTTPException(500, f"Failed to update Dograh user: {str(e)}")
-
-    if customer.status in ("pending_verification", "pending_approval"):
-        customer.status = "under_review"
-        await db.commit()
-        await db.refresh(customer)
-
-    logger.warning(
-        f"[VerifyEmailOverride] Admin '{current_admin.email}' manually verified email for customer {customer_id} "
-        f"('{customer.contact_email}', dograh_user_id={dograh_user_id})."
-    )
-
-    return {
-        "success": True,
-        "message": f"Email '{customer.contact_email}' for customer #{customer_id} manually verified.",
-        "customer_id": customer.id,
-        "status": customer.status,
-    }
-
 
 

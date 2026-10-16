@@ -180,7 +180,6 @@ export default function CustomerDetailPage() {
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [isDeleting, setIsDeleting] = useState(false);
   const [cascadeSubOrgs, setCascadeSubOrgs] = useState(false);
-  const [isOverridingEmail, setIsOverridingEmail] = useState(false);
 
   useEffect(() => {
     fetchCustomer();
@@ -566,25 +565,6 @@ export default function CustomerDetailPage() {
     }
   };
 
-  const handleVerifyEmailOverride = async () => {
-    if (!confirm(`Are you sure you want to manually mark email "${customer.contact_email}" as verified?\n\nThis will bypass the OTP verification gate for this customer.`)) return;
-    setIsOverridingEmail(true);
-    try {
-      const res = await adminFetch(`/admin/customers/${id}/verify-email-override`, { method: "POST" });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        alert(`Failed to verify email: ${err.detail || res.statusText}`);
-        return;
-      }
-      alert(`✅ Email "${customer.contact_email}" has been marked as verified!`);
-      fetchCustomer();
-    } catch (e) {
-      alert(`Network error: ${e}`);
-    } finally {
-      setIsOverridingEmail(false);
-    }
-  };
-
 
 
   const handleDenyUpgrade = async () => {
@@ -734,15 +714,6 @@ export default function CustomerDetailPage() {
               <Badge className={customer.status === 'active' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-700 border-slate-200'}>
                 {customer.status}
               </Badge>
-              {customer.is_email_verified === false ? (
-                <Badge variant="outline" className="text-xs bg-amber-50 text-amber-700 border-amber-300">
-                  ⚠️ Email Unverified
-                </Badge>
-              ) : (
-                <Badge variant="outline" className="text-xs bg-emerald-50 text-emerald-700 border-emerald-300">
-                  ✓ Email Verified
-                </Badge>
-              )}
             </div>
             <p className="text-xs text-slate-500 mt-1">
               Contact: {customer.contact_name} ({customer.contact_email})
@@ -965,27 +936,6 @@ export default function CustomerDetailPage() {
               >
                 {isResettingLogs ? "Resetting..." : "🗑️ Factory Reset Logs"}
               </Button>
-
-              {/* Manual Email Verification Override */}
-              <div className="border-t border-amber-100 pt-3 mt-3">
-                <p className="text-[10px] font-semibold text-amber-700 uppercase tracking-wider mb-1">
-                  Email Verification Override
-                </p>
-                <p className="text-[11px] text-slate-500 leading-tight mb-2">
-                  {customer.is_email_verified 
-                    ? "Customer's email address is currently verified."
-                    : "Customer's email address is unverified. If their corporate firewall blocks transactional emails, you can manually verify it."}
-                </p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={customer.is_email_verified || isOverridingEmail}
-                  onClick={handleVerifyEmailOverride}
-                  className={`h-8 text-xs font-semibold cursor-pointer w-full flex items-center justify-center gap-1.5 ${customer.is_email_verified ? "border-slate-200 text-slate-400 bg-slate-50" : "border-amber-400 text-amber-800 bg-amber-50 hover:bg-amber-100"}`}
-                >
-                  {isOverridingEmail ? "Verifying..." : customer.is_email_verified ? "✓ Email Already Verified" : "⚡ Manually Mark Email as Verified"}
-                </Button>
-              </div>
 
               {/* Permanent Account Deletion */}
               <div className="border-t border-red-100 pt-3 mt-3">
