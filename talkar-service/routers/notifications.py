@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Optional
+from pydantic import BaseModel, EmailStr
 from fastapi import APIRouter, Depends, HTTPException, Query, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, func, desc
@@ -191,3 +192,29 @@ async def delete_notification(
     await db.delete(n)
     await db.commit()
     return {"status": "deleted"}
+
+
+class SendVerificationEmailRequest(BaseModel):
+    to_email: EmailStr
+    otp_code: str
+
+
+@router.post("/send-verification-email")
+async def send_verification_email_endpoint(
+    data: SendVerificationEmailRequest,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
+    from config import settings
+    # Authenticate via billing token or internal secret
+    expected_token = settings.TALKAR_BILLING_API_TOKEN
+    if authorization:
+        token = authorization.replace("Bearer ", "").strip()
+        if expected_token and token != expected_token:
+            raise HTTPException(401, "Invalid service token")
+    elif expected_token:
+        raise HTTPException(401, "Service authentication required")
+
+    from services.notification_service import send_verification_email_otp
+    sent = await send_verification_email_otp(to_email=data.to_email, otp_code=data.otp_code)
+    return {"success": sent}
+

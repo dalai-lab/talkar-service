@@ -88,6 +88,17 @@ def format_body_to_html(body: str, subject: str) -> str:
             html_paragraphs.append(line_str)
             continue
             
+        # Check if line is a standalone 6-digit OTP code
+        if line_str.isdigit() and len(line_str) == 6:
+            html_paragraphs.append(f'''
+            <div style="background-color: #f4f4f5; border: 2px dashed #fe6905; border-radius: 8px; padding: 18px; text-align: center; margin: 24px 0;">
+                <span style="font-family: monospace; font-size: 32px; font-weight: 800; letter-spacing: 8px; color: #09090b;">
+                    {line_str}
+                </span>
+            </div>
+            ''')
+            continue
+
         # Otherwise, regular paragraph
         html_paragraphs.append(f'<p style="margin: 12px 0; color: #3f3f46; font-size: 14px; line-height: 1.6;">{line_str}</p>')
         
@@ -270,6 +281,24 @@ async def send_email(to_email: str, subject: str, body: str, cc: str | None = No
     """
     result = await send_bulk_emails([{"to_email": to_email, "subject": subject, "body": body, "cc": cc}])
     return result.get("sent", 0) > 0
+
+
+async def send_verification_email_otp(to_email: str, otp_code: str) -> bool:
+    """Send branded email verification OTP via ZeptoMail SMTP."""
+    subject = f"Your Talkar verification code is {otp_code}"
+    body = f"""Welcome to Talkar!
+
+Please use the following 6-digit confirmation code to verify your email address and activate your workspace:
+
+{otp_code}
+
+This code expires in 15 minutes. For your security, do not share this code with anyone.
+
+If you did not create an account on Talkar, you can safely ignore this email.
+
+The Talkar Team"""
+    return await send_email(to_email=to_email, subject=subject, body=body)
+
 
 async def push_notification(
     customer_id: int,
