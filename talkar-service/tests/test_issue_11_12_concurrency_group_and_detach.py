@@ -130,3 +130,149 @@ async def test_blocker_11_and_12_detach_to_independent_blocks_and_transitions_st
     # Blocker 11 assertions: reset concurrency group to own org ID
     mock_upsert.assert_awaited_once_with(200, "CONCURRENCY_GROUP_ID", {"value": 200})
     mock_inval.assert_awaited_once_with(200)
+
+
+@pytest.mark.asyncio
+async def test_suborg_relinking_restores_status_and_calls():
+    """
+    Test Fix 3:
+    When relinking a suspended sub-org to an active master:
+    - customer.status is set to 'active'
+    - customer.suspended_at is set to None
+    - suspension_reason is removed from onboarding_form
+    - sync_wallet_block_policy(db, target_master_id) is awaited
+    """
+    from datetime import datetime
+    sub_org = Customer(
+        id=2,
+        contact_email="owner@test.com",
+        dograh_org_id=200,
+        dograh_user_id=50,
+        billing_org_id=None,
+        status="suspended",
+        suspended_at=datetime.utcnow(),
+        onboarding_form={"suspension_reason": "zero_balance", "suspension_message": "Account suspended"}
+    )
+    master = Customer(
+        id=1,
+        contact_email="owner@test.com",
+        dograh_org_id=100,
+        dograh_user_id=50,
+        billing_org_id=None,
+        status="active"
+    )
+
+    mock_db = MagicMock()
+    mock_db.execute = AsyncMock()
+    mock_db.commit = AsyncMock()
+    mock_db.refresh = AsyncMock()
+
+    res_sub = MagicMock()
+    res_sub.scalars.return_value.first.return_value = sub_org
+
+    res_master = MagicMock()
+    res_master.scalar_one_or_none.return_value = master
+
+    res_wallet = MagicMock()
+    res_wallet.scalar_one_or_none.return_value = None
+
+    mock_db.execute.side_effect = [res_sub, res_master, res_wallet]
+
+    with patch("routers.customers.verify_customer_access", AsyncMock()), \
+         patch("services.dograh_client.verify_dograh_org_user", AsyncMock(return_value=True)), \
+         patch("services.dograh_client.upsert_org_config", AsyncMock()), \
+         patch("services.redis_client.invalidate_concurrency_group", AsyncMock()), \
+         patch("services.dograh_client.invalidate_dograh_concurrency_group", AsyncMock()), \
+         patch("services.billing_service.sync_wallet_block_policy", AsyncMock()) as mock_sync:
+
+        resp = await set_billing_account_type(
+            dograh_org_id=200,
+            data=SetBillingAccountTypeRequest(account_type="shared"),
+            db=mock_db,
+            x_talkar_email="owner@test.com"
+        )
+
+    assert resp["status"] == "ok"
+    assert resp["account_type"] == "shared"
+    assert sub_org.billing_org_id == 1
+    assert sub_org.status == "active"
+    assert sub_org.suspended_at is None
+    assert "suspension_reason" not in (sub_org.onboarding_form or {})
+    assert "suspension_message" not in (sub_org.onboarding_form or {})
+    mock_sync.assert_awaited_once_with(mock_db, 1)
+
+
+@pytest.mark.asyncio
+async def test_fix_14_detach_suspended_workspace_unconditionally_provisions_billing():
+    """
+    Fix 14:
+    When detaching a suspended sub-org workspace to independent billing:
+    - Customer transitions to pending_deposit
+    - Wallet (balance_paise=0) and Subscription (starter) are unconditionally provisioned
+    - Calls block_org_calls on Dograh
+    - Concurrency group is reset to own org ID
+    """
+    sub_org = Customer(
+        id=2,
+        contact_email="owner@test.com",
+        dograh_org_id=200,
+        dograh_user_id=50,
+        billing_org_id=1,
+        status="suspended"
+    )
+
+    mock_db = MagicMock()
+    mock_db.execute = AsyncMock()
+    mock_db.commit = AsyncMock()
+    mock_db.refresh = AsyncMock()
+    mock_db.add = MagicMock()
+
+    # Query 1: lookup customer
+    res_sub = MagicMock()
+    res_sub.scalars.return_value.first.return_value = sub_org
+
+    # Query 2: wallet check (none exists -> created)
+    res_wallet = MagicMock()
+    res_wallet.scalar_one_or_none.return_value = None
+
+    # Query 3: subscription check (none exists -> created)
+    res_subscr = MagicMock()
+    res_subscr.scalar_one_or_none.return_value = None
+
+    mock_db.execute.side_effect = [res_sub, res_wallet, res_subscr]
+
+    with patch("routers.customers.verify_customer_access", AsyncMock()), \
+         patch("services.dograh_client.block_org_calls", AsyncMock()) as mock_block, \
+         patch("services.dograh_client.upsert_org_config", AsyncMock()) as mock_upsert, \
+         patch("services.redis_client.invalidate_concurrency_group", AsyncMock()) as mock_inval, \
+         patch("services.dograh_client.invalidate_dograh_concurrency_group", AsyncMock()):
+
+        resp = await set_billing_account_type(
+            dograh_org_id=200,
+            data=SetBillingAccountTypeRequest(account_type="independent"),
+            db=mock_db,
+            x_talkar_email="owner@test.com"
+        )
+
+    assert resp["status"] == "ok"
+    assert sub_org.billing_org_id is None
+    assert sub_org.status == "pending_deposit"
+    assert resp["customer_status"] == "pending_deposit"
+    assert resp["redirect_url"] == "/wallet?deposit_required=true"
+
+    # Verify Wallet and Subscription were added
+    added_objs = [call.args[0] for call in mock_db.add.call_args_list if call.args]
+    wallet = next(obj for obj in added_objs if isinstance(obj, Wallet))
+    sub = next(obj for obj in added_objs if isinstance(obj, Subscription))
+    assert wallet.customer_id == 2
+    assert wallet.balance_paise == 0
+    assert sub.customer_id == 2
+    assert sub.plan == "starter"
+    assert sub.status == "active"
+    assert sub.setup_fee_paid is True
+
+    mock_block.assert_awaited_once_with(200)
+    mock_upsert.assert_awaited_once_with(200, "CONCURRENCY_GROUP_ID", {"value": 200})
+    mock_inval.assert_awaited_once_with(200)
+
+

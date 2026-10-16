@@ -210,20 +210,43 @@ async def credit_customer(
                 except Exception:
                     pass
 
-    elif customer.status == "suspended":
+    if customer.status == "suspended":
         from config import CALL_BLOCK_THRESHOLD_PAISE
         c_form = customer.onboarding_form or {}
         if c_form.get("suspension_reason") in ("zero_balance", None, "") and wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE:
             customer.status = "active"
+            customer.suspended_at = None
             c_dict = dict(c_form)
             c_dict.pop("suspension_reason", None)
             c_dict.pop("suspension_message", None)
             customer.onboarding_form = c_dict
+
+            # Cascade reactivation to zero-balance suspended sub-orgs
+            sub_p_res = await db.execute(
+                select(Customer).where(Customer.billing_org_id == customer.id, Customer.status == "suspended")
+            )
+            reactivated_sub_orgs = []
+            for sub_p in sub_p_res.scalars().all():
+                s_form = dict(sub_p.onboarding_form or {})
+                if s_form.get("suspension_reason") in ("zero_balance", None, ""):
+                    sub_p.status = "active"
+                    sub_p.suspended_at = None
+                    s_form.pop("suspension_reason", None)
+                    s_form.pop("suspension_message", None)
+                    sub_p.onboarding_form = s_form
+                    reactivated_sub_orgs.append(sub_p)
+
             await db.commit()
             try:
                 await run_provisioning(customer.id, None, db)
             except Exception:
                 pass
+
+            for s_org in reactivated_sub_orgs:
+                try:
+                    await run_provisioning(s_org.id, None, db)
+                except Exception:
+                    pass
 
     # Synchronize wallet block policy
     from services.billing_service import sync_wallet_block_policy
@@ -433,6 +456,7 @@ async def unsuspend_customer(
         raise HTTPException(400, f"Wallet balance must be > {CALL_BLOCK_THRESHOLD_PAISE/100:.2f} INR to unsuspend")
 
     customer.status = "active"
+    customer.suspended_at = None
     existing_form = dict(customer.onboarding_form or {})
     existing_form.pop("suspension_reason", None)
     existing_form.pop("suspension_message", None)
@@ -441,11 +465,13 @@ async def unsuspend_customer(
     if customer.billing_org_id is None:
         sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id, Customer.status == "suspended"))
         for sub_org in sub_orgs_res.scalars().all():
-            sub_org.status = "active"
             s_form = dict(sub_org.onboarding_form or {})
-            s_form.pop("suspension_reason", None)
-            s_form.pop("suspension_message", None)
-            sub_org.onboarding_form = s_form
+            if s_form.get("suspension_reason") in ("zero_balance", None, ""):
+                sub_org.status = "active"
+                sub_org.suspended_at = None
+                s_form.pop("suspension_reason", None)
+                s_form.pop("suspension_message", None)
+                sub_org.onboarding_form = s_form
     await db.commit()
     
     from services.billing_service import sync_wallet_block_policy

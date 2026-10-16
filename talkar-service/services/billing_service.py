@@ -206,13 +206,13 @@ async def check_and_trigger_auto_recharge(db: AsyncSession, customer_id: int):
             logger.error(f"Failed to clear invalid payment method on wallet {wallet.id}: {e}")
         return
 
-    # Check if the master customer is active (or zero-balance suspended) before charging
+    # Check if the master customer is active, pending_deposit, or zero-balance suspended before charging
     result = await db.execute(select(Customer).where(Customer.id == master_id))
     master = result.scalar_one_or_none()
     if not master:
         return
     form = master.onboarding_form or {}
-    if master.status != "active" and not (master.status == "suspended" and form.get("suspension_reason") in ("zero_balance", None, "")):
+    if master.status not in ("active", "pending_deposit") and not (master.status == "suspended" and form.get("suspension_reason") in ("zero_balance", None, "")):
         return
     user_threshold = wallet.auto_recharge_threshold_paise if wallet.auto_recharge_threshold_paise is not None else 150000
     
@@ -279,7 +279,7 @@ async def check_and_trigger_auto_recharge(db: AsyncSession, customer_id: int):
                 order_ref = order_id or charge.get("order_id")
                 payment_ref = charge.get("id")
                 txn_ref = order_ref or payment_ref
-                await credit_wallet(
+                credited_wallet = await credit_wallet(
                     db,
                     master_id,
                     wallet.auto_recharge_amount_paise,
@@ -287,32 +287,56 @@ async def check_and_trigger_auto_recharge(db: AsyncSession, customer_id: int):
                     description="Auto-recharge: Low balance top-up via saved card",
                     razorpay_payment_id=payment_ref,
                 )
+                if credited_wallet:
+                    wallet = credited_wallet
+                    if wallet.balance_paise < (wallet.auto_recharge_amount_paise or 0):
+                        wallet.balance_paise = wallet.balance_paise + (wallet.auto_recharge_amount_paise or 0)
                 logger.info(f"Auto-recharge successful for customer {master_id}")
 
-                # Blocker 24: Reactivate master and child sub-orgs if suspended for zero_balance
-                if master and master.status == "suspended":
-                    m_form = master.onboarding_form or {}
-                    if m_form.get("suspension_reason") in ("zero_balance", None, ""):
+                # Reactivate master and child sub-orgs if pending_deposit or suspended (Fix 19)
+                if master and master.status in ("suspended", "pending_deposit"):
+                    from config import TIER_CONFIG, CALL_BLOCK_THRESHOLD_PAISE
+                    from db.models import Subscription
+                    sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == master_id))
+                    master_sub = sub_res.scalar_one_or_none()
+                    activation_threshold = TIER_CONFIG.get(master_sub.plan if master_sub else "starter", {}).get("activation_deposit_paise", 600000)
+                    should_activate = False
+
+                    if master.status == "pending_deposit" and wallet.balance_paise >= activation_threshold:
+                        should_activate = True
+                    elif master.status == "suspended":
+                        m_form = master.onboarding_form or {}
+                        if m_form.get("suspension_reason") in ("zero_balance", None, "") and wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE:
+                            should_activate = True
+
+                    if should_activate:
                         master.status = "active"
                         master.suspended_at = None
-                        m_dict = dict(m_form)
+                        m_dict = dict(master.onboarding_form or {})
                         m_dict.pop("suspension_reason", None)
                         m_dict.pop("suspension_message", None)
                         master.onboarding_form = m_dict
 
-                        sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == master_id, Customer.status == "suspended"))
+                        # Cascade to child sub-organizations in suspended/pending_deposit...
+                        sub_orgs_res = await db.execute(
+                            select(Customer).where(
+                                Customer.billing_org_id == master_id,
+                                Customer.status.in_(("suspended", "pending_deposit"))
+                            )
+                        )
                         reactivated_subs = []
                         for s_org in sub_orgs_res.scalars().all():
                             s_form = s_org.onboarding_form or {}
                             # Blocker 30: Strictly require zero_balance to prevent rogue/policy-banned sub-orgs from reactivating
-                            if s_form.get("suspension_reason") == "zero_balance":
-                                s_org.status = "active"
-                                s_org.suspended_at = None
-                                s_dict = dict(s_form)
-                                s_dict.pop("suspension_reason", None)
-                                s_dict.pop("suspension_message", None)
-                                s_org.onboarding_form = s_dict
-                                reactivated_subs.append(s_org)
+                            if s_org.status == "suspended" and s_form.get("suspension_reason") != "zero_balance":
+                                continue
+                            s_org.status = "active"
+                            s_org.suspended_at = None
+                            s_dict = dict(s_form)
+                            s_dict.pop("suspension_reason", None)
+                            s_dict.pop("suspension_message", None)
+                            s_org.onboarding_form = s_dict
+                            reactivated_subs.append(s_org)
                         await db.commit()
 
                         from services.provisioning_service import run_provisioning
@@ -325,6 +349,7 @@ async def check_and_trigger_auto_recharge(db: AsyncSession, customer_id: int):
                                 await run_provisioning(s_org.id, None, db)
                             except Exception as e:
                                 logger.error(f"Failed to reprovision sub-org {s_org.id} after auto-recharge reactivation: {e}")
+                        await sync_wallet_block_policy(db, master_id)
 
                 await sync_wallet_block_policy(db, master_id)
                 # Successful charge clears any prior failure counter or cooldown
@@ -451,7 +476,7 @@ async def _deduct_for_run_impl(db: AsyncSession, run_id: int):
         if customer.billing_org_id:
             form = customer.onboarding_form or {}
             sub_tier = form.get("approved_tier")
-            if sub_tier and sub_tier in TIER_CONFIG:
+            if sub_tier and sub_tier in TIER_CONFIG and sub_tier != "custom" and (not subscription or subscription.plan != "custom"):
                 active_tts = TIER_CONFIG[sub_tier].get("tts_provider", active_tts)
                 active_plan = sub_tier
                 sub_tier_cfg = resolve_tier_config(sub_tier)
@@ -870,7 +895,7 @@ async def bill_monthly_phone_number_leases(db: AsyncSession) -> dict:
     pns_res = await db.execute(
         select(PhoneNumber, Customer)
         .join(Customer, Customer.id == PhoneNumber.customer_id)
-        .where(PhoneNumber.status == "active", Customer.status == "active")
+        .where(PhoneNumber.status == "active", Customer.status.in_(("active", "suspended")))
         .order_by(PhoneNumber.purchased_at.asc(), PhoneNumber.id.asc())
     )
     rows = pns_res.all()

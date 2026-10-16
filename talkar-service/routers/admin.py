@@ -198,6 +198,11 @@ async def request_info(customer_id: int, data: RequestInfoRequest, db: AsyncSess
         body=data.message
     )
     customer.status = "info_requested"
+    existing_form = dict(customer.onboarding_form or {})
+    existing_form["info_requested_message"] = data.message
+    from datetime import datetime, timezone
+    existing_form["info_requested_at"] = datetime.now(timezone.utc).isoformat()
+    customer.onboarding_form = existing_form
     await db.commit()
     return {"status": "info_requested"}
 
@@ -269,8 +274,8 @@ async def set_custom_pricing(customer_id: int, data: SetCustomPricingRequest, db
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
     
-    if customer.status not in ("active", "agent_building"):
-        raise HTTPException(400, "Can only set custom pricing on active or building customers.")
+    if customer.status not in ("active", "agent_building", "pending_deposit"):
+        raise HTTPException(400, "Can only set custom pricing on active, building, or pending-deposit customers.")
     
     # EC-2: Only master orgs can have custom pricing. Sub-orgs inherit from master.
     if customer.billing_org_id:
@@ -384,12 +389,13 @@ async def update_customer(customer_id: int, data: CustomerUpdateRequest, db: Asy
             if customer.billing_org_id is None:
                 sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id, Customer.status == "suspended"))
                 for sub_org in sub_orgs_res.scalars().all():
-                    sub_org.status = "active"
-                    sub_org.suspended_at = None
                     s_form = dict(sub_org.onboarding_form or {})
-                    s_form.pop("suspension_reason", None)
-                    s_form.pop("suspension_message", None)
-                    sub_org.onboarding_form = s_form
+                    if s_form.get("suspension_reason") in ("zero_balance", None, ""):
+                        sub_org.status = "active"
+                        sub_org.suspended_at = None
+                        s_form.pop("suspension_reason", None)
+                        s_form.pop("suspension_message", None)
+                        sub_org.onboarding_form = s_form
             await db.commit()
 
             master_id = customer.billing_org_id or customer.id
@@ -498,7 +504,7 @@ async def update_customer(customer_id: int, data: CustomerUpdateRequest, db: Asy
         await db.commit()
 
         # Re-run provisioning to update Dograh org config (LLM model, TTS, limits)
-        if customer.status in ("active", "agent_building"):
+        if customer.status in ("active", "agent_building", "pending_deposit"):
             from services.provisioning_service import run_provisioning
             try:
                 await run_provisioning(customer_id, None, db)
@@ -508,13 +514,26 @@ async def update_customer(customer_id: int, data: CustomerUpdateRequest, db: Asy
                 logging.getLogger(__name__).error(f"Re-provisioning failed after tier upgrade: {e}")
                 
         # Cascade to sub-orgs (Risk 3)
+        master_sub = sub
         sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
         for sub_org in sub_orgs_res.scalars().all():
             sub_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == sub_org.id))
             sub_sub = sub_sub_res.scalar_one_or_none()
             if sub_sub:
-                sub_sub.plan = data.tier
-                sub_sub.per_minute_rate_paise = tier_cfg["per_minute_rate_paise"]
+                sub_sub.plan = master_sub.plan if master_sub else data.tier
+                sub_sub.per_minute_rate_paise = master_sub.per_minute_rate_paise if (master_sub and master_sub.per_minute_rate_paise is not None) else tier_cfg["per_minute_rate_paise"]
+                sub_sub.custom_config = master_sub.custom_config if master_sub else None
+                sub_sub.custom_plan_label = master_sub.custom_plan_label if master_sub else None
+            else:
+                sub_sub = Subscription(
+                    customer_id=sub_org.id,
+                    plan=master_sub.plan if master_sub else data.tier,
+                    per_minute_rate_paise=master_sub.per_minute_rate_paise if (master_sub and master_sub.per_minute_rate_paise is not None) else tier_cfg["per_minute_rate_paise"],
+                    status="active",
+                    custom_config=master_sub.custom_config if master_sub else None,
+                    custom_plan_label=master_sub.custom_plan_label if master_sub else None,
+                )
+                db.add(sub_sub)
                 
             sub_form = sub_org.onboarding_form or {}
             sub_form["approved_tier"] = data.tier
@@ -956,20 +975,43 @@ async def manual_credit_grant(customer_id: int, data: CreditGrantRequest, db: As
                     except Exception as e:
                         import logging; logging.getLogger(__name__).error(f"[AdminCredit] Provisioning failed for cascaded sub-org {sub_p.id}: {e}")
 
-        elif customer.status == "suspended":
+        if customer.status == "suspended":
             from config import CALL_BLOCK_THRESHOLD_PAISE
             c_form = customer.onboarding_form or {}
             if c_form.get("suspension_reason") in ("zero_balance", None, "") and wallet.balance_paise > CALL_BLOCK_THRESHOLD_PAISE:
                 customer.status = "active"
+                customer.suspended_at = None
                 c_dict = dict(c_form)
                 c_dict.pop("suspension_reason", None)
                 c_dict.pop("suspension_message", None)
                 customer.onboarding_form = c_dict
+
+                # Cascade reactivation to zero-balance suspended sub-orgs
+                sub_p_res = await db.execute(
+                    select(Customer).where(Customer.billing_org_id == customer.id, Customer.status == "suspended")
+                )
+                reactivated_sub_orgs = []
+                for sub_p in sub_p_res.scalars().all():
+                    s_form = dict(sub_p.onboarding_form or {})
+                    if s_form.get("suspension_reason") in ("zero_balance", None, ""):
+                        sub_p.status = "active"
+                        sub_p.suspended_at = None
+                        s_form.pop("suspension_reason", None)
+                        s_form.pop("suspension_message", None)
+                        sub_p.onboarding_form = s_form
+                        reactivated_sub_orgs.append(sub_p)
+
                 await db.commit()
                 try:
                     await run_provisioning(customer.id, None, db)
                 except Exception as e:
                     import logging; logging.getLogger(__name__).error(f"[AdminCredit] Re-provisioning failed for customer {customer.id}: {e}")
+
+                for s_org in reactivated_sub_orgs:
+                    try:
+                        await run_provisioning(s_org.id, None, db)
+                    except Exception as e:
+                        import logging; logging.getLogger(__name__).error(f"[AdminCredit] Provisioning failed for cascaded sub-org {s_org.id}: {e}")
 
         # Synchronize wallet block policy
         await sync_wallet_block_policy(db, customer.id)
@@ -1205,12 +1247,13 @@ async def unsuspend_customer(customer_id: int, db: AsyncSession = Depends(get_db
     if customer.billing_org_id is None:
         sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id, Customer.status == "suspended"))
         for sub_org in sub_orgs_res.scalars().all():
-            sub_org.status = "active"
-            sub_org.suspended_at = None
             s_form = dict(sub_org.onboarding_form or {})
-            s_form.pop("suspension_reason", None)
-            s_form.pop("suspension_message", None)
-            sub_org.onboarding_form = s_form
+            if s_form.get("suspension_reason") in ("zero_balance", None, ""):
+                sub_org.status = "active"
+                sub_org.suspended_at = None
+                s_form.pop("suspension_reason", None)
+                s_form.pop("suspension_message", None)
+                sub_org.onboarding_form = s_form
     await db.commit()
 
     # Determine master customer and subscription for accurate plan/limits and group pool linking
@@ -1270,7 +1313,7 @@ async def retry_provisioning(customer_id: int, db: AsyncSession = Depends(get_db
     result = await db.execute(select(Customer).where(Customer.id == customer_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
-    if customer.status not in ("approved", "agent_building", "active", "suspended", "pending_plan_selection"):
+    if customer.status not in ("approved", "agent_building", "active", "suspended", "pending_deposit", "pending_plan_selection"):
         raise HTTPException(400, "Customer is not in a provisionable state")
     from services.provisioning_service import run_provisioning
     try:
@@ -1691,8 +1734,8 @@ async def assign_phone_number(customer_id: int, data: AssignPhoneNumberRequest, 
     result = await db.execute(select(Customer).where(Customer.id == customer_id))
     customer = result.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
-    if customer.status != "active":
-        raise HTTPException(400, f"Cannot assign phone numbers to customer with status '{customer.status}'. Customer must be active.")
+    if customer.status not in ("active", "agent_building", "pending_deposit"):
+        raise HTTPException(400, f"Cannot assign phone numbers to customer in '{customer.status}' state.")
     
     from config import DEFAULT_PHONE_NUMBER_MONTHLY_COST_PAISE
     monthly_cost = data.monthly_cost_paise if (data.monthly_cost_paise is not None and data.monthly_cost_paise > 0) else DEFAULT_PHONE_NUMBER_MONTHLY_COST_PAISE
@@ -1744,8 +1787,8 @@ async def approve_phone_number_request(request_id: int, data: ApprovePhoneNumber
     cust_res = await db.execute(select(Customer).where(Customer.id == req.customer_id))
     customer = cust_res.scalar_one_or_none()
     if not customer: raise HTTPException(404, "Customer not found")
-    if customer.status != "active":
-        raise HTTPException(400, f"Cannot approve phone number request for customer with status '{customer.status}'. Customer must be active.")
+    if customer.status not in ("active", "agent_building", "pending_deposit"):
+        raise HTTPException(400, f"Cannot approve phone number request for customer in '{customer.status}' state.")
     
     req.status = "approved"
     req.resolved_at = func.now()

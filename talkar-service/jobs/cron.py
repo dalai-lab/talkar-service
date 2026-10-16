@@ -313,7 +313,7 @@ async def cleanup_abandoned_signups(ctx):
         # Day 30: Delete completely (only master orgs without active sub-orgs)
         abandoned_query = text("""
             SELECT id, dograh_org_id, dograh_user_id FROM customers
-            WHERE status = 'pending_approval'
+            WHERE status IN ('pending_approval', 'approved')
               AND billing_org_id IS NULL
               AND created_at < now() - interval '30 days'
               AND NOT EXISTS (
@@ -349,16 +349,22 @@ async def cleanup_abandoned_signups(ctx):
                     except Exception as de:
                         logger.warning(f"Failed to delete Dograh org {row.dograh_org_id} for abandoned customer {row.id}: {de}")
 
-                # 1. Gracefully archive remaining unestablished child sub-orgs
-                await db.execute(
-                    text("""
-                        UPDATE customers 
-                        SET status = 'churned' 
-                        WHERE billing_org_id = :id 
-                          AND status IN ('pending_approval', 'under_review')
-                    """),
-                    {"id": row.id}
+                # 1. Gracefully archive remaining unestablished child sub-orgs and delete Dograh workspaces
+                sub_orgs_res = await db.execute(
+                    select(Customer).where(
+                        Customer.billing_org_id == row.id,
+                        Customer.status.in_(("pending_approval", "under_review", "approved"))
+                    )
                 )
+                sub_orgs = sub_orgs_res.scalars().all() if hasattr(sub_orgs_res, "scalars") else []
+                for sub_org in sub_orgs:
+                    if getattr(sub_org, "dograh_org_id", None):
+                        try:
+                            await dograh_client.delete_org(sub_org.dograh_org_id)
+                        except Exception as de:
+                            logger.warning(f"Failed to delete Dograh sub-org {sub_org.dograh_org_id}: {de}")
+                    sub_org.status = "churned"
+                    sub_org.billing_org_id = None
 
                 # 2. Detach dependent sub-orgs so deleting master does not crash on foreign key constraint
                 await db.execute(text("UPDATE customers SET billing_org_id = NULL WHERE billing_org_id = :id"), {"id": row.id})

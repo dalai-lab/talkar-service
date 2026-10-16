@@ -169,21 +169,36 @@ async def run_provisioning(customer_id: int, plan: str = None, db: AsyncSession 
         existing_sub_check = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
         existing_sub = existing_sub_check.scalar_one_or_none()
         if not existing_sub:
+            if customer.billing_org_id and master_sub and (not plan or plan == master_sub.plan):
+                sub_plan = master_sub.plan
+                sub_rate = master_sub.per_minute_rate_paise if master_sub.per_minute_rate_paise is not None else tier_cfg["per_minute_rate_paise"]
+                sub_custom_cfg = master_sub.custom_config
+                sub_custom_label = master_sub.custom_plan_label
+            else:
+                sub_plan = tier
+                sub_rate = tier_cfg["per_minute_rate_paise"]
+                sub_custom_cfg = master_sub.custom_config if (customer.billing_org_id and master_sub and master_sub.plan == "custom") else (sub.custom_config if sub and sub.plan == "custom" else None)
+                sub_custom_label = master_sub.custom_plan_label if (customer.billing_org_id and master_sub and master_sub.plan == "custom") else (sub.custom_plan_label if sub and sub.plan == "custom" else None)
+
             subscription = Subscription(
                 customer_id=customer.id,
-                plan=tier,
+                plan=sub_plan,
                 status="active",
-                per_minute_rate_paise=tier_cfg["per_minute_rate_paise"],
+                per_minute_rate_paise=sub_rate,
                 setup_fee_paid=True,
                 start_date=datetime.date.today(),
-                custom_config=master_sub.custom_config if (customer.billing_org_id and master_sub and master_sub.plan == "custom") else (sub.custom_config if sub and sub.plan == "custom" else None),
-                custom_plan_label=master_sub.custom_plan_label if (customer.billing_org_id and master_sub and master_sub.plan == "custom") else (sub.custom_plan_label if sub and sub.plan == "custom" else None),
+                custom_config=sub_custom_cfg,
+                custom_plan_label=sub_custom_label,
             )
             db.add(subscription)
         else:
             # Re-provisioning an existing customer (e.g. tier upgrade)
-            # For sub-org under custom master when sub-org tier is custom, sync custom_config and per_minute_rate_paise from master
-            if customer.billing_org_id and master_sub and master_sub.plan == "custom" and tier == "custom":
+            if customer.billing_org_id and master_sub and (not plan or plan == master_sub.plan):
+                existing_sub.plan = master_sub.plan
+                existing_sub.per_minute_rate_paise = master_sub.per_minute_rate_paise
+                existing_sub.custom_config = master_sub.custom_config
+                existing_sub.custom_plan_label = master_sub.custom_plan_label
+            elif customer.billing_org_id and master_sub and master_sub.plan == "custom" and tier == "custom":
                 existing_sub.plan = "custom"
                 existing_sub.per_minute_rate_paise = tier_cfg["per_minute_rate_paise"]
                 existing_sub.custom_config = master_sub.custom_config
@@ -191,7 +206,28 @@ async def run_provisioning(customer_id: int, plan: str = None, db: AsyncSession 
             elif existing_sub.plan != "custom" or tier != "custom":
                 existing_sub.plan = tier
                 existing_sub.per_minute_rate_paise = tier_cfg["per_minute_rate_paise"]
-            # If master customer plan is 'custom', its sub row already has correct rate/config — do not overwrite.
+
+        # Step 5b: If this is a master org, cascade plan and per-minute rates to all sub-organization Subscription records
+        if customer.billing_org_id is None:
+            master_sub_record = existing_sub or subscription
+            if master_sub_record:
+                sub_orgs_res = await db.execute(select(Customer).where(Customer.billing_org_id == customer.id))
+                sub_orgs = sub_orgs_res.scalars().all() if hasattr(sub_orgs_res, "scalars") else []
+                for sub_org in sub_orgs:
+                    sub_sub_res = await db.execute(select(Subscription).where(Subscription.customer_id == sub_org.id))
+                    sub_sub = sub_sub_res.scalar_one_or_none() if hasattr(sub_sub_res, "scalar_one_or_none") else None
+                    if sub_sub:
+                        sub_sub.plan = master_sub_record.plan
+                        sub_sub.per_minute_rate_paise = master_sub_record.per_minute_rate_paise
+                        sub_sub.custom_config = master_sub_record.custom_config
+                        sub_sub.custom_plan_label = master_sub_record.custom_plan_label
+
+        # Record provisioning completion
+        c_form = dict(customer.onboarding_form or {})
+        c_form["provisioning_completed"] = True
+        customer.onboarding_form = c_form
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(customer, "onboarding_form")
 
         await db.commit()
 

@@ -224,3 +224,37 @@ async def test_suborg_mark_read_and_delete_notification():
         res_del = await delete_notification(notification_id=101, dograh_org_id=200, db=mock_db)
         assert res_del["status"] == "deleted"
         mock_db.delete.assert_called_once_with(notif)
+
+
+@pytest.mark.asyncio
+async def test_fix_8_suborg_cannot_delete_or_mutate_master_notifications():
+    """
+    Test Fix 8:
+    Verify that sub-orgs cannot delete or mutate master notifications.
+    allowed_ids is strictly [customer.id].
+    """
+    sub_org = Customer(id=2, dograh_org_id=200, billing_org_id=1, contact_email="sub@example.com")
+    master_notif = Notification(id=999, customer_id=1, title="Master Alert", body="Critical", type="warning", is_read=False)
+
+    mock_db = MagicMock()
+
+    async def mock_execute(query, *args, **kwargs):
+        q_str = str(query)
+        mock_res = MagicMock()
+        if "customers.dograh_org_id =" in q_str:
+            mock_res.scalar_one_or_none.return_value = sub_org
+        elif "notifications.id = :id_1" in q_str or "notifications.id = 999" in q_str:
+            # Query filters by customer_id.in_(allowed_ids) where allowed_ids = [2].
+            # Since master_notif has customer_id=1, SQL returns None.
+            mock_res.scalar_one_or_none.return_value = None
+        return mock_res
+
+    mock_db.execute = AsyncMock(side_effect=mock_execute)
+
+    with patch("routers.notifications.verify_customer_access", AsyncMock()):
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_notification(notification_id=999, dograh_org_id=200, db=mock_db)
+
+    assert exc_info.value.status_code == 404
+    assert "Notification not found" in exc_info.value.detail
+

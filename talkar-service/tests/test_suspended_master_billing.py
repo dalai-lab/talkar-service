@@ -67,6 +67,33 @@ async def test_check_quota_when_master_is_suspended():
 
 
 @pytest.mark.asyncio
+async def test_fix_17_check_quota_agent_building_rejected_when_master_is_suspended():
+    """
+    Fix 17 / Issue 13:
+    When a sub-org is in agent_building and requests playground bypass (webrtc/textchat),
+    check_quota must evaluate master suspension FIRST and reject with master_suspended,
+    preventing suspended accounts from generating free traffic.
+    """
+    mock_db = MagicMock()
+
+    sub_customer = Customer(id=20, dograh_org_id=200, status="agent_building", billing_org_id=10)
+    master_customer = Customer(id=10, dograh_org_id=100, status="suspended", billing_org_id=None)
+
+    res_sub = MagicMock()
+    res_sub.scalar_one_or_none.return_value = sub_customer
+
+    res_master = MagicMock()
+    res_master.scalar_one_or_none.return_value = master_customer
+
+    mock_db.execute = AsyncMock(side_effect=[res_sub, res_master])
+
+    req = DograhQuotaRequest(organization_id=200, mode="webrtc", active_calls=1)
+    res = await check_quota(data=req, db=mock_db, _token="test_token")
+
+    assert res == {"has_quota": False, "reason": "master_suspended"}
+
+
+@pytest.mark.asyncio
 async def test_check_quota_catches_value_error_from_get_billing_wallet():
     """check_quota fallback catches ValueError from get_billing_wallet without crashing."""
     mock_db = MagicMock()

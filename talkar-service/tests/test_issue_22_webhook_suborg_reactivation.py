@@ -392,3 +392,94 @@ async def test_suborg_confirm_topup_reactivates_suborg_and_zero_balance_master()
     assert "suspension_reason" not in master.onboarding_form
     mock_prov.assert_awaited_with(sub_org.id, None, mock_db)
     mock_sync.assert_awaited_once_with(mock_db, sub_org.id)
+
+
+@pytest.mark.asyncio
+async def test_webhook_topup_with_requested_tier_reactivates_status_and_unblocks():
+    """
+    Fix 2 / Issue 2:
+    When a topup webhook contains requested_tier, it must update the subscription plan
+    AND reactivate customer.status from 'pending_deposit' (or 'suspended') to 'active',
+    and invoke sync_wallet_block_policy.
+    """
+    mock_db = MagicMock()
+
+    customer = Customer(
+        id=10,
+        dograh_org_id=1010,
+        status="pending_deposit",
+        billing_org_id=None,
+        contact_email="owner@agency.com",
+    )
+    wallet = Wallet(id=10, customer_id=10, balance_paise=1500000)
+    sub = Subscription(id=10, customer_id=10, plan="starter", per_minute_rate_paise=2400)
+
+    customers_by_id = {10: customer}
+
+    async def mock_execute(query, *args, **kwargs):
+        q_str = str(query).lower()
+        mock_res = MagicMock()
+        if "wallet_transactions" in q_str:
+            mock_res.scalar_one_or_none.return_value = None
+            return mock_res
+        if "customers.setup_fee_order_id =" in q_str:
+            mock_res.scalar_one_or_none.return_value = None
+            return mock_res
+        if "customers.id =" in q_str:
+            try:
+                cid = query.whereclause.right.value
+                val = customers_by_id.get(cid)
+                mock_res.scalar_one_or_none.return_value = val
+            except Exception:
+                mock_res.scalar_one_or_none.return_value = customer
+            return mock_res
+        if "wallets.customer_id =" in q_str:
+            mock_res.scalar_one_or_none.return_value = wallet
+            return mock_res
+        if "subscriptions.customer_id =" in q_str:
+            mock_res.scalar_one_or_none.return_value = sub
+            return mock_res
+        if "customers.billing_org_id =" in q_str:
+            mock_res.scalars.return_value.all.return_value = []
+            return mock_res
+        return mock_res
+
+    mock_db.execute = AsyncMock(side_effect=mock_execute)
+    mock_db.commit = AsyncMock()
+
+    payload = {
+        "event": "payment.captured",
+        "payload": {
+            "payment": {
+                "entity": {
+                    "id": "pay_upgrade_topup_456",
+                    "order_id": "order_upgrade_topup_456",
+                    "amount": 1500000,
+                    "notes": {"customer_id": "10", "requested_tier": "pro"},
+                }
+            }
+        },
+    }
+
+    mock_request = MagicMock()
+    mock_request.body = AsyncMock(return_value=json.dumps(payload).encode())
+    mock_request.headers = {"X-Razorpay-Signature": "valid_sig"}
+
+    with (
+        patch("services.razorpay_client.verify_webhook_signature", return_value=True),
+        patch("services.billing_service.credit_wallet", AsyncMock(return_value=wallet)),
+        patch("services.provisioning_service.run_provisioning", AsyncMock()),
+        patch("services.dograh_client.restore_org_calls", AsyncMock()),
+        patch("services.billing_service.sync_wallet_block_policy", AsyncMock()) as mock_sync,
+        patch("services.notification_service.send_email", AsyncMock()),
+    ):
+        res = await razorpay_webhook(mock_request, db=mock_db)
+
+    assert res["status"] == "ok"
+    # Tier was upgraded
+    assert sub.plan == "pro"
+    # Status was reactivated from pending_deposit to active!
+    assert customer.status == "active"
+    # sync_wallet_block_policy was called to unblock Dograh
+    mock_sync.assert_awaited_with(mock_db, 10)
+

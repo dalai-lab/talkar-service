@@ -124,7 +124,7 @@ async def test_blocker_22_rejects_phone_approval_if_customer_not_active():
             current_admin=admin
         )
     assert exc_info.value.status_code == 400
-    assert "Customer must be active" in exc_info.value.detail
+    assert "Cannot approve phone number request for customer in 'suspended' state" in exc_info.value.detail
 
     # 2. Churned customer
     churned_cust = Customer(id=5, status="churned", dograh_org_id=500)
@@ -143,14 +143,14 @@ async def test_blocker_22_rejects_phone_approval_if_customer_not_active():
             current_admin=admin
         )
     assert exc_info.value.status_code == 400
-    assert "Customer must be active" in exc_info.value.detail
+    assert "Cannot approve phone number request for customer in 'churned' state" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
 async def test_blocker_22_rejects_assign_phone_number_if_customer_not_active():
     """
-    Test Blocker 22:
-    assign_phone_number rejects with HTTP 400 if customer status is not 'active'.
+    Test Blocker 22 & Fix 5:
+    assign_phone_number rejects with HTTP 400 if customer status is not in ('active', 'agent_building', 'pending_deposit').
     """
     admin = TalkarAdmin(id=1, email="admin@talkar.in")
     suspended_cust = Customer(id=5, status="suspended", dograh_org_id=500)
@@ -168,4 +168,40 @@ async def test_blocker_22_rejects_assign_phone_number_if_customer_not_active():
             current_admin=admin
         )
     assert exc_info.value.status_code == 400
-    assert "Customer must be active" in exc_info.value.detail
+    assert "Cannot assign phone numbers to customer in 'suspended' state" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_fix_5_allows_phone_number_assignment_in_building_and_pending_deposit():
+    """
+    Test Fix 5:
+    Verify phone numbers can be assigned to customers in 'agent_building' and 'pending_deposit' states.
+    """
+    admin = TalkarAdmin(id=1, email="admin@talkar.in")
+
+    for allowed_status in ("agent_building", "pending_deposit"):
+        cust = Customer(id=10, status=allowed_status, dograh_org_id=1000)
+        mock_db = MagicMock()
+        mock_db.commit = AsyncMock()
+        mock_db.add = MagicMock()
+
+        res_cust = MagicMock()
+        res_cust.scalar_one_or_none.return_value = cust
+        res_wf = MagicMock()
+        res_wf.scalar_one_or_none.return_value = None
+
+        mock_db.execute = AsyncMock(side_effect=[res_cust, res_wf])
+
+        with patch("services.dograh_client.sync_phone_number_to_dograh", AsyncMock()) as mock_sync, \
+             patch("services.billing_service.charge_initial_phone_number_lease", AsyncMock()):
+
+            res = await assign_phone_number(
+                customer_id=10,
+                data=AssignPhoneNumberRequest(number="+919876543210"),
+                db=mock_db,
+                current_admin=admin
+            )
+
+        assert res["status"] == "assigned"
+        mock_sync.assert_awaited_once_with(1000, "+919876543210", workflow_id=None)
+

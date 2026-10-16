@@ -117,9 +117,8 @@ async def mark_notification_read(
         authorization=authorization,
     )
         
+    # Sub-orgs must NEVER delete or mutate master notifications
     allowed_ids = [customer.id]
-    if customer.billing_org_id:
-        allowed_ids.append(customer.billing_org_id)
 
     result = await db.execute(
         update(Notification)
@@ -148,9 +147,8 @@ async def mark_all_notifications_read(
         authorization=authorization,
     )
         
+    # Sub-orgs must NEVER delete or mutate master notifications
     allowed_ids = [customer.id]
-    if customer.billing_org_id:
-        allowed_ids.append(customer.billing_org_id)
 
     result = await db.execute(
         update(Notification)
@@ -180,9 +178,8 @@ async def delete_notification(
         authorization=authorization,
     )
         
+    # Sub-orgs must NEVER delete or mutate master notifications
     allowed_ids = [customer.id]
-    if customer.billing_org_id:
-        allowed_ids.append(customer.billing_org_id)
 
     res = await db.execute(
         select(Notification).where(Notification.id == notification_id, Notification.customer_id.in_(allowed_ids))

@@ -240,3 +240,47 @@ async def test_update_customer_patch_status_suspends_and_unsuspends_with_group_i
         assert 100 in blocked_ids, "Master org must be blocked"
         assert 200 in blocked_ids, "Sub-org must be blocked when master is suspended"
         mock_sync.assert_awaited_with(mock_db, 1)
+
+
+@pytest.mark.asyncio
+async def test_admin_unsuspend_master_strictly_guards_suborg_suspension_reason():
+    """
+    Verify Fix 4:
+    When unsuspending a master account (via unsuspend or update_customer):
+    - Sub-orgs with suspension_reason in ('zero_balance', None, '') become active.
+    - Sub-orgs with fraud or abuse suspension_reason stay suspended.
+    """
+    master = Customer(id=1, dograh_org_id=100, status="suspended", billing_org_id=None, onboarding_form={"suspension_reason": "zero_balance"})
+    sub_zero = Customer(id=2, dograh_org_id=200, status="suspended", billing_org_id=1, onboarding_form={"suspension_reason": "zero_balance"})
+    sub_empty = Customer(id=3, dograh_org_id=300, status="suspended", billing_org_id=1, onboarding_form={})
+    sub_fraud = Customer(id=4, dograh_org_id=400, status="suspended", billing_org_id=1, onboarding_form={"suspension_reason": "fraud"})
+
+    mock_db = MagicMock()
+    async def mock_execute(query, *args, **kwargs):
+        q_str = str(query)
+        mock_res = MagicMock()
+        if "customers.id =" in q_str:
+            mock_res.scalar_one_or_none.return_value = master
+        elif "customers.billing_org_id =" in q_str:
+            mock_res.scalars.return_value.all.return_value = [sub_zero, sub_empty, sub_fraud]
+        elif "subscriptions.customer_id =" in q_str:
+            mock_res.scalar_one_or_none.return_value = Subscription(customer_id=1, plan="starter")
+        return mock_res
+
+    mock_db.execute = AsyncMock(side_effect=mock_execute)
+    mock_db.commit = AsyncMock()
+
+    with patch("services.dograh_client.restore_org_calls", AsyncMock()), \
+         patch("services.billing_service.sync_wallet_block_policy", AsyncMock()):
+
+        admin_user = MagicMock()
+        res = await unsuspend_customer(1, db=mock_db, current_admin=admin_user)
+
+    assert res["status"] == "active"
+    assert master.status == "active"
+    assert sub_zero.status == "active"
+    assert sub_zero.suspended_at is None
+    assert sub_empty.status == "active"
+    assert sub_empty.suspended_at is None
+    assert sub_fraud.status == "suspended"
+

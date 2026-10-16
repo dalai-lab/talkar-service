@@ -120,3 +120,65 @@ async def test_create_topup_order_allows_zero_balance_suspension():
         )
         assert resp["razorpay_order_id"] == "order_123"
         assert resp["amount_paise"] == 100000
+
+
+@pytest.mark.asyncio
+async def test_fix_18_create_topup_order_allows_agent_building_status():
+    """
+    Fix 18 / Issue 14:
+    Verify that customers in agent_building state can create advance top-up orders.
+    """
+    cust_agent_building = Customer(
+        id=3,
+        dograh_org_id=30,
+        status="agent_building",
+        billing_org_id=None
+    )
+    sub = Subscription(id=3, customer_id=3, plan="starter")
+
+    mock_db = MagicMock()
+    res_cust = MagicMock()
+    res_cust.scalar_one_or_none.return_value = cust_agent_building
+
+    res_sub = MagicMock()
+    res_sub.scalar_one_or_none.return_value = sub
+
+    mock_db.execute = AsyncMock(side_effect=[res_cust, res_sub])
+
+    with patch("routers.billing.verify_customer_access", AsyncMock()), \
+         patch("services.razorpay_client.create_topup_order", AsyncMock(return_value={"id": "order_agent_building_123"})):
+        resp = await create_topup_order(
+            data=TopupRequest(dograh_org_id=30, amount_rupees=2000),
+            db=mock_db,
+            x_talkar_email="user@test.com"
+        )
+        assert resp["razorpay_order_id"] == "order_agent_building_123"
+        assert resp["amount_paise"] == 200000
+
+
+@pytest.mark.asyncio
+async def test_create_topup_order_rejects_ineligible_statuses():
+    """
+    Verify that create_topup_order continues to reject non-whitelisted statuses (e.g. rejected).
+    """
+    cust_rejected = Customer(
+        id=4,
+        dograh_org_id=40,
+        status="rejected",
+        billing_org_id=None
+    )
+    mock_db = MagicMock()
+    res = MagicMock()
+    res.scalar_one_or_none.return_value = cust_rejected
+    mock_db.execute = AsyncMock(return_value=res)
+
+    with patch("routers.billing.verify_customer_access", AsyncMock()):
+        with pytest.raises(HTTPException) as exc_info:
+            await create_topup_order(
+                data=TopupRequest(dograh_org_id=40, amount_rupees=1000),
+                db=mock_db,
+                x_talkar_email="user@test.com"
+            )
+        assert exc_info.value.status_code == 400
+        assert "Account not eligible for top-up" in exc_info.value.detail
+

@@ -259,6 +259,8 @@ async def test_request_tier_upgrade_from_sub_org_rejected_and_master_cascades():
     res_master_cust.scalar_one_or_none.return_value = master
     res_master_sub = MagicMock()
     res_master_sub.scalar_one_or_none.return_value = master_sub
+    res_wallet = MagicMock()
+    res_wallet.scalar_one_or_none.return_value = Wallet(id=1, customer_id=1, balance_paise=1000000)
     res_suborgs = MagicMock()
     res_suborgs.scalars.return_value.all.return_value = [sub_org_1, sub_org_2]
     res_sub_sub_1 = MagicMock()
@@ -269,6 +271,7 @@ async def test_request_tier_upgrade_from_sub_org_rejected_and_master_cascades():
     mock_db.execute = AsyncMock(side_effect=[
         res_master_cust,
         res_master_sub,
+        res_wallet,
         res_suborgs,
         res_sub_sub_1,
         res_sub_sub_2,

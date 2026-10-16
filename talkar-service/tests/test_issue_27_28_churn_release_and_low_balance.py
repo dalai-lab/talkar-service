@@ -94,9 +94,9 @@ async def test_blocker_27_bill_monthly_phone_number_leases_excludes_churned_cust
 
     results = await bill_monthly_phone_number_leases(mock_db)
 
-    # Verify query strictly joined Customer and checked Customer.status == 'active'
+    # Verify query strictly joined Customer and checked Customer.status in ('active', 'suspended')
     lease_query = executed_queries[0]
-    assert "customers.status = :status" in lease_query or "customers.status = 'active'" in lease_query
+    assert "customers.status in" in lease_query.lower() or "customers.status = :status" in lease_query or "customers.status = 'active'" in lease_query
     assert "phone_numbers.status = :status" in lease_query or "phone_numbers.status = 'active'" in lease_query
 
     # Only master's number was processed (covered by free allowance)

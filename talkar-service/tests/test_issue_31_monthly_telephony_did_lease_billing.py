@@ -8,7 +8,7 @@ from fastapi import HTTPException
 # Add talkar-service to sys.path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from db.models import Customer, Subscription, Wallet, WalletTransaction, PhoneNumber, TransactionType, TalkarAdmin
+from db.models import Customer, Subscription, Wallet, WalletTransaction, PhoneNumber, TransactionType, TalkarAdmin, Invoice
 from services.billing_service import (
     charge_initial_phone_number_lease,
     bill_monthly_phone_number_leases,
@@ -272,3 +272,80 @@ async def test_release_customer_phone_number_endpoint():
     assert res == {"status": "released"}
     assert pn.status == "released"
     mock_db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fix_15_suspended_customer_phone_lease_deduction_accelerates_churn():
+    """
+    Fix 15: Monthly Phone Lease Billing for Suspended Fleet Accounts
+    Verify that active phone numbers belonging to suspended customers are included in
+    phone number lease deductions, creating a ledger debit on the master wallet.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    old_time = now - datetime.timedelta(days=35)
+
+    suspended_master = Customer(id=1, dograh_org_id=10, status="suspended", billing_org_id=None, company_name="Suspended Master")
+    pn1 = PhoneNumber(id=1, customer_id=1, number="+919876543001", status="active", purchased_at=old_time, last_billed_at=old_time)
+    pn2 = PhoneNumber(id=2, customer_id=1, number="+919876543002", status="active", purchased_at=old_time, last_billed_at=old_time, monthly_cost_paise=50000)
+
+    # Master wallet starts with low balance (e.g. 20000 paise = ₹200). After 50000 paise lease deduction, balance goes negative
+    master_wallet = Wallet(id=1, customer_id=1, balance_paise=20000, zero_balance_since=None)
+
+    mock_db = MagicMock()
+    mock_db.commit = AsyncMock()
+    mock_db.flush = AsyncMock()
+    mock_db.add = MagicMock()
+
+    executed_queries = []
+
+    async def mock_execute(query, *args, **kwargs):
+        q_str = str(query)
+        executed_queries.append(q_str)
+        mock_res = MagicMock()
+        if "from phone_numbers" in q_str.lower():
+            # Returns both phone numbers for suspended customer
+            mock_res.all.return_value = [(pn1, suspended_master), (pn2, suspended_master)]
+        elif "subscriptions.customer_id =" in q_str:
+            mock_res.scalar_one_or_none.return_value = Subscription(id=1, customer_id=1, plan="starter")
+        elif "UPDATE wallets" in q_str or "wallets.customer_id =" in q_str or "RETURNING" in q_str:
+            master_wallet.balance_paise -= 50000
+            master_wallet.zero_balance_since = now
+            mock_res.scalar_one_or_none.return_value = master_wallet
+        return mock_res
+
+    mock_db.execute = AsyncMock(side_effect=mock_execute)
+
+    with patch("services.billing_service.check_and_trigger_auto_recharge", AsyncMock()), \
+         patch("services.billing_service.sync_wallet_block_policy", AsyncMock()) as mock_sync, \
+         patch("services.notification_service.notify_customer_phone_number_lease_billed", AsyncMock()):
+
+        results = await bill_monthly_phone_number_leases(mock_db)
+
+    # First number is covered by free allowance (starter plan gives 1 free phone number)
+    # Second number is billed at 50000 paise
+    assert results["billed_count"] == 1
+    assert results["total_paise"] == 50000
+    assert results["free_numbers_count"] == 1
+
+    # Verify query included Customer.status.in_(("active", "suspended"))
+    lease_query = executed_queries[0]
+    assert "customers.status in" in lease_query.lower()
+
+    # Verify ledger debit WalletTransaction added
+    added_txns = [call.args[0] for call in mock_db.add.call_args_list if call.args and isinstance(call.args[0], WalletTransaction)]
+    assert len(added_txns) == 1
+    txn = added_txns[0]
+    assert txn.customer_id == 1
+    assert txn.type == TransactionType.PHONE_NUMBER_LEASE.value
+    assert txn.amount_paise == -50000
+
+    # Verify Invoice was created
+    added_invoices = [call.args[0] for call in mock_db.add.call_args_list if call.args and isinstance(call.args[0], Invoice)]
+    assert len(added_invoices) == 1
+    invoice = added_invoices[0]
+    assert invoice.customer_id == 1
+    assert invoice.amount_paise == 50000
+
+    # Negative balance accelerates churn: sync_wallet_block_policy invoked
+    mock_sync.assert_awaited_once_with(mock_db, 1)
+

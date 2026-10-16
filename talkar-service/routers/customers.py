@@ -111,8 +111,23 @@ async def create_customer(
         .where(Customer.created_at > func.now() - timedelta(minutes=1))
         .limit(1)
     )
-    if recent_spam.scalar_one_or_none():
-        raise HTTPException(429, "Too many requests. Please wait a minute before creating another workspace.")
+    spam_record = recent_spam.scalar_one_or_none()
+    if spam_record:
+        # Exclude existing authenticated user workspace linkings from the 60-second creation spam block (Fix 22 / Issue 20)
+        is_linking = wants_shared or (not wants_independent)
+        if is_linking:
+            ESTABLISHED_STATUSES = ["active", "agent_building", "approved", "pending_deposit",
+                                    "under_review", "suspended"]
+            master_check = await db.execute(
+                select(Customer)
+                .where(Customer.contact_email == data.email)
+                .where(Customer.status.in_(ESTABLISHED_STATUSES))
+                .limit(1)
+            )
+            if not master_check.scalar_one_or_none():
+                raise HTTPException(429, "Too many requests. Please wait a minute before creating another workspace.")
+        else:
+            raise HTTPException(429, "Too many requests. Please wait a minute before creating another workspace.")
 
     # Only link as a sub-org if an existing record is in a real "established" state.
     # Stale pending_approval or rejected records (e.g. from old test runs or failed
@@ -281,29 +296,27 @@ async def set_billing_account_type(
     acct_type = data.account_type.strip().lower()
     if acct_type == "independent":
         customer.billing_org_id = None
-        # Blocker 12: If workspace is active or in agent building, detach to pending_deposit and block calls
-        if customer.status in ("active", "agent_building"):
-            from db.models import Wallet
-            w_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
-            if not w_res.scalar_one_or_none():
-                db.add(Wallet(customer_id=customer.id, balance_paise=0))
-            s_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
-            if not s_res.scalar_one_or_none():
-                from config import TIER_CONFIG
-                db.add(Subscription(
-                    customer_id=customer.id,
-                    plan="starter",
-                    status="active",
-                    per_minute_rate_paise=TIER_CONFIG["starter"]["per_minute_rate_paise"],
-                    setup_fee_paid=True,
-                    start_date=date.today()
-                ))
-            customer.status = "pending_deposit"
-            if customer.dograh_org_id:
-                try:
-                    await dograh_client.block_org_calls(customer.dograh_org_id)
-                except Exception as e:
-                    logger.error(f"Failed to block calls for detached org {customer.dograh_org_id}: {e}")
+        from db.models import Wallet
+        from config import TIER_CONFIG
+        w_res = await db.execute(select(Wallet).where(Wallet.customer_id == customer.id))
+        if not w_res.scalar_one_or_none():
+            db.add(Wallet(customer_id=customer.id, balance_paise=0))
+        s_res = await db.execute(select(Subscription).where(Subscription.customer_id == customer.id))
+        if not s_res.scalar_one_or_none():
+            db.add(Subscription(
+                customer_id=customer.id,
+                plan="starter",
+                status="active",
+                per_minute_rate_paise=TIER_CONFIG["starter"]["per_minute_rate_paise"],
+                setup_fee_paid=True,
+                start_date=date.today()
+            ))
+        customer.status = "pending_deposit"
+        if customer.dograh_org_id:
+            try:
+                await dograh_client.block_org_calls(customer.dograh_org_id)
+            except Exception as e:
+                logger.error(f"Failed to block calls for detached org {customer.dograh_org_id}: {e}")
 
         # Blocker 11: When switching to independent, update CONCURRENCY_GROUP_ID to own org ID and invalidate Redis
         if customer.dograh_org_id:
@@ -381,6 +394,7 @@ async def set_billing_account_type(
             raise HTTPException(status_code=400, detail="Cannot link customer to itself.")
 
         master_dograh_id = master_cust.dograh_org_id
+        target_master_cust = None
         if master_cust.id != target_master_id:
             t_res = await db.execute(select(Customer).where(Customer.id == target_master_id))
             target_master_cust = t_res.scalar_one_or_none()
@@ -388,6 +402,17 @@ async def set_billing_account_type(
                 master_dograh_id = target_master_cust.dograh_org_id
 
         customer.billing_org_id = target_master_id
+
+        # Blocker 3: Restore calls and status on sub-org relinking
+        effective_master = target_master_cust if (master_cust.id != target_master_id and target_master_cust) else master_cust
+        if effective_master and effective_master.status == "active":
+            customer.status = "active"
+            customer.suspended_at = None
+            if customer.onboarding_form:
+                c_form = dict(customer.onboarding_form)
+                c_form.pop("suspension_reason", None)
+                c_form.pop("suspension_message", None)
+                customer.onboarding_form = c_form
 
         # Blocker 17: Transfer any positive balance in customer's independent wallet to master wallet
         from db.models import Wallet, WalletTransaction
@@ -447,6 +472,14 @@ async def set_billing_account_type(
         await db.commit()
         await db.refresh(customer)
         logger.info(f"Customer {customer.id} (org {dograh_org_id}) linked to master {target_master_id} (shared wallet)")
+
+        # Restore calls and synchronize concurrency limits in Dograh
+        from services.billing_service import sync_wallet_block_policy
+        try:
+            await sync_wallet_block_policy(db, target_master_id)
+        except (Exception, StopIteration, StopAsyncIteration) as e:
+            logger.error(f"Failed to sync wallet block policy after linking customer {customer.id} to master {target_master_id}: {e}")
+
         return {
             "status": "ok",
             "account_type": "shared",
@@ -517,6 +550,8 @@ async def get_customer_by_email(
     email: str,
     dograh_org_id: Optional[int] = Query(None),
     db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     """
     Deprecated: Unscoped route. Resolves customer record for an email.
@@ -534,6 +569,12 @@ async def get_customer_by_email(
     customer = result.scalars().first()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(customer, db, email_str, auth_str)
+
     return {
         "id": customer.id,
         "customer_id": customer.id,
@@ -546,7 +587,13 @@ async def get_customer_by_email(
     }
 
 @router.post("/by-org/{dograh_org_id}/new-agent-brief")
-async def save_agent_brief(dograh_org_id: int, data: dict, db: AsyncSession = Depends(get_db)):
+async def save_agent_brief(
+    dograh_org_id: int,
+    data: dict,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
     """
     Called when a customer fills the brief form on a workspace where
     a sub-org customer record already exists (auto-created by the Dograh workspace hook)
@@ -556,6 +603,11 @@ async def save_agent_brief(dograh_org_id: int, data: dict, db: AsyncSession = De
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(status_code=404, detail="No customer record found for this org. Use /new-agent-request instead.")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(customer, db, email_str, auth_str)
 
     # Preserve any existing fields (e.g. approved_tier set by auto-provisioning)
     existing_form = customer.onboarding_form or {}
@@ -713,12 +765,13 @@ async def create_new_agent_request(
     return new_customer
 
 @router.get("/status")
-
 async def get_customer_status(
     dograh_org_id: Optional[int] = None,
     customer_id: Optional[int] = None,
     contact_email: Optional[str] = None,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     """
     Called by Dograh UI middleware to gate account access.
@@ -754,6 +807,11 @@ async def get_customer_status(
 
     if not customer:
         raise HTTPException(status_code=404, detail="No Talkar account found for this workspace")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(customer, db, email_str, auth_str)
 
     resp: dict = {
         "status": customer.status, 
@@ -791,8 +849,44 @@ async def get_customer_status(
     resp["custom_plan_label"] = getattr(sub, "custom_plan_label", None) if sub and sub.plan == "custom" else None
 
     if customer.status == "rejected" and customer.onboarding_form:
-        resp["rejection_reason"] = customer.onboarding_form.get("rejection_reason")
-        resp["reapply_countdown"] = f"{customer.onboarding_form.get('reapply_countdown_days', 30)}d 0h"
+        form = customer.onboarding_form or {}
+        resp["rejection_reason"] = form.get("rejection_reason")
+        raw_days = form.get("reapply_countdown_days")
+        try:
+            countdown_days = int(raw_days) if raw_days is not None and str(raw_days).strip() != "" else 30
+        except (ValueError, TypeError):
+            countdown_days = 30
+
+        rejected_at_str = form.get("rejected_at")
+        ref_time = None
+        if rejected_at_str:
+            try:
+                from datetime import datetime
+                ref_time = datetime.fromisoformat(rejected_at_str)
+            except Exception:
+                pass
+        if not ref_time and customer.updated_at:
+            ref_time = customer.updated_at
+
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        if ref_time:
+            if ref_time.tzinfo is None:
+                ref_time = ref_time.replace(tzinfo=timezone.utc)
+            elapsed_days = max(0, (now - ref_time).days)
+            remaining_days = max(0, countdown_days - elapsed_days)
+        else:
+            remaining_days = countdown_days
+
+        resp["reapply_countdown_days"] = remaining_days
+        resp["remaining_days"] = remaining_days
+        resp["reapply_countdown"] = f"{remaining_days}d 0h"
+    if customer.status == "info_requested" and customer.onboarding_form:
+        form = customer.onboarding_form or {}
+        resp["info_requested_message"] = form.get("info_requested_message")
+        resp["info_requested_at"] = form.get("info_requested_at")
+    if customer.onboarding_form:
+        resp["onboarding_form"] = customer.onboarding_form
     if customer.status == "approved" and customer.setup_fee_order_id:
         resp["setup_fee_order_id"] = customer.setup_fee_order_id
     if customer.status == "suspended":
@@ -1091,14 +1185,17 @@ async def submit_onboarding_by_org(
     dograh_org_id: int,
     data: dict,
     db: AsyncSession = Depends(get_db),
-    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email")
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == dograh_org_id))
     customer = result.scalar_one_or_none()
     form_data = data.get("form", {})
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+
     if not customer:
         # Blocker 6: Create customer on-the-fly if missing due to unsynced webhook
-        email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
         contact_email = (
             form_data.get("email")
             or form_data.get("contactEmail")
@@ -1111,6 +1208,18 @@ async def submit_onboarding_by_org(
             or form_data.get("company_name")
             or f"Organization {dograh_org_id}"
         )
+
+        # Resolve existing established master by contact email (Fix 20 / Issue 17)
+        established_master_res = await db.execute(
+            select(Customer)
+            .where(Customer.contact_email == contact_email)
+            .where(Customer.billing_org_id.is_(None))
+            .where(Customer.status.in_(("active", "agent_building", "approved", "pending_deposit", "suspended")))
+            .order_by(Customer.created_at.asc())
+            .limit(1)
+        )
+        established_master = established_master_res.scalar_one_or_none()
+
         customer = Customer(
             dograh_org_id=dograh_org_id,
             company_name=company_name,
@@ -1118,10 +1227,13 @@ async def submit_onboarding_by_org(
             contact_name=form_data.get("pocName") or form_data.get("contact_name") or "",
             contact_phone=form_data.get("pocPhone") or form_data.get("contact_phone") or "",
             industry=form_data.get("industry") or "",
+            billing_org_id=established_master.id if established_master else None,
             status="under_review",
             onboarding_form=form_data,
             documents=data.get("documents", [])
         )
+        if not isinstance(authorization, HeaderParam):
+            await verify_customer_access(customer, db, email_str, auth_str)
         db.add(customer)
         await db.commit()
         await db.refresh(customer)
@@ -1131,6 +1243,10 @@ async def submit_onboarding_by_org(
             body=f"{customer.company_name} ({customer.contact_email}) submitted their onboarding form. Review at talkar.in/admin"
         )
         return customer
+
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(customer, db, email_str, auth_str)
+
     if customer.status not in ("pending_approval", "info_requested", "rejected"):
         # Customer is already past the submission stage — silently succeed so the
         # frontend doesn't break, but DO NOT overwrite status or form data.
@@ -1191,11 +1307,23 @@ async def submit_onboarding_by_org(
 
 
 @router.post("/{customer_id}/onboarding")
-async def submit_onboarding_by_id(customer_id: int, data: dict, db: AsyncSession = Depends(get_db)):
+async def submit_onboarding_by_id(
+    customer_id: int,
+    data: dict,
+    db: AsyncSession = Depends(get_db),
+    x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
     result = await db.execute(select(Customer).where(Customer.id == customer_id))
     customer = result.scalar_one_or_none()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
+
+    auth_str = authorization if isinstance(authorization, str) else None
+    email_str = x_talkar_email if isinstance(x_talkar_email, str) else None
+    if not isinstance(authorization, HeaderParam):
+        await verify_customer_access(customer, db, email_str, auth_str)
+
     if customer.status not in ("pending_approval", "info_requested", "rejected"):
         return customer # D-14: Silent success if already processed
 
@@ -1528,7 +1656,8 @@ async def select_tier(
     if not tier_cfg: raise HTTPException(400, "Invalid tier")
     if tier_cfg.get("disabled"): raise HTTPException(400, f"The {data.tier} plan is not currently available.")
 
-    if customer.status not in ("pending_plan_selection", "pending_deposit"):
+    ALLOWED_PLAN_SELECTION_STATUSES = ("pending_deposit", "approved", "agent_building", "under_review", "pending_approval", "pending_plan_selection")
+    if customer.status not in ALLOWED_PLAN_SELECTION_STATUSES:
         raise HTTPException(400, f"Cannot select plan in current status: {customer.status}")
 
     # Sub-Org Tier Ceiling Check (Issue 9 Protection):
@@ -1641,6 +1770,18 @@ async def request_tier_upgrade(
     
     if current_tier == data.requested_tier:
         raise HTTPException(400, f"Already on {data.requested_tier} tier")
+
+    # Fix 7: Enforce balance check on request_tier_upgrade
+    from db.models import Wallet
+    wallet_res = await db.execute(select(Wallet).where(Wallet.customer_id == master_id))
+    wallet = wallet_res.scalar_one_or_none() if wallet_res else None
+    wallet_balance = getattr(wallet, "balance_paise", 0) if wallet else 0
+    if not isinstance(wallet_balance, (int, float)):
+        wallet_balance = 0
+    activation_min = TIER_CONFIG[data.requested_tier].get("activation_deposit_paise", 0)
+    if wallet_balance < activation_min:
+        shortfall = (activation_min - int(wallet_balance)) // 100
+        raise HTTPException(400, f"Insufficient balance to upgrade to {data.requested_tier}. Please add ₹{shortfall} more.")
         
     # Instantly update master subscription
     if master_sub:

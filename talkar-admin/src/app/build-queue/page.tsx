@@ -21,14 +21,18 @@ import { Building, Eye, UserCheck, CheckCircle2, FileText, Download, AlertCircle
 
 const DocumentViewer = ({ title, dataUrl }: { title: string, dataUrl: string }) => {
   if (!dataUrl) return null;
-  const isPdf = dataUrl.startsWith("data:application/pdf");
-  const isImage = dataUrl.startsWith("data:image/");
+  const isPdf = dataUrl.startsWith("data:application/pdf") || dataUrl.toLowerCase().includes(".pdf");
+  const isImage = dataUrl.startsWith("data:image/") || /\.(png|jpe?g|webp|gif)/i.test(dataUrl.split("?")[0]);
   
   const getExtension = () => {
     if (isPdf) return "pdf";
     if (isImage) {
-      const mime = dataUrl.split(";")[0].split(":")[1];
-      return mime.split("/")[1] || "png";
+      if (dataUrl.startsWith("data:")) {
+        const mime = dataUrl.split(";")[0].split(":")[1];
+        return mime.split("/")[1] || "png";
+      }
+      const match = dataUrl.split("?")[0].match(/\.([a-zA-Z0-9]+)$/);
+      return match ? match[1] : "png";
     }
     return "bin";
   };

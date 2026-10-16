@@ -98,10 +98,15 @@ def mock_db_with_customer():
     ("GET", "/customers/by-org/10", None),
     ("GET", "/customers/by-org/10/agents", None),
     ("GET", "/customers/by-org/10/crm-links", None),
+    ("POST", "/customers/by-org/10/new-agent-brief", {"form": {"prompt": "test"}}),
+    ("POST", "/customers/by-org/10/onboarding", {"form": {"businessName": "Acme"}}),
+    ("POST", "/customers/1/onboarding", {"form": {"businessName": "Acme"}}),
+    ("GET", "/customers/status?dograh_org_id=10", None),
+    ("GET", "/customers/by-email/alice@company.com", None),
 ])
 async def test_endpoint_unauthenticated_request_rejected_with_401(mock_db_with_customer, method, path, payload):
     """
-    Issue 27: Verify that anonymous requests without Authorization header
+    Issue 27 & Fix 10: Verify that anonymous requests without Authorization header
     to all critical billing and customer management routes are rejected with HTTP 401.
     """
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -133,10 +138,15 @@ async def test_endpoint_unauthenticated_request_rejected_with_401(mock_db_with_c
     ("GET", "/customers/by-org/10", None),
     ("GET", "/customers/by-org/10/agents", None),
     ("GET", "/customers/by-org/10/crm-links", None),
+    ("POST", "/customers/by-org/10/new-agent-brief", {"form": {"prompt": "test"}}),
+    ("POST", "/customers/by-org/10/onboarding", {"form": {"businessName": "Acme"}}),
+    ("POST", "/customers/1/onboarding", {"form": {"businessName": "Acme"}}),
+    ("GET", "/customers/status?dograh_org_id=10", None),
+    ("GET", "/customers/by-email/alice@company.com", None),
 ])
 async def test_endpoint_forged_bearer_token_rejected_with_401(mock_db_with_customer, method, path, payload):
     """
-    Issue 27: Verify that requests with invalid/forged Bearer tokens are rejected with HTTP 401.
+    Issue 27 & Fix 10: Verify that requests with invalid/forged Bearer tokens are rejected with HTTP 401.
     """
     headers = {
         "Authorization": "Bearer invalid-garbage-token-12345",
@@ -169,6 +179,11 @@ async def test_endpoint_forged_bearer_token_rejected_with_401(mock_db_with_custo
     ("GET", "/customers/by-org/10", None),
     ("GET", "/customers/by-org/10/agents", None),
     ("GET", "/customers/by-org/10/crm-links", None),
+    ("POST", "/customers/by-org/10/new-agent-brief", {"form": {"prompt": "test"}}),
+    ("POST", "/customers/by-org/10/onboarding", {"form": {"businessName": "Acme"}}),
+    ("POST", "/customers/1/onboarding", {"form": {"businessName": "Acme"}}),
+    ("GET", "/customers/status?dograh_org_id=10", None),
+    ("GET", "/customers/by-email/alice@company.com", None),
 ])
 async def test_endpoint_cross_org_idor_rejected_with_403(mock_db_with_customer, method, path, payload):
     """

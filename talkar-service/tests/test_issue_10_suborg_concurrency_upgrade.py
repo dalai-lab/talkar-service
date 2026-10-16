@@ -283,6 +283,8 @@ async def test_request_tier_upgrade_cascades_to_all_suborgs():
                 mock_res.scalar_one_or_none.return_value = master_sub
         elif "customers.billing_org_id =" in q_str:
             mock_res.scalars.return_value.all.return_value = [sub_review]
+        elif "wallets" in q_str.lower():
+            mock_res.scalar_one_or_none.return_value = Wallet(id=1, customer_id=1, balance_paise=2000000)
         return mock_res
 
     mock_db.execute = AsyncMock(side_effect=mock_exec)

@@ -215,3 +215,56 @@ async def test_single_org_create_upgrade_order_backward_compatibility():
     assert single_cust.onboarding_form.get("approved_tier") == "growth"
     prov_calls = [call.args[0] for call in mock_prov.call_args_list]
     assert 5 in prov_calls
+
+
+@pytest.mark.asyncio
+async def test_fix_7_request_tier_upgrade_enforces_balance_check():
+    """
+    Test Fix 7:
+    request_tier_upgrade checks that master wallet balance meets activation_deposit_paise for requested tier.
+    - If balance is insufficient, raises HTTPException(400) with shortfall message.
+    - If balance is sufficient, successfully updates tier.
+    """
+    from routers.customers import request_tier_upgrade, TierUpgradeRequest
+
+    master = Customer(id=1, dograh_org_id=10, status="active", billing_org_id=None, onboarding_form={})
+    master_sub = Subscription(id=1, customer_id=1, plan="starter", per_minute_rate_paise=600)
+    # Pro activation deposit is 1,000,000 paise (₹10,000). Wallet has 400,000 paise (₹4,000). Shortfall is ₹6,000.
+    low_wallet = Wallet(id=1, customer_id=1, balance_paise=400000)
+
+    mock_db = MagicMock()
+    mock_db.commit = AsyncMock()
+
+    async def mock_execute(query, *args, **kwargs):
+        q_str = str(query)
+        mock_res = MagicMock()
+        if "customers.dograh_org_id =" in q_str:
+            mock_res.scalar_one_or_none.return_value = master
+        elif "subscriptions.customer_id =" in q_str:
+            mock_res.scalar_one_or_none.return_value = master_sub
+        elif "wallets.customer_id =" in q_str or "from wallets" in q_str.lower():
+            mock_res.scalar_one_or_none.return_value = low_wallet
+        elif "customers.billing_org_id =" in q_str:
+            mock_res.scalars.return_value.all.return_value = []
+        return mock_res
+
+    mock_db.execute = AsyncMock(side_effect=mock_execute)
+
+    # 1. Insufficient balance raises 400
+    with pytest.raises(HTTPException) as exc_info:
+        await request_tier_upgrade(org_id=10, data=TierUpgradeRequest(requested_tier="pro"), db=mock_db)
+
+    assert exc_info.value.status_code == 400
+    assert "Insufficient balance to upgrade to pro. Please add ₹4000 more." in exc_info.value.detail
+
+    # 2. Sufficient balance succeeds
+    low_wallet.balance_paise = 1500000
+    with patch("services.provisioning_service.run_provisioning", AsyncMock()), \
+         patch("services.billing_service.sync_wallet_block_policy", AsyncMock()), \
+         patch("services.notification_service.send_email", AsyncMock()):
+
+        res = await request_tier_upgrade(org_id=10, data=TierUpgradeRequest(requested_tier="pro"), db=mock_db)
+
+    assert res["status"] == "success"
+    assert master_sub.plan == "pro"
+

@@ -357,3 +357,62 @@ async def test_set_custom_pricing_rejects_below_cogs_floor():
     assert exc_info.value.status_code == 400
     assert "below provider floor" in exc_info.value.detail
 
+
+@pytest.mark.asyncio
+async def test_fix_6_set_custom_pricing_allows_pending_deposit():
+    """Verify that set_custom_pricing allows customers in pending_deposit state."""
+    from routers.admin import set_custom_pricing, SetCustomPricingRequest
+
+    mock_db = MagicMock()
+    mock_db.commit = AsyncMock()
+    customer = Customer(id=10, status="pending_deposit", billing_org_id=None)
+    sub = Subscription(id=1, customer_id=10, plan="starter", per_minute_rate_paise=600)
+
+    res_cust = MagicMock()
+    res_cust.scalar_one_or_none.return_value = customer
+    res_sub = MagicMock()
+    res_sub.scalar_one_or_none.return_value = sub
+    res_suborgs = MagicMock()
+    res_suborgs.scalars.return_value.all.return_value = []
+    mock_db.execute = AsyncMock(side_effect=[res_cust, res_sub, res_suborgs])
+
+    req = SetCustomPricingRequest(
+        per_minute_rate_paise=1500,
+        concurrent_call_limit=5,
+        max_call_duration_seconds=900,
+        activation_deposit_paise=50000,
+        tts_provider="deepgram",
+    )
+    admin = MagicMock()
+
+    with patch("services.provisioning_service.run_provisioning", AsyncMock()), \
+         patch("services.dograh_client.upsert_org_config", AsyncMock()), \
+         patch("services.billing_service.sync_wallet_block_policy", AsyncMock()):
+
+        res = await set_custom_pricing(customer_id=10, data=req, db=mock_db, current_admin=admin)
+
+    assert res["status"] == "success"
+    assert sub.plan == "custom"
+    assert sub.per_minute_rate_paise == 1500
+
+
+@pytest.mark.asyncio
+async def test_fix_6_retry_provisioning_allows_pending_deposit():
+    """Verify that retry_provisioning allows customers in pending_deposit state."""
+    from routers.admin import retry_provisioning
+
+    mock_db = MagicMock()
+    customer = Customer(id=15, status="pending_deposit")
+
+    res_cust = MagicMock()
+    res_cust.scalar_one_or_none.return_value = customer
+    mock_db.execute = AsyncMock(return_value=res_cust)
+
+    admin = MagicMock()
+    with patch("services.provisioning_service.run_provisioning", AsyncMock()) as mock_prov:
+        res = await retry_provisioning(customer_id=15, db=mock_db, current_admin=admin)
+
+    assert res["status"] == "provisioning_complete"
+    mock_prov.assert_awaited_once_with(15)
+
+

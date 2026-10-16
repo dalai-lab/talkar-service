@@ -12,6 +12,21 @@ if settings.RAZORPAY_KEY_ID and settings.RAZORPAY_KEY_SECRET:
 else:
     client = None
 
+class _OrderWrapper:
+    def create(self, data: dict = None, **kwargs):
+        payload = data if data is not None else kwargs
+        if client and hasattr(client, "order"):
+            return client.order.create(data=payload)
+        receipt = payload.get("receipt", "upg") if payload else "upg"
+        return {
+            "id": f"mock_order_{receipt}",
+            "amount": payload.get("amount", 0) if payload else 0,
+            "currency": payload.get("currency", "INR") if payload else "INR",
+            "status": "created"
+        }
+
+order = _OrderWrapper()
+
 import asyncio
 
 async def create_setup_fee_order(amount_paise: int, receipt: str, customer_id: int, plan: str) -> dict:
