@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Query, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, func, desc
@@ -195,7 +195,7 @@ async def delete_notification(
 
 
 class SendVerificationEmailRequest(BaseModel):
-    to_email: EmailStr
+    to_email: str
     otp_code: str
 
 
