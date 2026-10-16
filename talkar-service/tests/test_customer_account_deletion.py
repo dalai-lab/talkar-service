@@ -58,9 +58,84 @@ async def test_unprovisioned_customer_deletion():
 
 
 @pytest.mark.asyncio
+async def test_provisioned_customer_deletion():
+    """
+    Test Case 2: Provisioned customer with Dograh organization and Talkar resources.
+    Verify all 22 Voice Agent steps and Talkar steps execute and purge resources across both DBs.
+    """
+    admin = TalkarAdmin(id=1, email="admin@talkar.in")
+    cust = Customer(
+        id=55,
+        company_name="Provisioned Corp",
+        dograh_org_id=101,
+        dograh_user_id=88,
+        status="active",
+        billing_org_id=None,
+    )
+
+    mock_db = MagicMock()
+    mock_db.commit = AsyncMock()
+    mock_db.rollback = AsyncMock()
+
+    async def mock_execute(query, *args, **kwargs):
+        q_str = str(query).lower()
+        res = MagicMock()
+        if "select" in q_str and "from customers" in q_str:
+            res.scalar_one_or_none.return_value = cust
+            res.scalars.return_value.all.return_value = []
+        else:
+            res.rowcount = 1
+            res.scalar_one_or_none.return_value = None
+            res.scalars.return_value.all.return_value = []
+        return res
+
+    mock_db.execute = AsyncMock(side_effect=mock_execute)
+
+    mock_ddb = MagicMock()
+    async def mock_ddb_execute(query, *args, **kwargs):
+        q_str = str(query).lower()
+        res = MagicMock()
+        if "select count(wr.id)" in q_str:
+            res.scalar.return_value = 0  # 0 active calls
+        elif "select user_id from organization_users" in q_str:
+            res.all.return_value = [(88,)]
+        elif "select count(*) from organization_users where user_id" in q_str:
+            res.scalar.return_value = 0  # user only in this org
+        else:
+            res.rowcount = 2
+            res.scalar.return_value = None
+            res.all.return_value = []
+        return res
+
+    mock_ddb.execute = AsyncMock(side_effect=mock_ddb_execute)
+    mock_ddb.commit = AsyncMock()
+    mock_ddb.__aenter__ = AsyncMock(return_value=mock_ddb)
+    mock_ddb.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("services.dograh_client.DograhSessionLocal", return_value=mock_ddb), \
+         patch("routers.admin._evict_customer_redis_keys", AsyncMock()) as mock_redis:
+        res = await delete_customer_account(
+            customer_id=55,
+            cascade_suborgs=False,
+            db=mock_db,
+            current_admin=admin
+        )
+
+    assert res["success"] is True
+    assert mock_redis.called
+    assert res["deleted_entities"]["dograh_user_purged"] is True
+    assert res["deleted_entities"]["voice_agent_db"]["organizations"] == 2
+    assert res["deleted_entities"]["voice_agent_db"]["users_purged"] == 1
+    assert res["deleted_entities"]["talkar_db"]["customers"] == 1
+    assert res["deleted_entities"]["talkar_db"]["agents"] == 1
+    assert res["deleted_entities"]["talkar_db"]["call_logs"] == 1
+    assert mock_db.commit.called
+
+
+@pytest.mark.asyncio
 async def test_active_calls_guard_blocks_deletion_409():
     """
-    Test Case 2: In-flight active calls exist for the customer's Dograh organization.
+    Test Case 3: In-flight active calls exist for the customer's Dograh organization.
     Verify endpoint raises HTTP 409 Conflict and 0 records are deleted.
     """
     admin = TalkarAdmin(id=1, email="admin@talkar.in")
