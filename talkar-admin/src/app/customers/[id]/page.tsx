@@ -176,6 +176,10 @@ export default function CustomerDetailPage() {
   const [isSuspending, setIsSuspending] = useState(false);
   const [isUnsuspending, setIsUnsuspending] = useState(false);
   const [isResettingLogs, setIsResettingLogs] = useState(false);
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [cascadeSubOrgs, setCascadeSubOrgs] = useState(false);
 
   useEffect(() => {
     fetchCustomer();
@@ -511,6 +515,53 @@ export default function CustomerDetailPage() {
       alert(`Network error: ${e}`);
     } finally {
       setIsResettingLogs(false);
+    }
+  };
+
+  const handleDeleteCustomer = async () => {
+    const expected = (customer?.company_name || "").trim();
+    if (deleteConfirmText.trim() !== expected) return;
+    setIsDeleting(true);
+    try {
+      const url = `/admin/customers/${id}?cascade_suborgs=${cascadeSubOrgs}`;
+      const res = await adminFetch(url, { method: "DELETE" });
+
+      if (res.status === 409) {
+        const err = await res.json().catch(() => ({}));
+        alert(`⚠️ Cannot Delete Account (Active Calls In Progress):\n\n${err.detail || "Active calls are in progress."}`);
+        return;
+      }
+
+      if (res.status === 400) {
+        const err = await res.json().catch(() => ({}));
+        alert(`⚠️ Cannot Delete Account (Sub-Organizations Linked):\n\n${err.detail}`);
+        return;
+      }
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(`❌ Deletion Failed (${res.status}):\n\n${err.detail || res.statusText}`);
+        return;
+      }
+
+      const data = await res.json();
+      alert(
+        `✅ Account Permanently Deleted!\n\n` +
+        `Customer "${customer?.company_name}" (#${id}) has been permanently purged.\n` +
+        `- Dograh Org #${data.deleted_entities?.dograh_org_id ?? "N/A"} purged: ${data.deleted_entities?.dograh_user_purged ? "Yes" : "Preserved (multi-org)"}\n` +
+        `- Workflows purged: ${data.deleted_entities?.voice_agent_db?.workflows ?? 0}\n` +
+        `- Talkar Agents purged: ${data.deleted_entities?.talkar_db?.agents ?? 0}\n` +
+        `- Call Logs purged: ${data.deleted_entities?.talkar_db?.call_logs ?? 0}\n` +
+        `- Invoices purged: ${data.deleted_entities?.talkar_db?.invoices ?? 0}` +
+        (data.deleted_suborgs_count > 0 ? `\n- Cascade deleted ${data.deleted_suborgs_count} child sub-organizations` : "")
+      );
+
+      setIsDeleteOpen(false);
+      router.push("/customers");
+    } catch (e) {
+      alert(`Network / execution error: ${e}`);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -885,6 +936,28 @@ export default function CustomerDetailPage() {
               >
                 {isResettingLogs ? "Resetting..." : "🗑️ Factory Reset Logs"}
               </Button>
+
+              {/* Permanent Account Deletion */}
+              <div className="border-t border-red-100 pt-3 mt-3">
+                <p className="text-[10px] font-semibold text-red-600 uppercase tracking-wider mb-1">
+                  Permanent Account Deletion
+                </p>
+                <p className="text-[11px] text-slate-500 leading-tight mb-2">
+                  Permanently wipe this customer across Talkar DB and Voice Agent (Dograh) DB, releasing phone numbers, voice configs, and freeing the user email.
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setDeleteConfirmText("");
+                    setCascadeSubOrgs(false);
+                    setIsDeleteOpen(true);
+                  }}
+                  className="h-8 text-xs border-red-400 text-red-700 bg-red-100/60 hover:bg-red-200/80 font-bold cursor-pointer w-full flex items-center justify-center gap-1.5"
+                >
+                  <Trash2 className="w-3.5 h-3.5" /> Delete Customer Account Permanently
+                </Button>
+              </div>
             </div>
           </div>
         </CardContent>
@@ -1791,6 +1864,97 @@ export default function CustomerDetailPage() {
               className="text-xs bg-[#fe6905] hover:bg-[#e55e04] text-white"
             >
               {isSendingNotif ? "Dispatching..." : "Send Notification"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Customer Account Confirmation Dialog */}
+      <Dialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen}>
+        <DialogContent className="max-w-lg bg-white border border-red-200 shadow-2xl">
+          <DialogHeader>
+            <div className="flex items-center gap-2 text-red-600 mb-1">
+              <ShieldAlert className="w-5 h-5 text-red-600" />
+              <DialogTitle className="text-base font-bold text-red-900">
+                Permanent Account Deletion
+              </DialogTitle>
+            </div>
+            <DialogDescription className="text-xs text-slate-600">
+              This will permanently purge <strong>{customer?.company_name}</strong> (#{customer?.id}) and all associated records across both Talkar and Voice Agent databases.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3.5 py-2">
+            {/* Warning List */}
+            <div className="bg-red-50 border border-red-200/80 rounded-lg p-3 text-xs text-red-900 space-y-1">
+              <p className="font-semibold flex items-center gap-1.5 text-red-950">
+                <AlertTriangle className="w-3.5 h-3.5 text-red-600" />
+                The following resources will be permanently destroyed:
+              </p>
+              <ul className="list-disc pl-5 space-y-0.5 text-[11px] text-red-800">
+                <li>All Talkar agents, phone numbers, call logs, invoices, and wallets</li>
+                <li>Dograh organization #{customer?.dograh_org_id || "N/A"}, workflows, definitions, and campaigns</li>
+                <li>Queued runs, webhook deliveries, and telephony configurations</li>
+                <li>User email will be freed for clean re-registration</li>
+              </ul>
+            </div>
+
+            {/* Sub-Organizations Alert & Cascade Checkbox */}
+            {customer?.sub_organizations && customer.sub_organizations.length > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs space-y-2">
+                <p className="font-semibold text-amber-900 flex items-center gap-1.5">
+                  <AlertCircle className="w-4 h-4 text-amber-600" />
+                  Master Account: {customer.sub_organizations.length} Child Sub-Organizations Detected
+                </p>
+                <p className="text-[11px] text-amber-800">
+                  {customer.sub_organizations.map((s: any) => s.company_name).join(", ")}
+                </p>
+                <label className="flex items-center gap-2 cursor-pointer pt-1">
+                  <input
+                    type="checkbox"
+                    checked={cascadeSubOrgs}
+                    onChange={(e) => setCascadeSubOrgs(e.target.checked)}
+                    className="rounded border-amber-400 text-red-600 focus:ring-red-500 h-3.5 w-3.5"
+                  />
+                  <span className="text-xs font-medium text-amber-950">
+                    Also permanently cascade delete all {customer.sub_organizations.length} sub-organizations
+                  </span>
+                </label>
+              </div>
+            )}
+
+            {/* Type-to-Confirm Input */}
+            <div>
+              <Label className="text-xs font-semibold text-slate-800 block mb-1">
+                Type <span className="font-mono bg-slate-100 px-1 py-0.5 rounded text-red-700 select-all">{customer?.company_name}</span> to confirm:
+              </Label>
+              <Input
+                placeholder={customer?.company_name}
+                value={deleteConfirmText}
+                onChange={(e) => setDeleteConfirmText(e.target.value)}
+                className="h-8 text-xs font-mono border-slate-300 focus:border-red-500 focus:ring-red-500"
+              />
+            </div>
+          </div>
+
+          <DialogFooter className="gap-2 sm:gap-0 pt-2 border-t border-slate-100">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsDeleteOpen(false)}
+              disabled={isDeleting}
+              className="h-8 text-xs"
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={handleDeleteCustomer}
+              disabled={deleteConfirmText.trim() !== (customer?.company_name || "").trim() || isDeleting}
+              className="h-8 text-xs bg-red-600 hover:bg-red-700 text-white font-semibold cursor-pointer"
+            >
+              {isDeleting ? "Purging Account..." : "Confirm & Delete Account"}
             </Button>
           </DialogFooter>
         </DialogContent>

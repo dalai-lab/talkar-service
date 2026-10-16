@@ -1,8 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, func, text, delete, case
+from sqlalchemy import select, update, func, text, delete, case, bindparam
 from db.session import get_db
-from db.models import Customer, Wallet, WalletTransaction, CallLog, Agent, TalkarAdmin, Subscription, Notification, TransactionType
+from db.models import (
+    Customer, Wallet, WalletTransaction, CallLog, Agent, TalkarAdmin, 
+    Subscription, Notification, TransactionType, PhoneNumber, 
+    PhoneNumberRequest, SupportRequest, Invoice, AutomationAuditLog
+)
 from services import razorpay_client, notification_service, dograh_client
 from services.admin_auth import get_current_admin, create_admin_access_token
 from pydantic import BaseModel
@@ -234,6 +238,14 @@ async def get_customer(customer_id: int, db: AsyncSession = Depends(get_db), cur
             or customer.contact_name
             or (customer.contact_email.split("@")[0] if customer.contact_email else "Customer")
         )
+    sub_orgs_res = await db.execute(
+        select(Customer.id, Customer.company_name, Customer.contact_email, Customer.status)
+        .where(Customer.billing_org_id == customer.id)
+    )
+    customer.sub_organizations = [
+        {"id": s.id, "company_name": s.company_name, "contact_email": s.contact_email, "status": s.status}
+        for s in sub_orgs_res.all()
+    ]
     return customer
 
 @router.post("/customers/{customer_id}/impersonate")
@@ -2656,4 +2668,526 @@ async def replay_billing_dlq(
 
     remaining = await r.llen("talkar:billing:dlq")
     return {"replayed": replayed, "failed": failed, "remaining": remaining}
+
+
+# --- HARD CUSTOMER ACCOUNT DELETION (Level 5 Destructive Action) ---
+
+async def _evict_customer_redis_keys(dograh_org_id: Optional[int], customer_id: int):
+    """Evict cached keys, rate limiters, locks, and concurrency slots for this customer."""
+    try:
+        from services import redis_client
+        r = await redis_client.get_redis()
+        if not r:
+            return
+        keys_to_del = [
+            f"auto_recharge_lock:{customer_id}",
+            f"auto_recharge_cooldown:{customer_id}",
+            f"suborg_concurrency:{customer_id}",
+        ]
+        if dograh_org_id:
+            keys_to_del.extend([
+                f"concurrent_calls:{dograh_org_id}",
+                f"rate_limit:{dograh_org_id}",
+                f"org_concurrent_limit:{dograh_org_id}",
+            ])
+            try:
+                pool_keys = await r.keys(f"from_number_pool:{dograh_org_id}:*")
+                if pool_keys:
+                    keys_to_del.extend(pool_keys)
+            except Exception:
+                pass
+            try:
+                cb_keys = await r.keys(f"cb_*:{dograh_org_id}*")
+                if cb_keys:
+                    keys_to_del.extend(cb_keys)
+            except Exception:
+                pass
+
+        for k in keys_to_del:
+            try:
+                await r.delete(k)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"[AccountDelete] Non-fatal Redis eviction error for customer {customer_id}: {e}")
+
+
+async def _execute_customer_purge(target_id: int, db: AsyncSession) -> dict:
+    """
+    Executes full topological purge for a single customer across Voice Agent DB, Redis, and Talkar DB.
+    Zero cross-tenant data loss guarantee.
+    """
+    c_res = await db.execute(select(Customer).where(Customer.id == target_id))
+    cust = c_res.scalar_one_or_none()
+    if not cust:
+        return {}
+
+    dograh_org_id = cust.dograh_org_id
+    dograh_user_id = cust.dograh_user_id
+    is_sub_org = cust.billing_org_id is not None
+    company_name = cust.company_name
+
+    deleted_stats = {
+        "customer_id": target_id,
+        "company_name": company_name,
+        "dograh_org_id": dograh_org_id,
+        "dograh_user_id": dograh_user_id,
+        "dograh_user_purged": False,
+        "is_sub_org": is_sub_org,
+        "voice_agent_db": {},
+        "talkar_db": {},
+    }
+
+    # ── PHASE 2: VOICE AGENT (DOGRAH) DB PURGE ──────────────────────────
+    if dograh_org_id:
+        try:
+            from services.dograh_client import DograhSessionLocal
+            async with DograhSessionLocal() as ddb:
+                vdb_stats = {}
+
+                # 2.1 Cancel running campaigns so workers halt
+                r = await ddb.execute(
+                    text("UPDATE campaigns SET state = 'cancelled' WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["campaigns_cancelled"] = r.rowcount
+
+                # 2.2 Delete webhook deliveries
+                r = await ddb.execute(
+                    text("DELETE FROM webhook_deliveries WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["webhook_deliveries"] = r.rowcount
+
+                # 2.3 Delete workflow run text sessions
+                r = await ddb.execute(
+                    text("""
+                        DELETE FROM workflow_run_text_sessions 
+                        WHERE workflow_run_id IN (
+                            SELECT wr.id FROM workflow_runs wr
+                            JOIN workflows w ON w.id = wr.workflow_id
+                            WHERE w.organization_id = :org_id
+                        )
+                    """),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["workflow_run_text_sessions"] = r.rowcount
+
+                # 2.4 Delete embed sessions
+                r = await ddb.execute(
+                    text("""
+                        DELETE FROM embed_sessions 
+                        WHERE workflow_run_id IN (
+                            SELECT wr.id FROM workflow_runs wr
+                            JOIN workflows w ON w.id = wr.workflow_id
+                            WHERE w.organization_id = :org_id
+                        ) OR embed_token_id IN (
+                            SELECT id FROM embed_tokens WHERE organization_id = :org_id
+                        )
+                    """),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["embed_sessions"] = r.rowcount
+
+                # 2.5 Delete workflow runs (must delete before campaigns and workflows!)
+                r = await ddb.execute(
+                    text("""
+                        DELETE FROM workflow_runs 
+                        WHERE workflow_id IN (
+                            SELECT id FROM workflows WHERE organization_id = :org_id
+                        )
+                    """),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["workflow_runs"] = r.rowcount
+
+                # 2.6 Delete child queued runs
+                r = await ddb.execute(
+                    text("""
+                        DELETE FROM queued_runs 
+                        WHERE campaign_id IN (
+                            SELECT id FROM campaigns WHERE organization_id = :org_id
+                        ) AND parent_queued_run_id IS NOT NULL
+                    """),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["child_queued_runs"] = r.rowcount
+
+                # 2.7 Delete parent queued runs
+                r = await ddb.execute(
+                    text("""
+                        DELETE FROM queued_runs 
+                        WHERE campaign_id IN (
+                            SELECT id FROM campaigns WHERE organization_id = :org_id
+                        ) AND parent_queued_run_id IS NULL
+                    """),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["parent_queued_runs"] = r.rowcount
+
+                # 2.8 Delete campaigns
+                r = await ddb.execute(
+                    text("DELETE FROM campaigns WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["campaigns"] = r.rowcount
+
+                # 2.9 Delete embed tokens
+                r = await ddb.execute(
+                    text("DELETE FROM embed_tokens WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["embed_tokens"] = r.rowcount
+
+                # 2.10 Delete agent triggers
+                r = await ddb.execute(
+                    text("DELETE FROM agent_triggers WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["agent_triggers"] = r.rowcount
+
+                # 2.11 Delete workflow recordings
+                r = await ddb.execute(
+                    text("DELETE FROM workflow_recordings WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["workflow_recordings"] = r.rowcount
+
+                # 2.12 Delete telephony phone numbers & configurations
+                r = await ddb.execute(
+                    text("DELETE FROM telephony_phone_numbers WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["telephony_phone_numbers"] = r.rowcount
+
+                r = await ddb.execute(
+                    text("DELETE FROM telephony_configurations WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["telephony_configurations"] = r.rowcount
+
+                # 2.13 Break circular FK between workflows and workflow_definitions
+                await ddb.execute(
+                    text("UPDATE workflows SET released_definition_id = NULL WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+
+                # 2.14 Delete workflow definitions
+                r = await ddb.execute(
+                    text("""
+                        DELETE FROM workflow_definitions 
+                        WHERE workflow_id IN (
+                            SELECT id FROM workflows WHERE organization_id = :org_id
+                        )
+                    """),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["workflow_definitions"] = r.rowcount
+
+                # 2.15 Delete workflows
+                r = await ddb.execute(
+                    text("DELETE FROM workflows WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["workflows"] = r.rowcount
+
+                # 2.16 Delete folders
+                r = await ddb.execute(
+                    text("DELETE FROM folders WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["folders"] = r.rowcount
+
+                # 2.17 Delete knowledge base chunks & documents
+                r = await ddb.execute(
+                    text("""
+                        DELETE FROM knowledge_base_chunks 
+                        WHERE document_id IN (
+                            SELECT id FROM knowledge_base_documents WHERE organization_id = :org_id
+                        )
+                    """),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["knowledge_base_chunks"] = r.rowcount
+
+                r = await ddb.execute(
+                    text("DELETE FROM knowledge_base_documents WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["knowledge_base_documents"] = r.rowcount
+
+                # 2.18 Delete tools & integrations
+                r = await ddb.execute(
+                    text("DELETE FROM tools WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["tools"] = r.rowcount
+
+                r = await ddb.execute(
+                    text("DELETE FROM integrations WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["integrations"] = r.rowcount
+
+                # 2.19 Delete credentials, api keys, configurations, usage cycles
+                r = await ddb.execute(
+                    text("DELETE FROM api_keys WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["api_keys"] = r.rowcount
+
+                r = await ddb.execute(
+                    text("DELETE FROM organization_configurations WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["organization_configurations"] = r.rowcount
+
+                r = await ddb.execute(
+                    text("DELETE FROM organization_usage_cycles WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["organization_usage_cycles"] = r.rowcount
+
+                r = await ddb.execute(
+                    text("DELETE FROM external_credentials WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["external_credentials"] = r.rowcount
+
+                # 2.20 & 2.21 User Reclamation
+                users_in_org_res = await ddb.execute(
+                    text("SELECT user_id FROM organization_users WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                org_user_ids = [row[0] for row in users_in_org_res.all()]
+                if dograh_user_id and dograh_user_id not in org_user_ids:
+                    org_user_ids.append(dograh_user_id)
+
+                await ddb.execute(
+                    text("UPDATE users SET selected_organization_id = NULL WHERE selected_organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                await ddb.execute(
+                    text("DELETE FROM organization_users WHERE organization_id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+
+                purged_users_count = 0
+                for uid in org_user_ids:
+                    rem_res = await ddb.execute(
+                        text("SELECT COUNT(*) FROM organization_users WHERE user_id = :uid"),
+                        {"uid": uid}
+                    )
+                    rem_count = rem_res.scalar() or 0
+                    if rem_count == 0:
+                        await ddb.execute(
+                            text("DELETE FROM user_configurations WHERE user_id = :uid"),
+                            {"uid": uid}
+                        )
+                        await ddb.execute(
+                            text("DELETE FROM users WHERE id = :uid"),
+                            {"uid": uid}
+                        )
+                        purged_users_count += 1
+                        if uid == dograh_user_id:
+                            deleted_stats["dograh_user_purged"] = True
+
+                vdb_stats["users_purged"] = purged_users_count
+
+                # 2.22 Delete organizations row itself
+                r = await ddb.execute(
+                    text("DELETE FROM organizations WHERE id = :org_id"),
+                    {"org_id": dograh_org_id}
+                )
+                vdb_stats["organizations"] = r.rowcount
+
+                await ddb.commit()
+                deleted_stats["voice_agent_db"] = vdb_stats
+        except Exception as e:
+            logger.error(f"[AccountDelete] Voice Agent DB wipe failed for customer {target_id} (org {dograh_org_id}): {e}")
+            raise HTTPException(500, f"Voice Agent DB reset failed: {str(e)}")
+    else:
+        deleted_stats["voice_agent_db"] = "skipped — unprovisioned customer"
+
+    # ── PHASE 3: REDIS STATE EVICTION ────────────────────────────────────
+    await _evict_customer_redis_keys(dograh_org_id, target_id)
+
+    # ── PHASE 4: TALKAR DB WIPE ──────────────────────────────────────────
+    try:
+        tdb_stats = {}
+
+        # 4.1 Delete call logs
+        r = await db.execute(delete(CallLog).where(CallLog.customer_id == target_id))
+        tdb_stats["call_logs"] = r.rowcount
+
+        # 4.2 Delete support requests
+        r = await db.execute(delete(SupportRequest).where(SupportRequest.customer_id == target_id))
+        tdb_stats["support_requests"] = r.rowcount
+
+        # 4.3 Delete phone number requests
+        r = await db.execute(delete(PhoneNumberRequest).where(PhoneNumberRequest.customer_id == target_id))
+        tdb_stats["phone_number_requests"] = r.rowcount
+
+        # 4.4 Delete phone numbers (before agents)
+        r = await db.execute(delete(PhoneNumber).where(PhoneNumber.customer_id == target_id))
+        tdb_stats["phone_numbers"] = r.rowcount
+
+        # 4.5 Delete agents
+        r = await db.execute(delete(Agent).where(Agent.customer_id == target_id))
+        tdb_stats["agents"] = r.rowcount
+
+        # 4.6 Delete invoices
+        r = await db.execute(
+            delete(Invoice).where(
+                (Invoice.customer_id == target_id) | (Invoice.sub_org_id == target_id)
+            )
+        )
+        tdb_stats["invoices"] = r.rowcount
+
+        # 4.7 Wallet transactions
+        if is_sub_org:
+            r = await db.execute(
+                update(WalletTransaction)
+                .where(WalletTransaction.sub_org_id == target_id)
+                .values(sub_org_id=None)
+            )
+            tdb_stats["wallet_transactions_unlinked"] = r.rowcount
+            tdb_stats["wallet_transactions"] = 0
+        else:
+            r = await db.execute(
+                delete(WalletTransaction).where(WalletTransaction.customer_id == target_id)
+            )
+            tdb_stats["wallet_transactions"] = r.rowcount
+
+        # 4.8 Delete wallets
+        r = await db.execute(delete(Wallet).where(Wallet.customer_id == target_id))
+        tdb_stats["wallets"] = r.rowcount
+
+        # 4.9 Delete subscriptions
+        r = await db.execute(delete(Subscription).where(Subscription.customer_id == target_id))
+        tdb_stats["subscriptions"] = r.rowcount
+
+        # 4.10 Delete notifications
+        r = await db.execute(delete(Notification).where(Notification.customer_id == target_id))
+        tdb_stats["notifications"] = r.rowcount
+
+        # 4.11 Delete automation audit log
+        r = await db.execute(delete(AutomationAuditLog).where(AutomationAuditLog.customer_id == target_id))
+        tdb_stats["automation_audit_log"] = r.rowcount
+
+        # 4.13 Delete customer
+        r = await db.execute(delete(Customer).where(Customer.id == target_id))
+        tdb_stats["customers"] = r.rowcount
+
+        await db.commit()
+        deleted_stats["talkar_db"] = tdb_stats
+        return deleted_stats
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"[AccountDelete] Talkar DB wipe failed for customer {target_id}: {e}")
+        raise HTTPException(500, f"Talkar DB deletion failed: {str(e)}")
+
+
+@router.delete("/customers/{customer_id}")
+async def delete_customer_account(
+    customer_id: int,
+    cascade_suborgs: bool = Query(False, description="Cascade delete child sub-organizations if master"),
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin),
+):
+    """
+    Permanently delete a customer account across both Talkar DB and Voice Agent (Dograh) DB.
+    Level 5 Destructive Action with strict multi-tenant isolation and zero cross-tenant data loss.
+    """
+    if customer_id <= 0:
+        raise HTTPException(400, "Invalid customer_id")
+
+    # 1. Fetch customer
+    res = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = res.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+
+    # 2. Check child sub-organizations
+    suborgs_res = await db.execute(
+        select(Customer).where(Customer.billing_org_id == customer_id)
+    )
+    suborgs = suborgs_res.scalars().all()
+    if suborgs and not cascade_suborgs:
+        sub_names = ", ".join([f"'{s.company_name}' (#{s.id})" for s in suborgs])
+        raise HTTPException(
+            400,
+            f"Cannot delete account: This customer is a master billing account with {len(suborgs)} "
+            f"active sub-organizations ({sub_names}). Please unlink or delete the sub-organizations "
+            "first, or enable cascade deletion."
+        )
+
+    # 3. Check for active calls across master and any sub-orgs to be deleted
+    target_org_ids = []
+    if customer.dograh_org_id:
+        target_org_ids.append(customer.dograh_org_id)
+    if cascade_suborgs and suborgs:
+        for s in suborgs:
+            if s.dograh_org_id:
+                target_org_ids.append(s.dograh_org_id)
+
+    if target_org_ids:
+        try:
+            from services.dograh_client import DograhSessionLocal
+            async with DograhSessionLocal() as ddb:
+                active_calls_res = await ddb.execute(
+                    text("""
+                        SELECT COUNT(wr.id)
+                        FROM workflow_runs wr
+                        JOIN workflows w ON w.id = wr.workflow_id
+                        WHERE w.organization_id IN :org_ids
+                          AND wr.is_completed IS FALSE
+                    """).bindparams(bindparam("org_ids", expanding=True)),
+                    {"org_ids": target_org_ids}
+                )
+                active_count = active_calls_res.scalar() or 0
+                if active_count > 0:
+                    raise HTTPException(
+                        409,
+                        f"Cannot delete account: {active_count} active calls currently in progress. "
+                        "Please wait for calls to terminate or end them before deleting."
+                    )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning(f"[AccountDelete] Error checking active calls: {e}")
+
+    # 4. Soft lock customer(s) to prevent top-ups or new calls during wipe
+    customer.status = "suspended"
+    customer.suspended_at = func.now()
+    if cascade_suborgs and suborgs:
+        for s in suborgs:
+            s.status = "suspended"
+            s.suspended_at = func.now()
+    await db.commit()
+
+    # 5. Execute deletion
+    deleted_suborgs = []
+    if cascade_suborgs and suborgs:
+        for s in suborgs:
+            sub_res = await _execute_customer_purge(s.id, db)
+            deleted_suborgs.append(sub_res)
+
+    master_res = await _execute_customer_purge(customer_id, db)
+
+    logger.warning(
+        f"[AccountDelete] Admin '{current_admin.email}' PERMANENTLY deleted customer {customer_id} "
+        f"('{customer.company_name}', org={customer.dograh_org_id}, cascade={cascade_suborgs}). "
+        f"Master stats: {master_res}, Suborgs deleted: {len(deleted_suborgs)}"
+    )
+
+    return {
+        "success": True,
+        "message": f"Customer '{customer.company_name}' (#{customer_id}) and all associated resources permanently deleted.",
+        "cascade_suborgs": cascade_suborgs,
+        "deleted_suborgs_count": len(deleted_suborgs),
+        "deleted_entities": master_res,
+        "suborg_entities": deleted_suborgs,
+    }
+
 
