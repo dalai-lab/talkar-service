@@ -10,12 +10,28 @@ from db.models import (
 from services import razorpay_client, notification_service, dograh_client
 from services.admin_auth import get_current_admin, create_admin_access_token
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Any
+from datetime import datetime, timezone, date
 from config import CALL_BLOCK_THRESHOLD_PAISE
 
 import logging
 
 logger = logging.getLogger(__name__)
+
+def parse_iso_datetime(val: Any) -> Optional[datetime]:
+    """Parse ISO datetime string, date, or datetime into a timezone-aware or valid datetime object."""
+    if not val:
+        return None
+    if isinstance(val, datetime):
+        return val
+    if isinstance(val, date):
+        return datetime.combine(val, datetime.min.time(), tzinfo=timezone.utc)
+    if isinstance(val, str):
+        try:
+            return datetime.fromisoformat(val.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    return None
 
 router = APIRouter()
 
@@ -604,11 +620,12 @@ async def get_customer_agents(customer_id: int, db: AsyncSession = Depends(get_d
                         dograh_workflow_id=wf_id,
                         dograh_org_id=customer.dograh_org_id,
                         status=wf_status,
-                        built_at=wf_created
+                        built_at=parse_iso_datetime(wf_created)
                     )
                     db.add(new_ag)
             await db.commit()
         except Exception as e:
+            await db.rollback()
             import logging
             logging.getLogger(__name__).error(f"Failed to sync workflows for customer {customer_id}: {e}")
 
