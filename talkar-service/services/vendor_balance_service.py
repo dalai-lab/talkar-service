@@ -34,13 +34,15 @@ CONSOLE_URLS = {
     "deepgram": "https://console.deepgram.com/project/",
     "elevenlabs": "https://elevenlabs.io/app/subscription",
     "smallest": "https://smallest.ai/dashboard",
+    "openai": "https://platform.openai.com/settings/organization/billing/overview",
 }
 
 DEFAULT_THRESHOLDS = {
     "plivo": {"warning": 20.0, "critical": 2.0},
     "deepgram": {"warning": 20.0, "critical": 2.0},
     "elevenlabs": {"warning": 50000.0, "critical": 5000.0},
-    "smallest": {"warning": 500.0, "critical": 50.0},
+    "smallest": {"warning": 5.0, "critical": 1.0},
+    "openai": {"warning": 20.0, "critical": 5.0},
 }
 
 
@@ -433,8 +435,9 @@ class VendorBalanceService:
         client = await self._get_client()
         headers = {"Authorization": f"Bearer {api_key}"}
 
-        # Official Smallest AI subscription & credits endpoint, with fallbacks
+        # Official Smallest AI wallet balance & credits endpoints, with fallbacks
         endpoints = [
+            "https://api.smallest.ai/payment/v1/credits/balance",
             "https://api.smallest.ai/atoms/v1/user/subscription",
             "https://api.smallest.ai/payment/v1/credits/usage/breakdown",
             "https://api.smallest.ai/atoms/v1/billing/credit-balance",
@@ -460,7 +463,7 @@ class VendorBalanceService:
             return VendorCheckResult(
                 vendor="smallest",
                 display_name="Smallest AI (Waves TTS)",
-                units="credits",
+                units="USD",
                 status="error",
                 error_message=last_error or "Smallest AI endpoints unreachable",
                 console_url=CONSOLE_URLS["smallest"],
@@ -473,19 +476,26 @@ class VendorBalanceService:
             # Handles wrapped {"status": true, "data": {...}} and raw dict
             sub_data = data.get("data", {}) if isinstance(data.get("data"), dict) else data
 
-            raw_bal = (
-                sub_data.get("currentCredits")
-                if sub_data.get("currentCredits") is not None
-                else sub_data.get("credits")
-                if sub_data.get("credits") is not None
-                else sub_data.get("credit_balance")
-                if sub_data.get("credit_balance") is not None
-                else sub_data.get("remaining_credits")
-                if sub_data.get("remaining_credits") is not None
-                else sub_data.get("balance")
-                if sub_data.get("balance") is not None
-                else data.get("currentCredits")
-            )
+            is_usd = False
+            if sub_data.get("creditBalance") is not None:
+                raw_bal = sub_data.get("creditBalance")
+                is_usd = True
+            elif sub_data.get("currentCredits") is not None:
+                raw_bal = sub_data.get("currentCredits")
+            elif sub_data.get("credits") is not None:
+                raw_bal = sub_data.get("credits")
+            elif sub_data.get("credit_balance") is not None:
+                raw_bal = sub_data.get("credit_balance")
+            elif sub_data.get("remaining_credits") is not None:
+                raw_bal = sub_data.get("remaining_credits")
+            elif sub_data.get("balance") is not None:
+                raw_bal = sub_data.get("balance")
+            else:
+                raw_bal = data.get("creditBalance")
+                if raw_bal is not None:
+                    is_usd = True
+                else:
+                    raw_bal = data.get("currentCredits")
 
             if raw_bal is None:
                 # If subscription is active without a numeric credits field (e.g. enterprise post-paid)
@@ -493,7 +503,7 @@ class VendorBalanceService:
                     return VendorCheckResult(
                         vendor="smallest",
                         display_name="Smallest AI (Waves TTS)",
-                        units="credits",
+                        units="USD" if is_usd else "credits",
                         status="payg_active",
                         error_message="Active Subscription (Post-paid / Enterprise)",
                         console_url=CONSOLE_URLS["smallest"],
@@ -503,10 +513,14 @@ class VendorBalanceService:
                     )
                 balance = 0.0
             else:
-                balance = float(raw_bal)
+                balance = round(float(raw_bal), 2)
+
+            units = "USD" if is_usd else "credits"
+            effective_warning = 5.0 if (is_usd and warning_threshold >= 100.0) else warning_threshold
+            effective_critical = 1.0 if (is_usd and critical_threshold >= 50.0) else critical_threshold
 
             quota_limit = None
-            if sub_data.get("totalCredits") is not None:
+            if not is_usd and sub_data.get("totalCredits") is not None:
                 try:
                     quota_limit = float(sub_data.get("totalCredits"))
                 except (ValueError, TypeError):
@@ -520,9 +534,9 @@ class VendorBalanceService:
                 except Exception:
                     pass
 
-            if balance <= critical_threshold:
+            if balance <= effective_critical:
                 status = "critical"
-            elif balance <= warning_threshold:
+            elif balance <= effective_warning:
                 status = "warning"
             else:
                 status = "healthy"
@@ -531,24 +545,119 @@ class VendorBalanceService:
                 vendor="smallest",
                 display_name="Smallest AI (Waves TTS)",
                 balance=balance,
-                units="credits",
+                units=units,
                 quota_limit=quota_limit,
                 status=status,
                 next_reset_at=next_reset_at,
                 raw_payload=data,
                 console_url=CONSOLE_URLS["smallest"],
-                warning_threshold=warning_threshold,
-                critical_threshold=critical_threshold,
+                warning_threshold=effective_warning,
+                critical_threshold=effective_critical,
                 checked_at=now,
             )
         except Exception as e:
             return VendorCheckResult(
                 vendor="smallest",
                 display_name="Smallest AI (Waves TTS)",
-                units="credits",
+                units="USD",
                 status="error",
                 error_message=f"Failed to parse Smallest response: {e}",
                 console_url=CONSOLE_URLS["smallest"],
+                warning_threshold=warning_threshold,
+                critical_threshold=critical_threshold,
+                checked_at=now,
+            )
+
+    async def check_openai(self, warning_threshold: float = 20.0, critical_threshold: float = 5.0) -> VendorCheckResult:
+        api_key = (
+            getattr(settings, "TALKAR_OPENAI_KEY", "")
+            or os.getenv("TALKAR_OPENAI_KEY", "")
+            or os.getenv("OPENAI_API_KEY", "")
+        ).strip()
+        now = datetime.now(timezone.utc)
+
+        if not api_key:
+            return VendorCheckResult(
+                vendor="openai",
+                display_name="OpenAI Intelligence",
+                units="USD",
+                status="not_configured",
+                error_message="TALKAR_OPENAI_KEY not configured",
+                console_url=CONSOLE_URLS["openai"],
+                warning_threshold=warning_threshold,
+                critical_threshold=critical_threshold,
+                checked_at=now,
+            )
+
+        client = await self._get_client()
+        headers = {"Authorization": f"Bearer {api_key}"}
+
+        try:
+            # 1. Query /v1/me to verify user & org
+            me_resp = await client.get("https://api.openai.com/v1/me", headers=headers)
+            if me_resp.status_code == 200:
+                me_data = me_resp.json()
+                orgs = me_data.get("orgs", {}).get("data", [])
+                org_title = orgs[0].get("title", "Active Org") if orgs else "Active Org"
+                return VendorCheckResult(
+                    vendor="openai",
+                    display_name="OpenAI Intelligence",
+                    units="USD",
+                    status="payg_active",
+                    error_message=f"Active ({org_title}) • Postpaid Card Billed",
+                    raw_payload=me_data,
+                    console_url=CONSOLE_URLS["openai"],
+                    warning_threshold=warning_threshold,
+                    critical_threshold=critical_threshold,
+                    checked_at=now,
+                )
+
+            # 2. Fallback to /v1/models
+            models_resp = await client.get("https://api.openai.com/v1/models", headers=headers)
+            if models_resp.status_code == 200:
+                return VendorCheckResult(
+                    vendor="openai",
+                    display_name="OpenAI Intelligence",
+                    units="USD",
+                    status="payg_active",
+                    error_message="Active STT/LLM Key • Postpaid Card Billed",
+                    console_url=CONSOLE_URLS["openai"],
+                    warning_threshold=warning_threshold,
+                    critical_threshold=critical_threshold,
+                    checked_at=now,
+                )
+            elif models_resp.status_code in (401, 403):
+                return VendorCheckResult(
+                    vendor="openai",
+                    display_name="OpenAI Intelligence",
+                    units="USD",
+                    status="error",
+                    error_message=f"Authentication failed: HTTP {models_resp.status_code}",
+                    console_url=CONSOLE_URLS["openai"],
+                    warning_threshold=warning_threshold,
+                    critical_threshold=critical_threshold,
+                    checked_at=now,
+                )
+            else:
+                return VendorCheckResult(
+                    vendor="openai",
+                    display_name="OpenAI Intelligence",
+                    units="USD",
+                    status="error",
+                    error_message=f"HTTP {models_resp.status_code}: {models_resp.text[:150]}",
+                    console_url=CONSOLE_URLS["openai"],
+                    warning_threshold=warning_threshold,
+                    critical_threshold=critical_threshold,
+                    checked_at=now,
+                )
+        except Exception as e:
+            return VendorCheckResult(
+                vendor="openai",
+                display_name="OpenAI Intelligence",
+                units="USD",
+                status="error",
+                error_message=str(e),
+                console_url=CONSOLE_URLS["openai"],
                 warning_threshold=warning_threshold,
                 critical_threshold=critical_threshold,
                 checked_at=now,
@@ -559,7 +668,7 @@ class VendorBalanceService:
     # -------------------------------------------------------------------------
 
     async def sync_all_vendors(self, force: bool = False) -> dict[str, Any]:
-        """Runs concurrent checks on all 4 providers, saves snapshots, handles debouncing & alerts."""
+        """Runs concurrent checks on all providers, saves snapshots, handles debouncing & alerts."""
         redis_conn = await redis_client.get_redis()
 
         # Distributed lock prevents concurrent polling storms
@@ -589,8 +698,9 @@ class VendorBalanceService:
             d_task = self.check_deepgram(thresholds["deepgram"]["warning"], thresholds["deepgram"]["critical"])
             e_task = self.check_elevenlabs(thresholds["elevenlabs"]["warning"], thresholds["elevenlabs"]["critical"])
             s_task = self.check_smallest(thresholds["smallest"]["warning"], thresholds["smallest"]["critical"])
+            o_task = self.check_openai(thresholds.get("openai", {}).get("warning", 20.0), thresholds.get("openai", {}).get("critical", 5.0))
 
-            results: list[VendorCheckResult] = await asyncio.gather(p_task, d_task, e_task, s_task)
+            results: list[VendorCheckResult] = await asyncio.gather(p_task, d_task, e_task, s_task, o_task)
 
             # 3. Store snapshots and process alert states
             now = datetime.now(timezone.utc)
@@ -765,13 +875,14 @@ class VendorBalanceService:
             "deepgram": "Deepgram STT",
             "elevenlabs": "ElevenLabs Voice TTS",
             "smallest": "Smallest AI (Waves TTS)",
+            "openai": "OpenAI Intelligence",
         }
 
         try:
             async with AsyncSessionLocal() as session:
                 # Get latest snapshot per vendor
                 vendors_dict = {}
-                for vendor_name in ("plivo", "deepgram", "elevenlabs", "smallest"):
+                for vendor_name in ("plivo", "deepgram", "elevenlabs", "smallest", "openai"):
                     snap_res = await session.execute(
                         select(VendorBalanceSnapshot)
                         .where(VendorBalanceSnapshot.vendor == vendor_name)

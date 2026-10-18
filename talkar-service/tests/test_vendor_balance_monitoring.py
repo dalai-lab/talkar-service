@@ -374,3 +374,63 @@ async def test_update_vendor_thresholds_endpoint():
     with pytest.raises(HTTPException) as exc:
         await update_vendor_thresholds(request=invalid_req, db=mock_db, admin=mock_admin)
     assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_check_smallest_credit_balance_usd_endpoint():
+    """Verify Smallest AI official /payment/v1/credits/balance endpoint parses creditBalance in USD."""
+    mock_client = AsyncMock()
+    bal_resp = MagicMock()
+    bal_resp.status_code = 200
+    bal_resp.json.return_value = {
+        "success": True,
+        "data": {
+            "creditBalance": 18.8486615,
+            "planId": "plan_standard",
+            "isEnterprise": False,
+        },
+    }
+    mock_client.get.return_value = bal_resp
+
+    with patch("services.vendor_balance_service.settings") as mock_settings:
+        mock_settings.TALKAR_SMALLEST_AI_KEY = "sm_secret"
+
+        service = VendorBalanceService(http_client=mock_client)
+        result = await service.check_smallest(warning_threshold=5.0, critical_threshold=1.0)
+
+        assert result.vendor == "smallest"
+        assert result.status == "healthy"
+        assert result.balance == 18.85
+        assert result.units == "USD"
+        assert result.quota_limit is None
+
+
+@pytest.mark.asyncio
+async def test_check_openai_active_org():
+    """Verify OpenAI check_openai returns payg_active when /v1/me returns active organization."""
+    mock_client = AsyncMock()
+    me_resp = MagicMock()
+    me_resp.status_code = 200
+    me_resp.json.return_value = {
+        "id": "user-123",
+        "email": "it@4thorbit.in",
+        "orgs": {
+            "object": "list",
+            "data": [
+                {"id": "org-1", "title": "4th Orbit", "role": "owner"}
+            ]
+        }
+    }
+    mock_client.get.return_value = me_resp
+
+    with patch("services.vendor_balance_service.settings") as mock_settings:
+        mock_settings.TALKAR_OPENAI_KEY = "sk-proj-test"
+
+        service = VendorBalanceService(http_client=mock_client)
+        result = await service.check_openai()
+
+        assert result.vendor == "openai"
+        assert result.status == "payg_active"
+        assert "4th Orbit" in (result.error_message or "")
+        assert result.console_url == "https://platform.openai.com/settings/organization/billing/overview"
+

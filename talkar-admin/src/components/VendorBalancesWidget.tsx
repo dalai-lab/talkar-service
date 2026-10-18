@@ -10,6 +10,7 @@ import {
   Mic,
   Volume2,
   Zap,
+  Brain,
   RefreshCw,
   ExternalLink,
   ShieldAlert,
@@ -131,6 +132,7 @@ export function VendorBalancesWidget() {
   const deepgram = vendors["deepgram"];
   const elevenlabs = vendors["elevenlabs"];
   const smallest = vendors["smallest"];
+  const openai = vendors["openai"];
 
   const formatRelativeTime = (isoString?: string) => {
     if (!isoString) return "Never";
@@ -188,7 +190,7 @@ export function VendorBalancesWidget() {
       )}
 
       {/* Bento Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
         {/* 1. Plivo */}
         <Card className="bg-white border border-slate-200/80 rounded-xl shadow-none flex flex-col justify-between">
           <CardHeader className="flex flex-row items-center justify-between pb-2 p-4">
@@ -383,11 +385,12 @@ export function VendorBalancesWidget() {
             </div>
             {getStatusBadge(smallest?.status || "not_configured")}
           </CardHeader>
-          <CardContent className="px-4 pb-4 pt-1 space-y-3">
             <div>
               <div className="text-2xl font-bold font-mono text-slate-900 tracking-tight">
                 {smallest?.balance !== null && smallest?.balance !== undefined
-                  ? `${Number(smallest.balance).toLocaleString(undefined, { maximumFractionDigits: 1 })} credits`
+                  ? smallest.units === "USD" || smallest.units === "$"
+                    ? `$${Number(smallest.balance).toFixed(2)}`
+                    : `${Number(smallest.balance).toLocaleString(undefined, { maximumFractionDigits: 1 })} credits`
                   : smallest?.status === "payg_active"
                   ? "Active Subscription"
                   : smallest?.status === "not_configured"
@@ -395,7 +398,7 @@ export function VendorBalancesWidget() {
                   : "—"}
               </div>
 
-              {smallest?.quota_limit && (
+              {smallest?.quota_limit && smallest.units !== "USD" && (
                 <div className="space-y-1 mt-2">
                   <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
                     <div
@@ -427,7 +430,7 @@ export function VendorBalancesWidget() {
                 Ultralow-latency voice credit pool
               </div>
               <div className="text-[10px] text-slate-400 mt-0.5">
-                Warning threshold: {smallest?.warning_threshold || 500} credits
+                Warning threshold: {smallest?.units === "USD" ? `$${Number(smallest.warning_threshold || 5).toFixed(2)}` : `${smallest?.warning_threshold || 500} credits`}
               </div>
               {smallest?.error_message && smallest?.status !== "healthy" && (
                 <div className="text-[10px] text-slate-500 bg-slate-50 p-1.5 rounded border border-slate-100 mt-1.5 truncate" title={smallest.error_message}>
@@ -444,6 +447,53 @@ export function VendorBalancesWidget() {
                 className="text-[11px] text-[#fe6905] hover:underline font-semibold flex items-center gap-1"
               >
                 Smallest Dashboard <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* 5. OpenAI Intelligence */}
+        <Card className="bg-white border border-slate-200/80 rounded-xl shadow-none flex flex-col justify-between">
+          <CardHeader className="flex flex-row items-center justify-between pb-2 p-4">
+            <div className="flex items-center gap-2">
+              <div className="p-1.5 rounded-lg bg-teal-50 text-teal-600 border border-teal-100">
+                <Brain className="h-4 w-4" />
+              </div>
+              <div>
+                <CardTitle className="text-xs font-semibold text-slate-900">OpenAI</CardTitle>
+                <p className="text-[10px] text-slate-400">LLM Reasoning & STT</p>
+              </div>
+            </div>
+            {getStatusBadge(openai?.status || "not_configured")}
+          </CardHeader>
+          <CardContent className="px-4 pb-4 pt-1 space-y-3">
+            <div>
+              <div className="text-2xl font-bold font-mono text-slate-900 tracking-tight">
+                {openai?.balance !== null && openai?.balance !== undefined
+                  ? `$${Number(openai.balance).toFixed(2)}`
+                  : openai?.status === "payg_active"
+                  ? "Active (PAYG)"
+                  : openai?.status === "not_configured"
+                  ? "Not Configured"
+                  : "—"}
+              </div>
+
+              <div className="text-[11px] text-slate-500 mt-1">
+                Postpaid card billing · Reasoning & models
+              </div>
+              <div className="text-[10px] text-slate-400 mt-0.5 truncate" title={openai?.error_message || "Active STT/LLM Key • Card Billed"}>
+                {openai?.error_message || "Active STT/LLM Key • Card Billed"}
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+              <a
+                href={openai?.console_url || "https://platform.openai.com/settings/organization/billing/overview"}
+                target="_blank"
+                rel="noreferrer"
+                className="text-[11px] text-[#fe6905] hover:underline font-semibold flex items-center gap-1"
+              >
+                OpenAI Billing <ExternalLink className="w-3 h-3" />
               </a>
             </div>
           </CardContent>
