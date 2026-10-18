@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     # Talkar Platform Keys (injected into Dograh Orgs)
     TALKAR_OPENAI_KEY: str = ""
     OPENAI_API_KEY: str = ""
+    TALKAR_OPENAI_ADMIN_KEY: str = ""
     TALKAR_ELEVENLABS_KEY: str = ""
     TALKAR_DEEPGRAM_KEY: str = ""
     TALKAR_SMALLEST_AI_KEY: str = ""

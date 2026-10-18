@@ -423,7 +423,9 @@ async def test_check_openai_active_org():
     }
     mock_client.get.return_value = me_resp
 
-    with patch("services.vendor_balance_service.settings") as mock_settings:
+    with patch("services.vendor_balance_service.settings") as mock_settings, \
+         patch.dict("os.environ", {"TALKAR_OPENAI_ADMIN_KEY": "", "OPENAI_ADMIN_KEY": ""}, clear=False):
+        mock_settings.TALKAR_OPENAI_ADMIN_KEY = ""
         mock_settings.TALKAR_OPENAI_KEY = "sk-proj-test"
 
         service = VendorBalanceService(http_client=mock_client)
@@ -433,4 +435,38 @@ async def test_check_openai_active_org():
         assert result.status == "payg_active"
         assert "4th Orbit" in (result.error_message or "")
         assert result.console_url == "https://platform.openai.com/settings/organization/billing/overview"
+
+
+@pytest.mark.asyncio
+async def test_check_openai_admin_key_costs():
+    """Verify OpenAI check_openai returns healthy with MTD balance when TALKAR_OPENAI_ADMIN_KEY is provided."""
+    mock_client = AsyncMock()
+    cost_resp = MagicMock()
+    cost_resp.status_code = 200
+    cost_resp.json.return_value = {
+        "object": "page",
+        "data": [
+            {
+                "object": "bucket",
+                "results": [
+                    {"amount": {"currency": "usd", "value": 4.50}},
+                    {"amount": {"currency": "usd", "value": 5.99}},
+                ],
+            }
+        ],
+    }
+    mock_client.get.return_value = cost_resp
+
+    with patch("services.vendor_balance_service.settings") as mock_settings:
+        mock_settings.TALKAR_OPENAI_ADMIN_KEY = "sk-admin-test"
+        mock_settings.TALKAR_OPENAI_KEY = "sk-proj-test"
+
+        service = VendorBalanceService(http_client=mock_client)
+        result = await service.check_openai()
+
+        assert result.vendor == "openai"
+        assert result.status == "healthy"
+        assert result.balance == 10.49
+        assert result.units == "USD"
+        assert "$10.49 MTD spend" in (result.error_message or "")
 

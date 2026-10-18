@@ -629,6 +629,11 @@ class VendorBalanceService:
             )
 
     async def check_openai(self, warning_threshold: float = 20.0, critical_threshold: float = 5.0) -> VendorCheckResult:
+        admin_key = (
+            getattr(settings, "TALKAR_OPENAI_ADMIN_KEY", "")
+            or os.getenv("TALKAR_OPENAI_ADMIN_KEY", "")
+            or os.getenv("OPENAI_ADMIN_KEY", "")
+        ).strip()
         api_key = (
             getattr(settings, "TALKAR_OPENAI_KEY", "")
             or getattr(settings, "OPENAI_API_KEY", "")
@@ -638,16 +643,16 @@ class VendorBalanceService:
         ).strip()
         now = datetime.now(timezone.utc)
 
-        if not api_key:
+        if not admin_key and not api_key:
             api_key = await self._get_fallback_key_from_dograh("llm", "openai")
 
-        if not api_key:
+        if not admin_key and not api_key:
             return VendorCheckResult(
                 vendor="openai",
                 display_name="OpenAI Intelligence",
                 units="USD",
                 status="not_configured",
-                error_message="TALKAR_OPENAI_KEY not configured",
+                error_message="TALKAR_OPENAI_KEY or TALKAR_OPENAI_ADMIN_KEY not configured",
                 console_url=CONSOLE_URLS["openai"],
                 warning_threshold=warning_threshold,
                 critical_threshold=critical_threshold,
@@ -655,6 +660,48 @@ class VendorBalanceService:
             )
 
         client = await self._get_client()
+
+        # 1. Prioritize Admin Key to fetch exact Month-to-Date (MTD) organization spend
+        if admin_key:
+            try:
+                admin_headers = {
+                    "Authorization": f"Bearer {admin_key}",
+                    "Content-Type": "application/json",
+                }
+                month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+                start_time = int(month_start.timestamp())
+                cost_url = f"https://api.openai.com/v1/organization/costs?start_time={start_time}&bucket_width=1d&limit=31"
+                cost_resp = await client.get(cost_url, headers=admin_headers)
+
+                if cost_resp.status_code == 200:
+                    cost_data = cost_resp.json()
+                    total_spent = 0.0
+                    for bucket in cost_data.get("data", []):
+                        for res in bucket.get("results", []):
+                            amt = res.get("amount", {}).get("value", 0.0)
+                            total_spent += float(amt)
+
+                    total_spent = round(total_spent, 2)
+                    month_name = now.strftime("%B")
+                    return VendorCheckResult(
+                        vendor="openai",
+                        display_name="OpenAI Intelligence",
+                        balance=total_spent,
+                        units="USD",
+                        status="healthy",
+                        raw_payload=cost_data,
+                        error_message=f"${total_spent:.2f} MTD spend in {month_name}",
+                        console_url="https://platform.openai.com/settings/organization/billing/overview",
+                        warning_threshold=warning_threshold,
+                        critical_threshold=critical_threshold,
+                        checked_at=now,
+                    )
+                else:
+                    logger.warning(f"[VENDOR BALANCE] OpenAI Admin Key query returned HTTP {cost_resp.status_code}: {cost_resp.text[:150]}")
+            except Exception as e:
+                logger.warning(f"[VENDOR BALANCE] Failed to fetch OpenAI costs with admin key: {e}")
+
+        # 2. Fallback to standard API key validation
         headers = {"Authorization": f"Bearer {api_key}"}
 
         try:

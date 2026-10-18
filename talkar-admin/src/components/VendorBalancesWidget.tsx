@@ -476,24 +476,30 @@ export function VendorBalancesWidget() {
           </CardHeader>
           <CardContent className="px-4 pb-4 pt-1 space-y-3">
             <div>
-              <div className="text-2xl font-bold font-mono text-slate-900 tracking-tight">
-                {openai?.balance !== null && openai?.balance !== undefined
-                  ? `$${Number(openai.balance).toFixed(2)}`
-                  : openai?.status === "payg_active"
-                  ? "Active (PAYG)"
-                  : openai?.status === "not_configured"
-                  ? "Not Configured"
-                  : "—"}
+              <div className="text-2xl font-bold font-mono text-slate-900 tracking-tight flex items-baseline gap-1.5 flex-wrap">
+                <span>
+                  {openai?.balance !== null && openai?.balance !== undefined
+                    ? `$${Number(openai.balance).toFixed(2)}`
+                    : openai?.status === "payg_active"
+                    ? "Active (PAYG)"
+                    : openai?.status === "not_configured"
+                    ? "Not Configured"
+                    : "—"}
+                </span>
+                {openai?.balance !== null && openai?.balance !== undefined && (
+                  <span className="text-xs text-slate-400 font-sans font-normal">
+                    MTD Spend
+                  </span>
+                )}
               </div>
 
               <div className="text-[11px] text-slate-500 mt-1">
-                Postpaid card billing · Reasoning & models
+                {openai?.balance !== null && openai?.balance !== undefined
+                  ? "Month-to-date usage · Postpaid card billed"
+                  : "Postpaid card billing · Reasoning & models"}
               </div>
               <div className="text-[10px] text-slate-400 mt-0.5 truncate" title={openai?.error_message || "Active STT/LLM Key • Card Billed"}>
                 {openai?.error_message || "Active STT/LLM Key • Card Billed"}
-              </div>
-              <div className="text-[10px] text-slate-400 mt-0.5">
-                Card billed · Balance API restricted by OpenAI
               </div>
             </div>
 
