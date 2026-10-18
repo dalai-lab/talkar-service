@@ -75,6 +75,32 @@ class VendorBalanceService:
             return self._client
         return httpx.AsyncClient(timeout=10.0)
 
+    async def _get_fallback_key_from_dograh(self, component: str, provider_name: str) -> str:
+        """Fallback to resolve vendor API key from Dograh organization_configurations."""
+        try:
+            from services.dograh_client import DograhSessionLocal
+            from sqlalchemy import text
+            async with DograhSessionLocal() as dsession:
+                res = await dsession.execute(
+                    text("SELECT value FROM organization_configurations WHERE key = 'MODEL_CONFIGURATION_V2' ORDER BY id DESC LIMIT 10")
+                )
+                rows = res.scalars().all()
+                for val in rows:
+                    if isinstance(val, str):
+                        try:
+                            val = json.loads(val)
+                        except Exception:
+                            continue
+                    if isinstance(val, dict):
+                        pipeline = val.get("byok", {}).get("pipeline", {})
+                        comp_cfg = pipeline.get(component, {})
+                        provider = str(comp_cfg.get("provider", "")).lower()
+                        if provider_name in provider and comp_cfg.get("api_key"):
+                            return str(comp_cfg.get("api_key")).strip()
+        except Exception as e:
+            logger.debug(f"[VENDOR BALANCE] Fallback Dograh DB key lookup failed for {provider_name}: {e}")
+        return ""
+
     # -------------------------------------------------------------------------
     # Vendor-Specific Checkers
     # -------------------------------------------------------------------------
@@ -188,9 +214,21 @@ class VendorBalanceService:
             )
 
     async def check_deepgram(self, warning_threshold: float = 20.0, critical_threshold: float = 2.0) -> VendorCheckResult:
-        api_key = getattr(settings, "TALKAR_DEEPGRAM_KEY", "").strip()
-        project_id = getattr(settings, "TALKAR_DEEPGRAM_PROJECT_ID", "").strip()
+        api_key = (
+            getattr(settings, "TALKAR_DEEPGRAM_KEY", "")
+            or os.getenv("TALKAR_DEEPGRAM_KEY", "")
+            or os.getenv("DEEPGRAM_API_KEY", "")
+            or os.getenv("DEEPGRAM_KEY", "")
+        ).strip()
+        project_id = (
+            getattr(settings, "TALKAR_DEEPGRAM_PROJECT_ID", "")
+            or os.getenv("TALKAR_DEEPGRAM_PROJECT_ID", "")
+            or os.getenv("DEEPGRAM_PROJECT_ID", "")
+        ).strip()
         now = datetime.now(timezone.utc)
+
+        if not api_key:
+            api_key = await self._get_fallback_key_from_dograh("stt", "deepgram")
 
         if not api_key:
             return VendorCheckResult(
@@ -209,7 +247,13 @@ class VendorBalanceService:
         headers = {"Authorization": f"Token {api_key}"}
 
         try:
-            # Auto-discover project if omitted
+            bal_resp = None
+            if project_id:
+                bal_resp = await client.get(f"https://api.deepgram.com/v1/projects/{project_id}/balances", headers=headers)
+                if bal_resp.status_code == 404:
+                    # Configured project not found, try auto-discovery
+                    project_id = ""
+
             if not project_id:
                 proj_resp = await client.get("https://api.deepgram.com/v1/projects", headers=headers)
                 if proj_resp.status_code == 200:
@@ -242,8 +286,10 @@ class VendorBalanceService:
                     checked_at=now,
                 )
 
-            # Query balances
-            bal_resp = await client.get(f"https://api.deepgram.com/v1/projects/{project_id}/balances", headers=headers)
+            # Query balances if not already queried
+            if bal_resp is None:
+                bal_resp = await client.get(f"https://api.deepgram.com/v1/projects/{project_id}/balances", headers=headers)
+
             if bal_resp.status_code == 403:
                 # Key is verified and project discovered; STT is fully operational via card billing or key lacks billing-reader scope
                 return VendorCheckResult(
@@ -325,8 +371,16 @@ class VendorBalanceService:
             )
 
     async def check_elevenlabs(self, warning_threshold: float = 50000.0, critical_threshold: float = 5000.0) -> VendorCheckResult:
-        api_key = getattr(settings, "TALKAR_ELEVENLABS_KEY", "").strip()
+        api_key = (
+            getattr(settings, "TALKAR_ELEVENLABS_KEY", "")
+            or os.getenv("TALKAR_ELEVENLABS_KEY", "")
+            or os.getenv("ELEVENLABS_API_KEY", "")
+            or os.getenv("ELEVENLABS_KEY", "")
+        ).strip()
         now = datetime.now(timezone.utc)
+
+        if not api_key:
+            api_key = await self._get_fallback_key_from_dograh("tts", "elevenlabs")
 
         if not api_key:
             return VendorCheckResult(
@@ -413,11 +467,17 @@ class VendorBalanceService:
     async def check_smallest(self, warning_threshold: float = 500.0, critical_threshold: float = 50.0) -> VendorCheckResult:
         api_key = (
             getattr(settings, "TALKAR_SMALLEST_AI_KEY", "")
+            or getattr(settings, "TALKAR_SMALLEST_KEY", "")
             or os.getenv("TALKAR_SMALLEST_AI_KEY", "")
+            or os.getenv("TALKAR_SMALLEST_KEY", "")
             or os.getenv("SMALLEST_AI_KEY", "")
+            or os.getenv("SMALLEST_KEY", "")
             or os.getenv("SMALLEST_API_KEY", "")
         ).strip()
         now = datetime.now(timezone.utc)
+
+        if not api_key:
+            api_key = await self._get_fallback_key_from_dograh("tts", "smallest")
 
         if not api_key:
             return VendorCheckResult(
@@ -571,10 +631,15 @@ class VendorBalanceService:
     async def check_openai(self, warning_threshold: float = 20.0, critical_threshold: float = 5.0) -> VendorCheckResult:
         api_key = (
             getattr(settings, "TALKAR_OPENAI_KEY", "")
+            or getattr(settings, "OPENAI_API_KEY", "")
             or os.getenv("TALKAR_OPENAI_KEY", "")
             or os.getenv("OPENAI_API_KEY", "")
+            or os.getenv("OPENAI_KEY", "")
         ).strip()
         now = datetime.now(timezone.utc)
+
+        if not api_key:
+            api_key = await self._get_fallback_key_from_dograh("llm", "openai")
 
         if not api_key:
             return VendorCheckResult(

@@ -11,6 +11,12 @@ class Settings(BaseSettings):
         if not self.DOGRAH_DB_URL:
             # Construct it using the provided POSTGRES_PASSWORD
             self.DOGRAH_DB_URL = f"postgresql+asyncpg://postgres:{self.POSTGRES_PASSWORD}@postgres:5432/postgres"
+        if not self.TALKAR_SMALLEST_AI_KEY and self.TALKAR_SMALLEST_KEY:
+            self.TALKAR_SMALLEST_AI_KEY = self.TALKAR_SMALLEST_KEY
+        if not self.TALKAR_SMALLEST_KEY and self.TALKAR_SMALLEST_AI_KEY:
+            self.TALKAR_SMALLEST_KEY = self.TALKAR_SMALLEST_AI_KEY
+        if not self.TALKAR_OPENAI_KEY and self.OPENAI_API_KEY:
+            self.TALKAR_OPENAI_KEY = self.OPENAI_API_KEY
         return self
     
     # Razorpay Keys
@@ -24,9 +30,11 @@ class Settings(BaseSettings):
     
     # Talkar Platform Keys (injected into Dograh Orgs)
     TALKAR_OPENAI_KEY: str = ""
+    OPENAI_API_KEY: str = ""
     TALKAR_ELEVENLABS_KEY: str = ""
     TALKAR_DEEPGRAM_KEY: str = ""
     TALKAR_SMALLEST_AI_KEY: str = ""
+    TALKAR_SMALLEST_KEY: str = ""
     TALKAR_PLIVO_AUTH_ID: str = ""
     TALKAR_PLIVO_AUTH_TOKEN: str = ""
     TALKAR_DEEPGRAM_PROJECT_ID: str = ""
