@@ -385,6 +385,7 @@ export function VendorBalancesWidget() {
             </div>
             {getStatusBadge(smallest?.status || "not_configured")}
           </CardHeader>
+          <CardContent className="px-4 pb-4 pt-1 space-y-3">
             <div>
               <div className="text-2xl font-bold font-mono text-slate-900 tracking-tight">
                 {smallest?.balance !== null && smallest?.balance !== undefined
