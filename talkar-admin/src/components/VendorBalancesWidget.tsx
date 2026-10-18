@@ -207,12 +207,19 @@ export function VendorBalancesWidget() {
           </CardHeader>
           <CardContent className="px-4 pb-4 pt-1 space-y-3">
             <div>
-              <div className="text-2xl font-bold font-mono text-slate-900 tracking-tight">
-                {plivo?.balance !== null && plivo?.balance !== undefined
-                  ? `${plivo.units === "INR" ? "₹" : "$"}${plivo.balance.toFixed(2)}`
-                  : plivo?.status === "not_configured"
-                  ? "Not Configured"
-                  : "—"}
+              <div className="text-2xl font-bold font-mono text-slate-900 tracking-tight flex items-baseline gap-1.5 flex-wrap">
+                <span>
+                  {plivo?.balance !== null && plivo?.balance !== undefined
+                    ? `${plivo.units === "INR" ? "₹" : "$"}${plivo.balance.toFixed(2)}`
+                    : plivo?.status === "not_configured"
+                    ? "Not Configured"
+                    : "—"}
+                </span>
+                {plivo?.balance !== null && plivo?.balance !== undefined && plivo.units !== "INR" && (
+                  <span className="text-xs text-slate-400 font-sans font-normal">
+                    (≈ ₹{Number(plivo.balance * 80).toFixed(2)})
+                  </span>
+                )}
               </div>
               <div className="flex items-center justify-between text-[11px] text-slate-500 mt-1">
                 <span>Auto-Recharge:</span>
@@ -484,6 +491,9 @@ export function VendorBalancesWidget() {
               </div>
               <div className="text-[10px] text-slate-400 mt-0.5 truncate" title={openai?.error_message || "Active STT/LLM Key • Card Billed"}>
                 {openai?.error_message || "Active STT/LLM Key • Card Billed"}
+              </div>
+              <div className="text-[10px] text-slate-400 mt-0.5">
+                Card billed · Balance API restricted by OpenAI
               </div>
             </div>
 
