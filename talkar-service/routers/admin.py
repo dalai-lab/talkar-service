@@ -2269,24 +2269,39 @@ async def _fetch_run_audit_context(
                     {"run_id": dograh_run_id}
                 )).fetchone()
                 if row:
+                    u_info = row.usage_info or {}
+                    if isinstance(u_info, str):
+                        try:
+                            import json
+                            u_info = json.loads(u_info)
+                        except Exception:
+                            u_info = {}
                     workflow_run_data = {
                         "id": row.id,
-                        "usage_info": row.usage_info or {},
+                        "usage_info": u_info,
                         "status": row.state,
                         "mode": row.mode,
                     }
     except Exception as e:
         logger.debug(f"Direct Dograh DB fetch for run {dograh_run_id} failed: {e}")
 
-    if not workflow_run_data:
+    # Fallback to REST API if DB fetch failed or yielded empty usage_info
+    if not workflow_run_data or not workflow_run_data.get("usage_info"):
         try:
             from services.dograh_client import _request_dograh_api
             resp = await _request_dograh_api("GET", f"/api/v1/internal/runs/{dograh_run_id}")
             if resp and resp.status_code == 200:
                 run_json = resp.json()
+                u_info = run_json.get("usage_info") or {}
+                if isinstance(u_info, str):
+                    try:
+                        import json
+                        u_info = json.loads(u_info)
+                    except Exception:
+                        u_info = {}
                 workflow_run_data = {
                     "id": run_json.get("id", dograh_run_id),
-                    "usage_info": run_json.get("usage_info") or {},
+                    "usage_info": u_info,
                     "status": run_json.get("state") or run_json.get("status"),
                     "mode": run_json.get("mode"),
                 }
@@ -2300,14 +2315,14 @@ async def _fetch_run_audit_context(
 async def get_call_audit_customers(
     search: Optional[str] = None,
     page: int = Query(1, ge=1),
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
     current_admin: TalkarAdmin = Depends(get_current_admin),
 ):
     """
     Searchable, paginated list of customer accounts with total call counts, duration, and billed revenue.
     """
-    count_query = select(func.count(Customer.id)).where(Customer.is_test_account == False)
+    count_query = select(func.count(Customer.id))
     if search:
         term = f"%{search.strip()}%"
         count_query = count_query.where(
@@ -2321,6 +2336,7 @@ async def get_call_audit_customers(
         Customer.contact_email,
         Customer.contact_name,
         Customer.status,
+        Customer.onboarding_form,
         Customer.report_settings,
         Subscription.plan.label("subscription_plan"),
         func.count(CallLog.id).label("total_calls"),
@@ -2330,8 +2346,6 @@ async def get_call_audit_customers(
         Subscription, Subscription.customer_id == Customer.id
     ).outerjoin(
         CallLog, CallLog.customer_id == Customer.id
-    ).where(
-        Customer.is_test_account == False
     )
 
     if search:
@@ -2350,9 +2364,16 @@ async def get_call_audit_customers(
         settings = r.report_settings or {}
         currency = settings.get("currency", "INR")
         rev_paise = float(r.total_revenue_paise or 0)
+        resolved_name = (
+            r.company_name
+            or (r.onboarding_form.get("businessName") if r.onboarding_form else None)
+            or (r.onboarding_form.get("company_name") if r.onboarding_form else None)
+            or r.contact_name
+            or (r.contact_email.split("@")[0] if r.contact_email else f"Org #{r.id}")
+        )
         customers_list.append({
             "id": r.id,
-            "company_name": r.company_name,
+            "company_name": resolved_name,
             "contact_email": r.contact_email,
             "contact_name": r.contact_name,
             "status": r.status,

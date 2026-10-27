@@ -180,7 +180,7 @@ export default function CallCostAuditPage() {
   const fetchCustomers = useCallback(async () => {
     setLoadingCustomers(true);
     try {
-      const res = await adminFetch("/admin/call-audit/customers?limit=100");
+      const res = await adminFetch("/admin/call-audit/customers?limit=500");
       if (res.ok) {
         const data = await res.json();
         setCustomers(data.customers || []);
@@ -199,7 +199,7 @@ export default function CallCostAuditPage() {
     let ignore = false;
     async function init() {
       try {
-        const res = await adminFetch("/admin/call-audit/customers?limit=100");
+        const res = await adminFetch("/admin/call-audit/customers?limit=500");
         if (res.ok && !ignore) {
           const data = await res.json();
           setCustomers(data.customers || []);
