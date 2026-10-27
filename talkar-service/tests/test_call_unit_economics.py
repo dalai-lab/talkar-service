@@ -744,3 +744,55 @@ def test_runtime_configuration_sarvam_saaras_resolution():
     assert "nano" in ext_cb["model"]
 
 
+def test_extraction_llm_with_recorded_tokens_resolves_to_gpt_4_1_nano():
+    """
+    Validates that when extraction tokens (e.g. 1,697 prompt / 158 completion) are
+    recorded under 'variable_extraction:extraction|||unknown', the calculator resolves
+    to OpenAI GPT-4.1-nano based on runtime_configuration at $0.10 in / $0.40 out,
+    yielding ₹0.02 instead of ₹0.03 (gpt-4o-mini).
+    """
+    call_log = {
+        "dograh_run_id": 9998,
+        "customer_id": 42,
+        "duration_seconds": 95,
+        "cost_to_customer_paise": 600,
+        "call_status": "completed",
+    }
+    workflow_run = {
+        "duration_seconds": 95,
+        "usage_info": {
+            "llm": {
+                "variable_extraction:extraction|||unknown": {
+                    "prompt_tokens": 1697,
+                    "completion_tokens": 158,
+                    "cached_tokens": 0,
+                }
+            }
+        },
+        "runtime_configuration": {
+            "stt_provider": "sarvam",
+            "stt_model": "saaras:v4",
+            "tts_provider": "smallest",
+            "tts_model": "lightning_v3.1_pro",
+            "llm_provider": "sarvam",
+            "llm_model": "sarvam-105b-conversations",
+            "extraction_llm_provider": "openai",
+            "extraction_llm_model": "gpt-4.1-nano",
+        },
+    }
+
+    res = calculate_call_unit_economics(call_log, workflow_run)
+    ext_cb = res["cost_breakdown"]["llm_extraction"]
+
+    assert ext_cb["provider"] == "openai"
+    assert ext_cb["model"] == "gpt-4.1-nano"
+    assert ext_cb["prompt_tokens"] == 1697
+    assert ext_cb["completion_tokens"] == 158
+
+    # Math: (1697 * 0.10 + 158 * 0.40) / 1_000_000 * 88 = $0.0002329 * 88 = ₹0.0204952
+    expected_cost = ((1697 / 1_000_000.0) * 0.10 + (158 / 1_000_000.0) * 0.40) * 88.0
+    assert pytest.approx(ext_cb["cost_inr"], abs=0.001) == expected_cost
+    assert round(ext_cb["cost_inr"], 2) == 0.02
+
+
+

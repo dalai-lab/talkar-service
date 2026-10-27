@@ -817,9 +817,33 @@ def calculate_call_unit_economics(
             has_extraction_metrics = True
 
         if is_extraction:
-            chosen_key = overrides.get("extraction_llm_model") or model_key
+            # Check model name candidate from model_key
+            ext_model_candidate = model_key.split("|||", 1)[1].strip() if "|||" in model_key else None
+            if not ext_model_candidate or ext_model_candidate.lower() in ("unknown", "default", "none", "extraction"):
+                ext_model_candidate = None
+
+            # Priority: simulation override > configured extraction model from runtime_config > metric key candidate
+            chosen_key = (
+                overrides.get("extraction_llm_model")
+                or rc.get("extraction_llm_model")
+                or ext_model_candidate
+                or configured_ext_llm
+            )
         else:
-            chosen_key = override_llm_model or model_key
+            if "|||" in model_key:
+                conv_model_candidate = model_key.split("|||", 1)[1].strip()
+            else:
+                conv_model_candidate = model_key.strip()
+
+            if conv_model_candidate and conv_model_candidate.lower() in ("unknown", "default", "none"):
+                conv_model_candidate = None
+
+            chosen_key = (
+                override_llm_model
+                or conv_model_candidate
+                or rc.get("llm_model")
+                or configured_conv_llm
+            )
 
         cfg, fallback_applied = resolve_llm_pricing(chosen_key)
         if fallback_applied:
@@ -839,10 +863,16 @@ def calculate_call_unit_economics(
         )
         item_cost_inr = item_cost_native * exchange_rate if curr == "USD" else item_cost_native
 
+        display_model = cfg["model"]
+        if is_extraction and rc.get("extraction_llm_model"):
+            display_model = rc.get("extraction_llm_model")
+        elif not is_extraction and not is_qa and rc.get("llm_model"):
+            display_model = rc.get("llm_model")
+
         item_entry = {
             "key": model_key,
             "provider": cfg["provider"],
-            "model": cfg["model"],
+            "model": display_model,
             "prompt_tokens": p_tok,
             "completion_tokens": c_tok,
             "cached_tokens": cache_tok,
