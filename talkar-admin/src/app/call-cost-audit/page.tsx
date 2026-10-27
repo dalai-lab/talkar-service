@@ -64,6 +64,7 @@ interface CostBreakdown {
     model: string;
     seconds: number;
     rate_usd_min?: number | null;
+    rate_inr_min?: number | null;
     rate_per_min?: number;
     cost_inr: number;
   };
@@ -878,7 +879,7 @@ export default function CallCostAuditPage() {
                           </td>
                           <td className="px-3 py-3 text-zinc-600 font-mono">{cb.stt.seconds.toFixed(1)}s audio</td>
                           <td className="px-3 py-3 text-zinc-500 font-mono">
-                            {cb.stt.rate_usd_min ? `${usd(cb.stt.rate_usd_min)}/m` : `₹0.50/m`}
+                            {cb.stt.rate_usd_min ? `${usd(cb.stt.rate_usd_min)}/m` : cb.stt.rate_inr_min ? `₹${cb.stt.rate_inr_min.toFixed(2)}/m` : `₹0.50/m`}
                           </td>
                           <td className="px-3 py-3 text-right font-bold text-zinc-900">
                             {inr(cb.stt.cost_inr)}

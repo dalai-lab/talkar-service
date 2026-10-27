@@ -2265,7 +2265,7 @@ async def _fetch_run_audit_context(
         if _has_dograh_db():
             async with DograhSessionLocal() as ddb:
                 row = (await ddb.execute(
-                    text("SELECT id, usage_info, state, mode FROM workflow_runs WHERE id = :run_id"),
+                    text("SELECT id, usage_info, state, mode, initial_context FROM workflow_runs WHERE id = :run_id"),
                     {"run_id": dograh_run_id}
                 )).fetchone()
                 if row:
@@ -2276,11 +2276,24 @@ async def _fetch_run_audit_context(
                             u_info = json.loads(u_info)
                         except Exception:
                             u_info = {}
+                    runtime_config = {}
+                    init_ctx = getattr(row, "initial_context", None)
+                    if init_ctx:
+                        if isinstance(init_ctx, str):
+                            try:
+                                import json
+                                init_ctx = json.loads(init_ctx)
+                            except Exception:
+                                init_ctx = {}
+                        if isinstance(init_ctx, dict):
+                            runtime_config = init_ctx.get("runtime_configuration") or {}
+
                     workflow_run_data = {
                         "id": row.id,
                         "usage_info": u_info,
                         "status": row.state,
                         "mode": row.mode,
+                        "runtime_configuration": runtime_config,
                     }
     except Exception as e:
         logger.debug(f"Direct Dograh DB fetch for run {dograh_run_id} failed: {e}")
@@ -2299,11 +2312,13 @@ async def _fetch_run_audit_context(
                         u_info = json.loads(u_info)
                     except Exception:
                         u_info = {}
+                runtime_config = run_json.get("runtime_configuration") or {}
                 workflow_run_data = {
                     "id": run_json.get("id", dograh_run_id),
                     "usage_info": u_info,
                     "status": run_json.get("state") or run_json.get("status"),
                     "mode": run_json.get("mode"),
+                    "runtime_configuration": runtime_config,
                 }
         except Exception as e:
             logger.debug(f"REST fetch for run {dograh_run_id} failed: {e}")
@@ -2488,6 +2503,7 @@ async def get_call_audit_run(
     if plivo_rate_inr is not None:
         overrides["plivo_rate_inr"] = plivo_rate_inr
 
+    runtime_config = workflow_run_data.get("runtime_configuration") or {}
     call_log_dict = {
         "dograh_run_id": dograh_run_id,
         "customer_id": call_log.customer_id if call_log else (customer.id if customer else None),
@@ -2498,6 +2514,15 @@ async def get_call_audit_run(
         "call_type": call_log.call_type if call_log else "outbound",
         "caller_number": call_log.caller_number if call_log else None,
         "customer_currency": (customer.report_settings or {}).get("currency", "INR") if customer else "INR",
+        "runtime_configuration": runtime_config,
+        "stt_provider": runtime_config.get("stt_provider"),
+        "stt_model": runtime_config.get("stt_model"),
+        "tts_provider": runtime_config.get("tts_provider") or (call_log.tts_provider if call_log else None),
+        "tts_model": runtime_config.get("tts_model"),
+        "llm_provider": runtime_config.get("llm_provider"),
+        "llm_model": runtime_config.get("llm_model"),
+        "extraction_llm_provider": runtime_config.get("extraction_llm_provider"),
+        "extraction_llm_model": runtime_config.get("extraction_llm_model"),
     }
 
     audit = calculate_call_unit_economics(call_log_dict, workflow_run_data, overrides)
@@ -2522,6 +2547,7 @@ async def get_call_audit_run(
                 "model": audit["cost_breakdown"]["stt"]["model"],
                 "seconds": round(audit["cost_breakdown"]["stt"]["seconds"], 1),
                 "rate_usd_min": audit["cost_breakdown"]["stt"].get("rate_usd_min"),
+                "rate_inr_min": audit["cost_breakdown"]["stt"].get("rate_inr_min"),
                 "cost_inr": round(audit["cost_breakdown"]["stt"]["cost_inr"], 2),
             },
             "llm_conversation": {
@@ -2577,6 +2603,7 @@ async def simulate_call_audit(
     if customer and customer.report_settings:
         base_overrides.update(customer.report_settings.get("profitability_overrides", {}))
 
+    runtime_config = workflow_run_data.get("runtime_configuration") or {}
     call_log_dict = {
         "dograh_run_id": req.dograh_run_id,
         "customer_id": call_log.customer_id if call_log else (customer.id if customer else None),
@@ -2587,6 +2614,15 @@ async def simulate_call_audit(
         "call_type": call_log.call_type if call_log else "outbound",
         "caller_number": call_log.caller_number if call_log else None,
         "customer_currency": (customer.report_settings or {}).get("currency", "INR") if customer else "INR",
+        "runtime_configuration": runtime_config,
+        "stt_provider": runtime_config.get("stt_provider"),
+        "stt_model": runtime_config.get("stt_model"),
+        "tts_provider": runtime_config.get("tts_provider") or (call_log.tts_provider if call_log else None),
+        "tts_model": runtime_config.get("tts_model"),
+        "llm_provider": runtime_config.get("llm_provider"),
+        "llm_model": runtime_config.get("llm_model"),
+        "extraction_llm_provider": runtime_config.get("extraction_llm_provider"),
+        "extraction_llm_model": runtime_config.get("extraction_llm_model"),
     }
 
     baseline = calculate_call_unit_economics(call_log_dict, workflow_run_data, base_overrides)

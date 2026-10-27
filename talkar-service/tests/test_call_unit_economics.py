@@ -680,3 +680,67 @@ def test_phase5_scenario5_simulation_alert_margin_degradation():
     assert sim["margin_pct"] < 0  # Negative margin
     assert sim["margin_status"] == "loss"  # Degradation alert triggered!
 
+
+def test_runtime_configuration_sarvam_saaras_resolution():
+    """
+    Validates that when a call has empty STT/TTS telemetry frames but specifies
+    runtime_configuration with:
+      - stt_provider: "sarvam", stt_model: "saaras:v4"
+      - tts_provider: "smallest", tts_model: "lightning_v3.1_pro"
+      - llm_provider: "sarvam", llm_model: "sarvam-105b-conversations"
+      - extraction_llm_provider: "openai", extraction_llm_model: "gpt-4.1-nano"
+    The unit economics calculator correctly identifies:
+      - STT: Sarvam Saaras (₹0.49/₹0.50 per min INR), NOT Deepgram Nova-3!
+      - TTS: Smallest AI Lightning V3.1 Pro ($0.0175/1K chars)
+      - Conversational LLM: Sarvam-105B
+      - Extraction LLM: OpenAI GPT-4.1-nano
+    """
+    call_log = {
+        "dograh_run_id": 9999,
+        "customer_id": 42,
+        "duration_seconds": 95,
+        "cost_to_customer_paise": 600,
+        "call_status": "completed",
+    }
+    workflow_run = {
+        "duration_seconds": 95,
+        "usage_info": {},  # No raw frames
+        "runtime_configuration": {
+            "stt_provider": "sarvam",
+            "stt_model": "saaras:v4",
+            "tts_provider": "smallest",
+            "tts_model": "lightning_v3.1_pro",
+            "llm_provider": "sarvam",
+            "llm_model": "sarvam-105b-conversations",
+            "extraction_llm_provider": "openai",
+            "extraction_llm_model": "gpt-4.1-nano",
+        },
+    }
+
+    res = calculate_call_unit_economics(call_log, workflow_run)
+
+    # 1. STT verification
+    stt_cb = res["cost_breakdown"]["stt"]
+    assert stt_cb["provider"] == "sarvam"
+    assert "saaras" in stt_cb["model"].lower()
+    assert stt_cb["rate_currency"] == "INR"
+    assert stt_cb["rate_per_min"] == 0.49
+    # 95s audio at ₹0.49/min = 95/60 * 0.49 = 0.7758...
+    assert pytest.approx(stt_cb["cost_inr"], abs=0.01) == (95.0 / 60.0) * 0.49
+
+    # 2. TTS verification
+    tts_cb = res["cost_breakdown"]["tts"]
+    assert tts_cb["provider"] == "smallest_ai"
+    assert "lightning" in tts_cb["model"].lower()
+
+    # 3. Conversational LLM verification
+    conv_cb = res["cost_breakdown"]["llm_conversation"]
+    assert conv_cb["provider"] == "sarvam"
+    assert "105b" in conv_cb["model"]
+
+    # 4. Extraction LLM verification
+    ext_cb = res["cost_breakdown"]["llm_extraction"]
+    assert ext_cb["provider"] == "openai"
+    assert "nano" in ext_cb["model"]
+
+

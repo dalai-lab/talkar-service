@@ -73,7 +73,36 @@ VENDOR_PRICING_REGISTRY: Dict[str, Any] = {
             "currency": "INR",
             "unit": "min",
             "description": "Sarvam Saaras STT (₹0.49/min PAYG benchmark, ₹0.50/min official ₹30/hr)",
-            "aliases": ["sarvam", "saaras", "sarvam_saaras", "saaras-v3", "saaras-v4", "sarvam-stt"],
+            "aliases": [
+                "sarvam",
+                "saaras",
+                "sarvam_saaras",
+                "saaras-v3",
+                "saaras:v3",
+                "saaras_v3",
+                "saaras-v4",
+                "saaras:v4",
+                "saaras_v4",
+                "sarvam-stt",
+                "sarvam_stt",
+            ],
+        },
+        "sarvam_saaras_v4": {
+            "provider": "sarvam",
+            "model": "saaras-v4",
+            "rate": 0.49,
+            "standard_rate": 0.50,
+            "currency": "INR",
+            "unit": "min",
+            "description": "Sarvam Saaras v4 STT (₹0.49/min PAYG benchmark, ₹0.50/min official ₹30/hr)",
+            "aliases": [
+                "sarvam_saaras_v4",
+                "saaras:v4",
+                "saaras-v4",
+                "saaras_v4",
+                "saaras-v4-flash",
+                "v4",
+            ],
         },
         "smallest_ai_pulse": {
             "provider": "smallest_ai",
@@ -115,6 +144,23 @@ VENDOR_PRICING_REGISTRY: Dict[str, Any] = {
                 "gpt-4.1",
                 "gpt-4-1-mini",
                 "gpt-4.1-mini-2026",
+            ],
+        },
+        "gpt-4.1-nano": {
+            "provider": "openai",
+            "model": "gpt-4.1-nano",
+            "input_per_million": 0.10,
+            "cached_per_million": 0.03,
+            "output_per_million": 0.40,
+            "currency": "USD",
+            "description": "OpenAI GPT-4.1-nano ultra-low latency tier",
+            "aliases": [
+                "gpt-4.1-nano",
+                "gpt-4.1-nano-2025",
+                "gpt_4_1_nano",
+                "gpt-4-1-nano",
+                "4.1-nano",
+                "nano",
             ],
         },
         "gpt-4o-mini": {
@@ -161,6 +207,9 @@ VENDOR_PRICING_REGISTRY: Dict[str, Any] = {
                 "lightning",
                 "lightning-v3.1",
                 "lightning-v3",
+                "lightning_v3.1_pro",
+                "lightning-v3.1-pro",
+                "lightning_v3_1_pro",
                 "waves",
             ],
         },
@@ -284,8 +333,10 @@ def resolve_stt_pricing(name_or_provider: Optional[str]) -> Tuple[Dict[str, Any]
             return cfg, False
 
     # Regex / prefix fallback match (EC-6)
+    if "v4" in clean and ("saaras" in clean or "sarvam" in clean):
+        return VENDOR_PRICING_REGISTRY["stt"]["sarvam_saaras_v4"], False
     if "saaras" in clean or "sarvam" in clean:
-        return VENDOR_PRICING_REGISTRY["stt"]["sarvam_saaras"], True
+        return VENDOR_PRICING_REGISTRY["stt"]["sarvam_saaras"], False
     if "pulse" in clean:
         return VENDOR_PRICING_REGISTRY["stt"]["smallest_ai_pulse"], True
     if "nova-2" in clean or "nova_2" in clean:
@@ -318,6 +369,8 @@ def resolve_llm_pricing(name_or_model: Optional[str]) -> Tuple[Dict[str, Any], b
     # Regex / prefix fallback match (EC-6)
     if "105b" in clean or "sarvam" in clean:
         return VENDOR_PRICING_REGISTRY["llm"]["sarvam-105b"], True
+    if "nano" in clean:
+        return VENDOR_PRICING_REGISTRY["llm"]["gpt-4.1-nano"], False
     if "4.1" in clean:
         return VENDOR_PRICING_REGISTRY["llm"]["gpt-4.1-mini"], True
     if "4o-mini" in clean or "4o_mini" in clean:
@@ -501,7 +554,7 @@ def calculate_call_unit_economics(
         "phone_number": to_phone,
     }
 
-    # --- 4. Usage Info Extraction (EC-2, EC-18) ---
+    # --- 4. Usage Info & Runtime Configuration Extraction (EC-2, EC-18) ---
     ui = None
     if workflow_run:
         ui = _get_val(workflow_run, "usage_info")
@@ -513,6 +566,20 @@ def calculate_call_unit_economics(
         if not is_failed_or_unanswered and duration_seconds > 0:
             notices.append("UNRECORDED TELEMETRY (Pre-patch or Dropped Webhook)")
 
+    rc = _get_val(workflow_run, "runtime_configuration") or _get_val(call_log, "runtime_configuration") or {}
+    if not rc:
+        init_ctx = _get_val(workflow_run, "initial_context") or _get_val(call_log, "initial_context")
+        if isinstance(init_ctx, str):
+            try:
+                import json
+                init_ctx = json.loads(init_ctx)
+            except Exception:
+                init_ctx = {}
+        if isinstance(init_ctx, dict):
+            rc = init_ctx.get("runtime_configuration") or {}
+    if not isinstance(rc, dict):
+        rc = {}
+
     stt_data = ui.get("stt", {}) if isinstance(ui.get("stt"), dict) else {}
     tts_data = ui.get("tts", {}) if isinstance(ui.get("tts"), dict) else {}
     llm_data = ui.get("llm", {}) if isinstance(ui.get("llm"), dict) else {}
@@ -521,6 +588,14 @@ def calculate_call_unit_economics(
     override_stt_prov = overrides.get("stt_provider") or overrides.get("stt_model")
     override_stt_rate = overrides.get("stt_rate_per_min")
     sarvam_stt_rate_override = overrides.get("sarvam_stt_rate")
+
+    configured_stt = (
+        override_stt_prov
+        or rc.get("stt_model")
+        or rc.get("stt_provider")
+        or _get_val(call_log, "stt_model")
+        or _get_val(call_log, "stt_provider")
+    )
 
     stt_total_seconds = 0.0
     stt_items: List[Dict[str, Any]] = []
@@ -534,9 +609,9 @@ def calculate_call_unit_economics(
                 audio_sec = float(val.get("audio_seconds") or val.get("seconds") or 0.0)
 
             stt_total_seconds += audio_sec
-            chosen_key = override_stt_prov or stt_key
+            chosen_key = override_stt_prov or (stt_key if stt_key not in ("stt", "default", "audio", "") else None) or configured_stt
             cfg, fallback_applied = resolve_stt_pricing(chosen_key)
-            if fallback_applied:
+            if fallback_applied and chosen_key:
                 notices.append(f"Default Fallback Rate Applied for STT: {chosen_key}")
 
             rate = float(override_stt_rate if override_stt_rate is not None else cfg["rate"])
@@ -547,10 +622,11 @@ def calculate_call_unit_economics(
             curr = cfg.get("currency", "USD")
             rate_inr = rate * exchange_rate if curr == "USD" else rate
             item_cost = (audio_sec / 60.0) * rate_inr
+            display_model = rc.get("stt_model") if (cfg["provider"] == rc.get("stt_provider") and rc.get("stt_model")) else cfg["model"]
             stt_items.append({
                 "key": stt_key,
                 "provider": cfg["provider"],
-                "model": cfg["model"],
+                "model": display_model,
                 "seconds": audio_sec,
                 "rate": rate,
                 "currency": curr,
@@ -562,9 +638,10 @@ def calculate_call_unit_economics(
             stt_total_seconds = float(duration_seconds)
             notices.append(f"STT Audio Stream: {duration_seconds}s (Full Duplex Stream)")
 
-        cfg, fallback_applied = resolve_stt_pricing(override_stt_prov)
-        if fallback_applied and override_stt_prov:
-            notices.append(f"Default Fallback Rate Applied for STT: {override_stt_prov}")
+        chosen_key = override_stt_prov or configured_stt
+        cfg, fallback_applied = resolve_stt_pricing(chosen_key)
+        if fallback_applied and chosen_key:
+            notices.append(f"Default Fallback Rate Applied for STT: {chosen_key}")
 
         rate = float(override_stt_rate if override_stt_rate is not None else cfg["rate"])
         if cfg["provider"] == "sarvam" and sarvam_stt_rate_override is not None:
@@ -573,10 +650,11 @@ def calculate_call_unit_economics(
         curr = cfg.get("currency", "USD")
         rate_inr = rate * exchange_rate if curr == "USD" else rate
         item_cost = (stt_total_seconds / 60.0) * rate_inr
+        display_model = rc.get("stt_model") if (cfg["provider"] == rc.get("stt_provider") and rc.get("stt_model")) else cfg["model"]
         stt_items.append({
-            "key": override_stt_prov or cfg["model"],
+            "key": chosen_key or cfg["model"],
             "provider": cfg["provider"],
-            "model": cfg["model"],
+            "model": display_model,
             "seconds": stt_total_seconds,
             "rate": rate,
             "currency": curr,
@@ -597,6 +675,7 @@ def calculate_call_unit_economics(
         "seconds": stt_total_seconds,
         "rate_per_min": primary_stt["rate"],
         "rate_usd_min": primary_stt["rate"] if primary_stt.get("currency") == "USD" else None,
+        "rate_inr_min": primary_stt["rate"] if primary_stt.get("currency") == "INR" else None,
         "rate_currency": primary_stt["currency"],
         "cost_inr": cost_stt,
         "items": stt_items,
@@ -605,6 +684,13 @@ def calculate_call_unit_economics(
     # --- 6. TTS Calculation (EC-2, EC-6, EC-7, EC-14, EC-19) ---
     override_tts_prov = overrides.get("tts_provider") or overrides.get("tts_model")
     override_tts_rate = overrides.get("tts_rate_per_1k")
+    configured_tts = (
+        override_tts_prov
+        or rc.get("tts_model")
+        or rc.get("tts_provider")
+        or _get_val(call_log, "tts_provider")
+        or _get_val(call_log, "tts_model")
+    )
 
     tts_total_chars = 0
     tts_items: List[Dict[str, Any]] = []
@@ -618,20 +704,21 @@ def calculate_call_unit_economics(
                 chars = int(val.get("characters") or val.get("chars") or 0)
 
             tts_total_chars += chars
-            chosen_key = override_tts_prov or tts_key
+            chosen_key = override_tts_prov or (tts_key if tts_key not in ("tts", "default", "") else None) or configured_tts
             cfg, fallback_applied = resolve_tts_pricing(chosen_key)
-            if fallback_applied:
+            if fallback_applied and chosen_key:
                 notices.append(f"Default Fallback Rate Applied for TTS: {chosen_key}")
 
             rate_1k = float(override_tts_rate if override_tts_rate is not None else cfg["rate_per_1k_chars"])
             curr = cfg.get("currency", "USD")
             rate_inr_1k = rate_1k * exchange_rate if curr == "USD" else rate_1k
             item_cost = (chars / 1000.0) * rate_inr_1k
+            display_model = rc.get("tts_model") if (cfg["provider"] == rc.get("tts_provider") and rc.get("tts_model")) else cfg["model"]
 
             tts_items.append({
                 "key": tts_key,
                 "provider": cfg["provider"],
-                "model": cfg["model"],
+                "model": display_model,
                 "characters": chars,
                 "rate_per_1k": rate_1k,
                 "currency": curr,
@@ -642,16 +729,18 @@ def calculate_call_unit_economics(
         if duration_seconds > 0 and not is_failed_or_unanswered:
             notices.append("0 Chars Synthesized")
 
-        cfg, fallback_applied = resolve_tts_pricing(override_tts_prov)
-        if fallback_applied and override_tts_prov:
-            notices.append(f"Default Fallback Rate Applied for TTS: {override_tts_prov}")
+        chosen_key = override_tts_prov or configured_tts
+        cfg, fallback_applied = resolve_tts_pricing(chosen_key)
+        if fallback_applied and chosen_key:
+            notices.append(f"Default Fallback Rate Applied for TTS: {chosen_key}")
 
         rate_1k = float(override_tts_rate if override_tts_rate is not None else cfg["rate_per_1k_chars"])
         curr = cfg.get("currency", "USD")
+        display_model = rc.get("tts_model") if (cfg["provider"] == rc.get("tts_provider") and rc.get("tts_model")) else cfg["model"]
         tts_items.append({
-            "key": override_tts_prov or cfg["model"],
+            "key": chosen_key or cfg["model"],
             "provider": cfg["provider"],
-            "model": cfg["model"],
+            "model": display_model,
             "characters": 0,
             "rate_per_1k": rate_1k,
             "currency": curr,
@@ -679,6 +768,18 @@ def calculate_call_unit_economics(
 
     # --- 7. LLM Calculation (Conversational, Extraction, QA - EC-5, EC-8, EC-12, EC-15) ---
     override_llm_model = overrides.get("llm_model") or overrides.get("llm_provider")
+    configured_conv_llm = (
+        override_llm_model
+        or rc.get("llm_model")
+        or rc.get("llm_provider")
+        or _get_val(call_log, "llm_model")
+    )
+    configured_ext_llm = (
+        overrides.get("extraction_llm_model")
+        or rc.get("extraction_llm_model")
+        or rc.get("extraction_llm_provider")
+        or "gpt-4.1-mini"
+    )
 
     conv_prompt_tokens = 0
     conv_comp_tokens = 0
@@ -715,7 +816,11 @@ def calculate_call_unit_economics(
         if is_extraction:
             has_extraction_metrics = True
 
-        chosen_key = override_llm_model or model_key
+        if is_extraction:
+            chosen_key = overrides.get("extraction_llm_model") or model_key
+        else:
+            chosen_key = override_llm_model or model_key
+
         cfg, fallback_applied = resolve_llm_pricing(chosen_key)
         if fallback_applied:
             notices.append(f"Default Fallback Rate Applied for LLM: {chosen_key}")
@@ -768,15 +873,16 @@ def calculate_call_unit_economics(
         notices.append("Extraction Telemetry Unrecorded (Pre-Patch Run)")
 
     # Default entries if lists are empty
-    default_cfg, _ = resolve_llm_pricing(override_llm_model)
+    conv_cfg, _ = resolve_llm_pricing(configured_conv_llm)
+    ext_cfg, _ = resolve_llm_pricing(configured_ext_llm)
 
     primary_conv = conv_items[0] if conv_items else {
-        "provider": default_cfg["provider"],
-        "model": default_cfg["model"],
+        "provider": conv_cfg["provider"],
+        "model": rc.get("llm_model") or conv_cfg["model"],
     }
     primary_ext = ext_items[0] if ext_items else {
-        "provider": default_cfg["provider"],
-        "model": default_cfg["model"],
+        "provider": ext_cfg["provider"],
+        "model": rc.get("extraction_llm_model") or ext_cfg["model"],
     }
     primary_qa = qa_items[0] if qa_items else {
         "provider": "openai",
