@@ -13,6 +13,7 @@ const ROUTE_NAMES: Record<string, string> = {
   "/phone-number-requests": "Phone Number Requests",
   "/wallet-overview": "Wallet & Float Overview",
   "/call-activity": "Live Call Activity",
+  "/call-cost-audit": "Call Cost Audit & Unit Economics",
   "/profitability": "Profitability Dashboard",
   "/team": "Team Management",
 };

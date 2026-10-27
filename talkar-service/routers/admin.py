@@ -10,7 +10,7 @@ from db.models import (
 from services import razorpay_client, notification_service, dograh_client
 from services.admin_auth import get_current_admin, create_admin_access_token
 from pydantic import BaseModel
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Tuple, Dict
 from datetime import datetime, timezone, date
 from config import CALL_BLOCK_THRESHOLD_PAISE
 
@@ -1884,42 +1884,24 @@ async def deny_phone_number_request(request_id: int, data: DenyPhoneNumberReques
 
 
 # ---------------------------------------------------------------------------
-# PROFITABILITY DASHBOARD
+# PROFITABILITY DASHBOARD & CALL COST AUDIT ENGINE
 # ---------------------------------------------------------------------------
-# Cost constants — update these when provider rates change
-USD_TO_INR = 95.7
+from services.call_audit_calculator import (
+    VENDOR_PRICING_REGISTRY,
+    calculate_call_unit_economics,
+    estimate_call_cost_inr,
+)
 
-# Plivo telephony: flat ₹0.60/min outbound India
-PLIVO_COST_PER_MIN_INR = 0.60
+USD_TO_INR = VENDOR_PRICING_REGISTRY["forex"]["default"]
+PLIVO_COST_PER_MIN_INR = VENDOR_PRICING_REGISTRY["telephony"]["plivo"]["outbound_india"]["rate_inr_per_min"]
+DEEPGRAM_STT_RATE_USD_PER_MIN = VENDOR_PRICING_REGISTRY["stt"]["deepgram_nova_3"]["rate"]
+DEEPGRAM_TTS_RATE_USD_PER_1K_CHARS = VENDOR_PRICING_REGISTRY["tts"]["deepgram_aura_1"]["rate_per_1k_chars"]
+ELEVENLABS_TTS_RATE_USD_PER_1K_CHARS = VENDOR_PRICING_REGISTRY["tts"]["elevenlabs_flash"]["rate_per_1k_chars"]
+SMALLEST_AI_TTS_RATE_USD_PER_1K_CHARS = VENDOR_PRICING_REGISTRY["tts"]["smallest_ai_lightning"]["rate_per_1k_chars"]
+SMALLEST_AI_STT_RATE_USD_PER_MIN = VENDOR_PRICING_REGISTRY["stt"]["smallest_ai_pulse"]["rate"]
 
-# Deepgram STT: Nova-3 Mono PAYG $0.0048/min
-DEEPGRAM_STT_RATE_USD_PER_MIN = 0.0048
-
-# Deepgram Aura TTS: ~$0.015 per 1000 chars
-DEEPGRAM_TTS_RATE_USD_PER_1K_CHARS = 0.015
-
-# ElevenLabs TTS: ~$0.18 per 1000 chars (creator tier)
-ELEVENLABS_TTS_RATE_USD_PER_1K_CHARS = 0.18
-
-# Smallest AI Waves TTS: $0.175 per 10k chars = $0.0175 per 1k chars (Lightning v3.1)
-# Ref: https://smallest.ai/pricing (Aug 2026)
-SMALLEST_AI_TTS_RATE_USD_PER_1K_CHARS = 0.0175
-
-# Smallest AI Pulse STT: ~$0.003/min (kept for reference — no current plan uses it;
-# all plans including growth use Deepgram for STT)
-SMALLEST_AI_STT_RATE_USD_PER_MIN = 0.003
-
-# AI speaking ratio — fraction of call time AI is synthesizing voice
-TTS_SPEAKING_RATIO = 0.47   # ~47%, derived from real transcript analysis
-# Average chars per minute of speech (from transcript counting)
+TTS_SPEAKING_RATIO = 0.47
 TTS_AVG_CHARS_PER_MIN = 900
-
-# OpenAI pricing (USD per 1M tokens)
-OPENAI_RATES = {
-    "gpt-4o-mini": {"input": 0.15, "cached": 0.075, "output": 0.60},
-    "gpt-4o":      {"input": 2.50, "cached": 1.25,  "output": 10.00},
-}
-OPENAI_DEFAULT_RATES = OPENAI_RATES["gpt-4o-mini"]
 
 
 def _estimate_call_cost_inr(
@@ -1932,96 +1914,16 @@ def _estimate_call_cost_inr(
 ) -> dict:
     """
     Estimate the real AI+telephony cost for a single call in INR.
-    Returns a dict with per-service breakdown and a total.
+    Delegates to the unified calculation engine in call_audit_calculator.
     """
-    minutes = duration_seconds / 60.0
-    ui = usage_info or {}
-    overrides = overrides or {}
-
-    # --- 1. Plivo telephony ---
-    plivo_rate_inr = overrides.get("telephony_cost_per_min_inr", PLIVO_COST_PER_MIN_INR)
-    if plivo_rate_inr is None or str(plivo_rate_inr) == "":
-        plivo_rate_inr = PLIVO_COST_PER_MIN_INR
-    plivo_inr = float(plivo_rate_inr) * minutes
-
-    # --- 2. STT (Deepgram) ---
-    stt_seconds = 0.0
-    llm_data = ui.get("llm", {})
-    stt_data = ui.get("stt", {})
-    tts_data = ui.get("tts", {})
-
-    for val in stt_data.values():
-        if isinstance(val, (int, float)):
-            stt_seconds += float(val)
-        elif isinstance(val, dict):
-            stt_seconds += float(val.get("audio_seconds", 0))
-
-    stt_minutes = stt_seconds / 60.0 if stt_seconds else minutes  # fallback to call duration
-    stt_inr = DEEPGRAM_STT_RATE_USD_PER_MIN * stt_minutes * USD_TO_INR
-
-    # --- 3. TTS ---
-    tts_chars = 0
-    for val in tts_data.values():
-        if isinstance(val, (int, float)):
-            tts_chars += int(val)
-        elif isinstance(val, dict):
-            tts_chars += int(val.get("characters", 0))
-
-    if tts_chars == 0:
-        # Estimate from call duration + speaking ratio
-        tts_chars = int(minutes * TTS_SPEAKING_RATIO * TTS_AVG_CHARS_PER_MIN)
-
-    if "elevenlabs" in tts_provider.lower():
-        tts_rate = ELEVENLABS_TTS_RATE_USD_PER_1K_CHARS
-    elif "smallest" in tts_provider.lower():
-        tts_rate = SMALLEST_AI_TTS_RATE_USD_PER_1K_CHARS
-    else:
-        tts_rate = DEEPGRAM_TTS_RATE_USD_PER_1K_CHARS
-
-    tts_inr = (tts_chars / 1000.0) * tts_rate * USD_TO_INR
-
-    # --- 3b. STT rate — use the explicit stt_provider, not inferred from TTS ---
-    if "smallest" in stt_provider.lower():
-        stt_inr = SMALLEST_AI_STT_RATE_USD_PER_MIN * stt_minutes * USD_TO_INR
-    else:
-        stt_inr = DEEPGRAM_STT_RATE_USD_PER_MIN * stt_minutes * USD_TO_INR
-
-    # --- 4. LLM (OpenAI) ---
-    rates = OPENAI_RATES.get(llm_model, OPENAI_DEFAULT_RATES)
-    prompt_tokens = 0
-    completion_tokens = 0
-    cached_tokens = 0
-
-    for key, val in llm_data.items():
-        if key.startswith("QAAnalysis"):
-            continue
-        if isinstance(val, dict):
-            prompt_tokens += (val.get("prompt_tokens") or 0)
-            completion_tokens += (val.get("completion_tokens") or 0)
-            cached_tokens += (val.get("cache_read_input_tokens") or 0)
-
-    non_cached = max(prompt_tokens - cached_tokens, 0)
-    llm_usd = (
-        (non_cached / 1_000_000) * rates["input"]
-        + (cached_tokens / 1_000_000) * rates["cached"]
-        + (completion_tokens / 1_000_000) * rates["output"]
+    return estimate_call_cost_inr(
+        duration_seconds=duration_seconds,
+        usage_info=usage_info,
+        tts_provider=tts_provider,
+        stt_provider=stt_provider,
+        llm_model=llm_model,
+        overrides=overrides,
     )
-    llm_inr = llm_usd * USD_TO_INR
-
-    total_inr = plivo_inr + stt_inr + tts_inr + llm_inr
-
-    return {
-        "plivo_inr": round(plivo_inr, 4),
-        "stt_inr": round(stt_inr, 4),
-        "tts_inr": round(tts_inr, 4),
-        "llm_inr": round(llm_inr, 4),
-        "total_cost_inr": round(total_inr, 4),
-        "tts_chars": tts_chars,
-        "stt_seconds": round(stt_seconds, 1),
-        "llm_prompt_tokens": prompt_tokens,
-        "llm_completion_tokens": completion_tokens,
-        "llm_cached_tokens": cached_tokens,
-    }
 
 
 @router.get("/profitability")
@@ -2323,6 +2225,383 @@ async def update_customer_profitability_overrides(
     customer.report_settings = settings
     await db.commit()
     return {"message": "Success", "overrides": settings["profitability_overrides"]}
+
+
+# ---------------------------------------------------------------------------
+# CALL COST AUDIT & MARGIN INSPECTOR (PHASE 3)
+# ---------------------------------------------------------------------------
+
+class SimulateCallAuditRequest(BaseModel):
+    dograh_run_id: int
+    override_tts_provider: Optional[str] = None
+    override_tts_model: Optional[str] = None
+    override_llm_model: Optional[str] = None
+    override_stt_provider: Optional[str] = None
+    override_stt_model: Optional[str] = None
+    override_usd_inr: Optional[float] = None
+    override_exchange_rate: Optional[float] = None
+    override_plivo_rate_inr: Optional[float] = None
+    override_telephony_cost_per_min_inr: Optional[float] = None
+
+
+async def _fetch_run_audit_context(
+    dograh_run_id: int,
+    db: AsyncSession,
+) -> Tuple[Optional[CallLog], Optional[Customer], Dict[str, Any]]:
+    """Helper to load CallLog, Customer, and Dograh WorkflowRun usage metrics."""
+    call_log = (await db.execute(
+        select(CallLog).where(CallLog.dograh_run_id == dograh_run_id)
+    )).scalar_one_or_none()
+
+    customer = None
+    if call_log:
+        customer = (await db.execute(
+            select(Customer).where(Customer.id == call_log.customer_id)
+        )).scalar_one_or_none()
+
+    workflow_run_data = {}
+    try:
+        from services.dograh_client import DograhSessionLocal, _has_dograh_db
+        if _has_dograh_db():
+            async with DograhSessionLocal() as ddb:
+                row = (await ddb.execute(
+                    text("SELECT id, usage_info, state, mode FROM workflow_runs WHERE id = :run_id"),
+                    {"run_id": dograh_run_id}
+                )).fetchone()
+                if row:
+                    workflow_run_data = {
+                        "id": row.id,
+                        "usage_info": row.usage_info or {},
+                        "status": row.state,
+                        "mode": row.mode,
+                    }
+    except Exception as e:
+        logger.debug(f"Direct Dograh DB fetch for run {dograh_run_id} failed: {e}")
+
+    if not workflow_run_data:
+        try:
+            from services.dograh_client import _request_dograh_api
+            resp = await _request_dograh_api("GET", f"/api/v1/internal/runs/{dograh_run_id}")
+            if resp and resp.status_code == 200:
+                run_json = resp.json()
+                workflow_run_data = {
+                    "id": run_json.get("id", dograh_run_id),
+                    "usage_info": run_json.get("usage_info") or {},
+                    "status": run_json.get("state") or run_json.get("status"),
+                    "mode": run_json.get("mode"),
+                }
+        except Exception as e:
+            logger.debug(f"REST fetch for run {dograh_run_id} failed: {e}")
+
+    return call_log, customer, workflow_run_data
+
+
+@router.get("/call-audit/customers")
+async def get_call_audit_customers(
+    search: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin),
+):
+    """
+    Searchable, paginated list of customer accounts with total call counts, duration, and billed revenue.
+    """
+    count_query = select(func.count(Customer.id)).where(Customer.is_test_account == False)
+    if search:
+        term = f"%{search.strip()}%"
+        count_query = count_query.where(
+            (Customer.company_name.ilike(term)) | (Customer.contact_email.ilike(term))
+        )
+    total_customers = (await db.execute(count_query)).scalar() or 0
+
+    query = select(
+        Customer.id,
+        Customer.company_name,
+        Customer.contact_email,
+        Customer.contact_name,
+        Customer.status,
+        Customer.report_settings,
+        Subscription.plan.label("subscription_plan"),
+        func.count(CallLog.id).label("total_calls"),
+        func.coalesce(func.sum(CallLog.duration_seconds), 0).label("total_duration_seconds"),
+        func.coalesce(func.sum(CallLog.cost_to_customer_paise), 0).label("total_revenue_paise"),
+    ).outerjoin(
+        Subscription, Subscription.customer_id == Customer.id
+    ).outerjoin(
+        CallLog, CallLog.customer_id == Customer.id
+    ).where(
+        Customer.is_test_account == False
+    )
+
+    if search:
+        term = f"%{search.strip()}%"
+        query = query.where(
+            (Customer.company_name.ilike(term)) | (Customer.contact_email.ilike(term))
+        )
+
+    query = query.group_by(Customer.id, Subscription.plan)
+    query = query.order_by(func.count(CallLog.id).desc(), Customer.company_name.asc())
+    query = query.offset((page - 1) * limit).limit(limit)
+
+    rows = (await db.execute(query)).all()
+    customers_list = []
+    for r in rows:
+        settings = r.report_settings or {}
+        currency = settings.get("currency", "INR")
+        rev_paise = float(r.total_revenue_paise or 0)
+        customers_list.append({
+            "id": r.id,
+            "company_name": r.company_name,
+            "contact_email": r.contact_email,
+            "contact_name": r.contact_name,
+            "status": r.status,
+            "plan": r.subscription_plan or "starter",
+            "currency": currency,
+            "total_calls": int(r.total_calls or 0),
+            "total_duration_seconds": int(r.total_duration_seconds or 0),
+            "total_revenue_inr": round(rev_paise / 100.0, 2),
+        })
+
+    return {
+        "customers": customers_list,
+        "total": total_customers,
+        "page": page,
+        "limit": limit,
+    }
+
+
+@router.get("/call-audit/calls")
+async def get_call_audit_calls(
+    customer_id: int = Query(..., description="Customer ID"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    search: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin),
+):
+    """
+    Paginated list of call logs for a customer, filterable by date range or search.
+    """
+    query = select(CallLog).where(CallLog.customer_id == customer_id)
+    count_query = select(func.count(CallLog.id)).where(CallLog.customer_id == customer_id)
+
+    if search:
+        clean_search = search.strip()
+        if clean_search.isdigit():
+            cond = (CallLog.dograh_run_id == int(clean_search)) | (CallLog.caller_number.ilike(f"%{clean_search}%"))
+        else:
+            cond = CallLog.caller_number.ilike(f"%{clean_search}%")
+        query = query.where(cond)
+        count_query = count_query.where(cond)
+
+    if date_from:
+        dt_from = parse_iso_datetime(date_from)
+        if dt_from:
+            query = query.where(CallLog.called_at >= dt_from)
+            count_query = count_query.where(CallLog.called_at >= dt_from)
+
+    if date_to:
+        dt_to = parse_iso_datetime(date_to)
+        if dt_to:
+            query = query.where(CallLog.called_at <= dt_to)
+            count_query = count_query.where(CallLog.called_at <= dt_to)
+
+    total_calls = (await db.execute(count_query)).scalar() or 0
+
+    query = query.order_by(CallLog.called_at.desc(), CallLog.id.desc())
+    query = query.offset((page - 1) * limit).limit(limit)
+    call_logs = (await db.execute(query)).scalars().all()
+
+    calls_list = []
+    for c in call_logs:
+        dur = int(c.duration_seconds or 0)
+        rev_paise = int(c.cost_to_customer_paise or 0)
+        calls_list.append({
+            "id": c.id,
+            "dograh_run_id": c.dograh_run_id,
+            "customer_id": c.customer_id,
+            "agent_id": c.agent_id,
+            "called_at": c.called_at.isoformat() if c.called_at else None,
+            "duration_seconds": dur,
+            "cost_to_customer_paise": rev_paise,
+            "revenue_inr": round(rev_paise / 100.0, 2),
+            "caller_number": c.caller_number,
+            "direction": c.call_type or "outbound",
+            "plan": c.plan,
+            "tts_provider": c.tts_provider,
+            "status": "completed" if dur > 0 else "unanswered",
+        })
+
+    return {
+        "calls": calls_list,
+        "total": total_calls,
+        "page": page,
+        "limit": limit,
+    }
+
+
+@router.get("/call-audit/run/{dograh_run_id}")
+async def get_call_audit_run(
+    dograh_run_id: int,
+    exchange_rate: Optional[float] = Query(None),
+    plivo_rate_inr: Optional[float] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin),
+):
+    """
+    Comprehensive, itemized unit economics audit JSON for a single call run.
+    """
+    call_log, customer, workflow_run_data = await _fetch_run_audit_context(dograh_run_id, db)
+
+    if not call_log and not workflow_run_data:
+        raise HTTPException(404, f"Call run {dograh_run_id} not found")
+
+    overrides = {}
+    if customer and customer.report_settings:
+        overrides.update(customer.report_settings.get("profitability_overrides", {}))
+    if exchange_rate is not None:
+        overrides["exchange_rate"] = exchange_rate
+    if plivo_rate_inr is not None:
+        overrides["plivo_rate_inr"] = plivo_rate_inr
+
+    call_log_dict = {
+        "dograh_run_id": dograh_run_id,
+        "customer_id": call_log.customer_id if call_log else (customer.id if customer else None),
+        "company_name": customer.company_name if customer else None,
+        "duration_seconds": call_log.duration_seconds if call_log else workflow_run_data.get("duration_seconds", 0),
+        "cost_to_customer_paise": call_log.cost_to_customer_paise if call_log else 0,
+        "call_status": "completed" if (call_log and (call_log.duration_seconds or 0) > 0) else workflow_run_data.get("status", "completed"),
+        "call_type": call_log.call_type if call_log else "outbound",
+        "caller_number": call_log.caller_number if call_log else None,
+        "customer_currency": (customer.report_settings or {}).get("currency", "INR") if customer else "INR",
+    }
+
+    audit = calculate_call_unit_economics(call_log_dict, workflow_run_data, overrides)
+
+    return {
+        "dograh_run_id": audit["dograh_run_id"],
+        "customer_id": audit["customer_id"],
+        "company_name": audit["company_name"],
+        "call_duration_seconds": audit["call_duration_seconds"],
+        "billed_minutes": audit["billed_minutes"],
+        "revenue_inr": round(audit["revenue_inr"], 2),
+        "effective_rate_per_min_inr": round(audit["effective_rate_per_min_inr"], 2),
+        "exchange_rate_used": audit["exchange_rate_used"],
+        "cost_breakdown": {
+            "plivo": {
+                "minutes": audit["cost_breakdown"]["plivo"]["minutes"],
+                "rate_inr": round(audit["cost_breakdown"]["plivo"]["rate_inr"], 2),
+                "cost_inr": round(audit["cost_breakdown"]["plivo"]["cost_inr"], 2),
+            },
+            "stt": {
+                "provider": audit["cost_breakdown"]["stt"]["provider"],
+                "model": audit["cost_breakdown"]["stt"]["model"],
+                "seconds": round(audit["cost_breakdown"]["stt"]["seconds"], 1),
+                "rate_usd_min": audit["cost_breakdown"]["stt"].get("rate_usd_min"),
+                "cost_inr": round(audit["cost_breakdown"]["stt"]["cost_inr"], 2),
+            },
+            "llm_conversation": {
+                "provider": audit["cost_breakdown"]["llm_conversation"]["provider"],
+                "model": audit["cost_breakdown"]["llm_conversation"]["model"],
+                "prompt_tokens": audit["cost_breakdown"]["llm_conversation"]["prompt_tokens"],
+                "completion_tokens": audit["cost_breakdown"]["llm_conversation"]["completion_tokens"],
+                "cached_tokens": audit["cost_breakdown"]["llm_conversation"]["cached_tokens"],
+                "cost_inr": round(audit["cost_breakdown"]["llm_conversation"]["cost_inr"], 2),
+            },
+            "llm_extraction": {
+                "provider": audit["cost_breakdown"]["llm_extraction"]["provider"],
+                "model": audit["cost_breakdown"]["llm_extraction"]["model"],
+                "prompt_tokens": audit["cost_breakdown"]["llm_extraction"]["prompt_tokens"],
+                "completion_tokens": audit["cost_breakdown"]["llm_extraction"]["completion_tokens"],
+                "cost_inr": round(audit["cost_breakdown"]["llm_extraction"]["cost_inr"], 2),
+            },
+            "tts": {
+                "provider": audit["cost_breakdown"]["tts"]["provider"],
+                "model": audit["cost_breakdown"]["tts"]["model"],
+                "characters": audit["cost_breakdown"]["tts"]["characters"],
+                "rate_usd_per_10k": audit["cost_breakdown"]["tts"].get("rate_usd_per_10k"),
+                "cost_inr": round(audit["cost_breakdown"]["tts"]["cost_inr"], 2),
+            },
+        },
+        "total_cost_inr": round(audit["total_cost_inr"], 2),
+        "cost_per_minute_inr": round(audit["cost_per_minute_inr"], 2),
+        "profit_inr": round(audit["profit_inr"], 2),
+        "margin_pct": round(audit["margin_pct"], 1),
+        "margin_status": audit["margin_status"],
+        "post_call_breakdown": audit.get("post_call_breakdown", {}),
+        "post_call_cost_inr": round(audit.get("post_call_cost_inr", 0.0), 2),
+        "total_all_in_cost_inr": round(audit.get("total_all_in_cost_inr", 0.0), 2),
+        "notices": audit.get("notices", []),
+    }
+
+
+@router.post("/call-audit/simulate")
+async def simulate_call_audit(
+    req: SimulateCallAuditRequest,
+    db: AsyncSession = Depends(get_db),
+    current_admin: TalkarAdmin = Depends(get_current_admin),
+):
+    """
+    Interactive 'What-If' simulator: calculates baseline economics and simulated overrides delta.
+    """
+    call_log, customer, workflow_run_data = await _fetch_run_audit_context(req.dograh_run_id, db)
+
+    if not call_log and not workflow_run_data:
+        raise HTTPException(404, f"Call run {req.dograh_run_id} not found")
+
+    base_overrides = {}
+    if customer and customer.report_settings:
+        base_overrides.update(customer.report_settings.get("profitability_overrides", {}))
+
+    call_log_dict = {
+        "dograh_run_id": req.dograh_run_id,
+        "customer_id": call_log.customer_id if call_log else (customer.id if customer else None),
+        "company_name": customer.company_name if customer else None,
+        "duration_seconds": call_log.duration_seconds if call_log else workflow_run_data.get("duration_seconds", 0),
+        "cost_to_customer_paise": call_log.cost_to_customer_paise if call_log else 0,
+        "call_status": "completed" if (call_log and (call_log.duration_seconds or 0) > 0) else workflow_run_data.get("status", "completed"),
+        "call_type": call_log.call_type if call_log else "outbound",
+        "caller_number": call_log.caller_number if call_log else None,
+        "customer_currency": (customer.report_settings or {}).get("currency", "INR") if customer else "INR",
+    }
+
+    baseline = calculate_call_unit_economics(call_log_dict, workflow_run_data, base_overrides)
+
+    sim_overrides = dict(base_overrides)
+    tts_prov = req.override_tts_provider or req.override_tts_model
+    if tts_prov:
+        sim_overrides["tts_provider"] = tts_prov
+    if req.override_llm_model:
+        sim_overrides["llm_model"] = req.override_llm_model
+    stt_prov = req.override_stt_provider or req.override_stt_model
+    if stt_prov:
+        sim_overrides["stt_provider"] = stt_prov
+    fx = req.override_usd_inr or req.override_exchange_rate
+    if fx:
+        sim_overrides["exchange_rate"] = fx
+    plivo_rate = req.override_plivo_rate_inr or req.override_telephony_cost_per_min_inr
+    if plivo_rate is not None:
+        sim_overrides["plivo_rate_inr"] = plivo_rate
+
+    simulated = calculate_call_unit_economics(call_log_dict, workflow_run_data, sim_overrides)
+
+    delta = {
+        "total_cost_delta_inr": round(simulated["total_cost_inr"] - baseline["total_cost_inr"], 4),
+        "cost_per_minute_delta_inr": round(simulated["cost_per_minute_inr"] - baseline["cost_per_minute_inr"], 4),
+        "profit_delta_inr": round(simulated["profit_inr"] - baseline["profit_inr"], 4),
+        "margin_pct_delta": round(simulated["margin_pct"] - baseline["margin_pct"], 2),
+    }
+
+    return {
+        "dograh_run_id": req.dograh_run_id,
+        "baseline": baseline,
+        "simulated": simulated,
+        "delta": delta,
+    }
+
 
 @router.get("/platform-settings")
 async def get_platform_settings(

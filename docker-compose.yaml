@@ -41,7 +41,7 @@ services:
       TALKAR_DB_URL: "postgresql+asyncpg://talkar:${TALKAR_DB_PASSWORD:-talkarsecret}@db:5432/talkar_db"
       REDIS_URL: "redis://redis:6379"
     ports:
-      - "8002:8001"
+      - "${TALKAR_PORT:-8002}:8001"
     depends_on:
       db:
         condition: service_healthy
