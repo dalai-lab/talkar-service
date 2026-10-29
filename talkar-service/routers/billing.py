@@ -128,8 +128,8 @@ async def create_topup_order(
     activation_min_paise = tier_cfg.get("activation_deposit_paise", 600000)
     
     # Activation minimum only applies when the account is NOT yet active.
-    # Active/suspended customers can top up any amount >= ₹1 (temporary testing floor, previously ₹500).
-    REGULAR_TOPUP_MIN_PAISE = 100  # ₹1 minimum for regular top-ups (testing floor)
+    # Active/suspended customers can top up any amount >= ₹500 (small practical floor).
+    REGULAR_TOPUP_MIN_PAISE = 50000  # ₹500 minimum for regular top-ups
     if customer.status in ("pending_deposit",):
         is_sub_with_active_master = False
         if master_cust and master_cust.status == "active":
