@@ -1639,8 +1639,8 @@ async def get_wallet_by_org(
 
 class CreateRazorpayCustomerRequest(BaseModel):
     dograh_org_id: int
-    name: str
-    email: str
+    name: Optional[str] = None
+    email: Optional[str] = None
 
 @router.post("/razorpay-customer/create")
 async def create_razorpay_customer(
@@ -1678,14 +1678,33 @@ async def create_razorpay_customer(
     if wallet.razorpay_customer_id:
         return {"razorpay_customer_id": wallet.razorpay_customer_id}  # Already exists
     
+    resolved_name = (
+        (data.name.strip() if data.name else None)
+        or customer.contact_name
+        or customer.company_name
+        or (data.email.split("@")[0] if data.email else None)
+        or (customer.contact_email.split("@")[0] if customer.contact_email else None)
+        or f"Customer {customer.id}"
+    )
+    resolved_email = (
+        (data.email.strip() if data.email else None)
+        or customer.contact_email
+        or email_str
+        or f"customer_{customer.id}@talkar.in"
+    )
+
     # Create in Razorpay (mock if no keys)
     if razorpay_client.client:
         import asyncio
-        rzp_customer = await asyncio.to_thread(razorpay_client.client.customer.create, {
-            "name": data.name,
-            "email": data.email,
-        })
-        wallet.razorpay_customer_id = rzp_customer["id"]
+        try:
+            rzp_customer = await asyncio.to_thread(razorpay_client.client.customer.create, {
+                "name": resolved_name,
+                "email": resolved_email,
+            })
+            wallet.razorpay_customer_id = rzp_customer["id"]
+        except Exception as e:
+            logger.error(f"Failed to create Razorpay customer: {e}")
+            raise HTTPException(status_code=400, detail=f"Failed to create payment customer: {str(e)}")
     else:
         wallet.razorpay_customer_id = f"mock_cust_{customer.id}"
     
@@ -1702,7 +1721,7 @@ async def create_add_card_session(
     x_talkar_email: Optional[str] = Header(None, alias="X-Talkar-Email"),
     authorization: Optional[str] = Header(None)
 ):
-    """Creates an RBI-compliant e-mandate verification order for card tokenization."""
+    """Creates an RBI-compliant verification order for card authorization."""
     import time
     result = await db.execute(select(Customer).where(Customer.dograh_org_id == data.dograh_org_id))
     customer = result.scalar_one_or_none()
@@ -1735,37 +1754,47 @@ async def create_add_card_session(
     if not wallet.razorpay_customer_id:
         if razorpay_client.client:
             import asyncio
-            rzp_cust = await asyncio.to_thread(razorpay_client.client.customer.create, {
-                "name": customer.contact_name or customer.company_name or f"Customer {customer.id}",
-                "email": customer.contact_email or f"customer_{customer.id}@talkar.in",
-                "contact": customer.contact_phone or "9999999999",
-            })
-            wallet.razorpay_customer_id = rzp_cust["id"]
+            try:
+                cust_payload = {
+                    "name": customer.contact_name or customer.company_name or f"Customer {customer.id}",
+                    "email": customer.contact_email or email_str or f"customer_{customer.id}@talkar.in",
+                }
+                if customer.contact_phone and customer.contact_phone.strip() and customer.contact_phone.strip() != "9999999999":
+                    cust_payload["contact"] = customer.contact_phone.strip()
+                rzp_cust = await asyncio.to_thread(razorpay_client.client.customer.create, cust_payload)
+                wallet.razorpay_customer_id = rzp_cust["id"]
+            except Exception as e:
+                logger.error(f"Failed to create Razorpay customer for wallet {wallet.id}: {e}")
+                raise HTTPException(status_code=400, detail=f"Failed to initialize payment customer: {str(e)}")
         else:
             wallet.razorpay_customer_id = f"mock_cust_{customer.id}"
         await db.commit()
 
     if razorpay_client.client:
         import asyncio
-        # RBI Mandate guidelines: order must include customer_id, method: card, and token configuration
-        order = await asyncio.to_thread(razorpay_client.client.order.create, {
+        order_payload = {
             "amount": amount_paise,
             "currency": "INR",
             "receipt": receipt,
             "payment_capture": 1,
             "customer_id": wallet.razorpay_customer_id,
-            "method": "card",
-            "token": {
-                "max_amount": 10000000,  # ₹100,000 max subsequent debit per RBI recurring mandate
-                "expire_at": int(time.time()) + (10 * 365 * 86400),  # 10 years
-                "frequency": "as_presented",
-            },
             "notes": {
-                "customer_id": master_id,
+                "customer_id": str(master_id),
                 "type": "card_registration"
             }
-        })
-        order_id = order["id"]
+        }
+        try:
+            order = await asyncio.to_thread(razorpay_client.client.order.create, order_payload)
+            order_id = order["id"]
+        except Exception as e:
+            logger.warning(f"Failed to create card registration order with customer_id: {e}. Retrying without customer_id...")
+            try:
+                order_payload.pop("customer_id", None)
+                order = await asyncio.to_thread(razorpay_client.client.order.create, order_payload)
+                order_id = order["id"]
+            except Exception as e2:
+                logger.error(f"Failed to create card registration order: {e2}")
+                raise HTTPException(status_code=400, detail=f"Failed to create card verification order: {str(e2)}")
     else:
         order_id = f"mock_order_reg_{customer.id}"
 

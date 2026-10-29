@@ -56,10 +56,9 @@ async def test_create_add_card_session_creates_mandate_order_and_customer():
     # Verify order.create payload
     order_args = mock_client.order.create.call_args[0][0]
     assert order_args["customer_id"] == "cust_rzp_123"
-    assert order_args["method"] == "card"
-    assert "token" in order_args
-    assert order_args["token"]["max_amount"] == 10000000
-    assert order_args["token"]["frequency"] == "as_presented"
+    assert order_args["amount"] == 200
+    assert order_args["currency"] == "INR"
+    assert order_args["notes"]["type"] == "card_registration"
 
 
 @pytest.mark.asyncio
