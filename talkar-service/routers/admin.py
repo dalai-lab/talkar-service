@@ -1903,6 +1903,17 @@ SMALLEST_AI_STT_RATE_USD_PER_MIN = VENDOR_PRICING_REGISTRY["stt"]["smallest_ai_p
 TTS_SPEAKING_RATIO = 0.47
 TTS_AVG_CHARS_PER_MIN = 900
 
+# OpenAI pricing (USD per 1M tokens) derived from unified pricing registry
+OPENAI_RATES = {
+    model_key: {
+        "input": cfg.get("input_per_million", 0.0),
+        "cached": cfg.get("cached_per_million", 0.0),
+        "output": cfg.get("output_per_million", 0.0),
+    }
+    for model_key, cfg in VENDOR_PRICING_REGISTRY.get("llm", {}).items()
+    if cfg.get("provider") == "openai"
+}
+
 
 def _estimate_call_cost_inr(
     duration_seconds: int,
