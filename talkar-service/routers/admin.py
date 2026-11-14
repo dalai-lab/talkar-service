@@ -1890,29 +1890,22 @@ from services.call_audit_calculator import (
     VENDOR_PRICING_REGISTRY,
     calculate_call_unit_economics,
     estimate_call_cost_inr,
+    get_cost_assumptions,
 )
+from services.forex_service import forex_service
 
-USD_TO_INR = VENDOR_PRICING_REGISTRY["forex"]["default"]
-PLIVO_COST_PER_MIN_INR = VENDOR_PRICING_REGISTRY["telephony"]["plivo"]["outbound_india"]["rate_inr_per_min"]
-DEEPGRAM_STT_RATE_USD_PER_MIN = VENDOR_PRICING_REGISTRY["stt"]["deepgram_nova_3"]["rate"]
-DEEPGRAM_TTS_RATE_USD_PER_1K_CHARS = VENDOR_PRICING_REGISTRY["tts"]["deepgram_aura_1"]["rate_per_1k_chars"]
-ELEVENLABS_TTS_RATE_USD_PER_1K_CHARS = VENDOR_PRICING_REGISTRY["tts"]["elevenlabs_flash"]["rate_per_1k_chars"]
-SMALLEST_AI_TTS_RATE_USD_PER_1K_CHARS = VENDOR_PRICING_REGISTRY["tts"]["smallest_ai_lightning"]["rate_per_1k_chars"]
-SMALLEST_AI_STT_RATE_USD_PER_MIN = VENDOR_PRICING_REGISTRY["stt"]["smallest_ai_pulse"]["rate"]
-
-TTS_SPEAKING_RATIO = 0.47
+# Unified baseline assumptions safely populated from single source of truth
+_base_assumptions = get_cost_assumptions()
+USD_TO_INR = _base_assumptions["usd_to_inr"]
+PLIVO_COST_PER_MIN_INR = _base_assumptions["plivo_per_min_inr"]
+DEEPGRAM_STT_RATE_USD_PER_MIN = _base_assumptions["deepgram_stt_usd_per_min"]
+DEEPGRAM_TTS_RATE_USD_PER_1K_CHARS = _base_assumptions["deepgram_tts_usd_per_1k_chars"]
+ELEVENLABS_TTS_RATE_USD_PER_1K_CHARS = _base_assumptions["elevenlabs_tts_usd_per_1k_chars"]
+SMALLEST_AI_TTS_RATE_USD_PER_1K_CHARS = _base_assumptions["smallest_ai_tts_usd_per_1k_chars"]
+SMALLEST_AI_STT_RATE_USD_PER_MIN = _base_assumptions["smallest_ai_stt_usd_per_min"]
+TTS_SPEAKING_RATIO = _base_assumptions["tts_speaking_ratio"]
 TTS_AVG_CHARS_PER_MIN = 900
-
-# OpenAI pricing (USD per 1M tokens) derived from unified pricing registry
-OPENAI_RATES = {
-    model_key: {
-        "input": cfg.get("input_per_million", 0.0),
-        "cached": cfg.get("cached_per_million", 0.0),
-        "output": cfg.get("output_per_million", 0.0),
-    }
-    for model_key, cfg in VENDOR_PRICING_REGISTRY.get("llm", {}).items()
-    if cfg.get("provider") == "openai"
-}
+OPENAI_RATES = _base_assumptions["openai_rates"]
 
 
 def _estimate_call_cost_inr(
@@ -2189,17 +2182,27 @@ async def get_profitability(
             "gross_margin_pct": round(gross_margin, 1),
         },
         "customers": customer_rows,
-        "cost_assumptions": {
-            "usd_to_inr": USD_TO_INR,
-            "plivo_per_min_inr": PLIVO_COST_PER_MIN_INR,
-            "deepgram_stt_usd_per_min": DEEPGRAM_STT_RATE_USD_PER_MIN,
-            "deepgram_tts_usd_per_1k_chars": DEEPGRAM_TTS_RATE_USD_PER_1K_CHARS,
-            "elevenlabs_tts_usd_per_1k_chars": ELEVENLABS_TTS_RATE_USD_PER_1K_CHARS,
-            "smallest_ai_tts_usd_per_1k_chars": SMALLEST_AI_TTS_RATE_USD_PER_1K_CHARS,
-            "smallest_ai_stt_usd_per_min": SMALLEST_AI_STT_RATE_USD_PER_MIN,
-            "tts_speaking_ratio": TTS_SPEAKING_RATIO,
-            "openai_rates": OPENAI_RATES,
-        },
+        "cost_assumptions": get_cost_assumptions(),
+    }
+
+
+@router.get("/forex-rate")
+async def get_live_forex_rate(
+    current_admin: TalkarAdmin = Depends(get_current_admin),
+):
+    """Returns the live USD->INR exchange rate and freshness metadata."""
+    return forex_service.get_rate_metadata()
+
+
+@router.post("/forex-rate/refresh")
+async def refresh_live_forex_rate(
+    current_admin: TalkarAdmin = Depends(get_current_admin),
+):
+    """Forces an immediate online refresh of the USD->INR exchange rate from upstream open APIs."""
+    new_rate = await forex_service.refresh_rate()
+    return {
+        "message": f"Successfully refreshed live USD->INR rate to ₹{new_rate:.4f}",
+        "metadata": forex_service.get_rate_metadata(),
     }
 
 
@@ -2575,6 +2578,14 @@ async def get_call_audit_run(
                 "prompt_tokens": audit["cost_breakdown"]["llm_extraction"]["prompt_tokens"],
                 "completion_tokens": audit["cost_breakdown"]["llm_extraction"]["completion_tokens"],
                 "cost_inr": round(audit["cost_breakdown"]["llm_extraction"]["cost_inr"], 2),
+            },
+            "llm_compaction": {
+                "provider": audit["cost_breakdown"]["llm_compaction"]["provider"],
+                "model": audit["cost_breakdown"]["llm_compaction"]["model"],
+                "prompt_tokens": audit["cost_breakdown"]["llm_compaction"]["prompt_tokens"],
+                "completion_tokens": audit["cost_breakdown"]["llm_compaction"]["completion_tokens"],
+                "cached_tokens": audit["cost_breakdown"]["llm_compaction"]["cached_tokens"],
+                "cost_inr": round(audit["cost_breakdown"]["llm_compaction"]["cost_inr"], 2),
             },
             "tts": {
                 "provider": audit["cost_breakdown"]["tts"]["provider"],

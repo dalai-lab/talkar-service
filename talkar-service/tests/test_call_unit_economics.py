@@ -795,4 +795,205 @@ def test_extraction_llm_with_recorded_tokens_resolves_to_gpt_4_1_nano():
     assert round(ext_cb["cost_inr"], 2) == 0.02
 
 
+def test_multi_llm_full_attribution_and_telemetry():
+    """Verify distinct role attribution for Conv, Extraction, Compaction, PCI, and QA LLMs."""
+    call_log = {
+        "duration_seconds": 120,
+        "cost_to_customer_paise": 600,
+        "call_status": "completed",
+    }
+    workflow_run = {
+        "duration_seconds": 120,
+        "usage_info": {
+            "llm": {
+                "SarvamLLMService#0|||sarvam-105b": {
+                    "prompt_tokens": 1200,
+                    "completion_tokens": 150,
+                    "cache_read_input_tokens": 400,
+                },
+                "variable_extraction:extraction|||gpt-4.1-mini": {
+                    "prompt_tokens": 800,
+                    "completion_tokens": 60,
+                    "cache_read_input_tokens": 0,
+                },
+                "context_compaction:compaction|||gpt-4o-mini": {
+                    "prompt_tokens": 600,
+                    "completion_tokens": 40,
+                    "cache_read_input_tokens": 0,
+                },
+                "PostCallIntelligence|||claude-3-5-sonnet": {
+                    "prompt_tokens": 2500,
+                    "completion_tokens": 200,
+                    "cache_read_input_tokens": 1000,
+                },
+                "QAAnalysis|||gemini-1.5-flash": {
+                    "prompt_tokens": 1800,
+                    "completion_tokens": 120,
+                    "cache_read_input_tokens": 0,
+                },
+            }
+        },
+        "runtime_configuration": {
+            "llm_model": "sarvam-105b",
+            "extraction_llm_model": "gpt-4.1-mini",
+        },
+    }
+
+    res = calculate_call_unit_economics(call_log, workflow_run)
+
+    # 1. Conversational LLM (Sarvam)
+    conv_cb = res["cost_breakdown"]["llm_conversation"]
+    assert conv_cb["provider"] == "sarvam"
+    assert conv_cb["model"] == "sarvam-105b"
+    assert conv_cb["prompt_tokens"] == 1200
+    assert conv_cb["completion_tokens"] == 150
+
+    # 2. Variable Extraction (GPT-4.1-mini)
+    ext_cb = res["cost_breakdown"]["llm_extraction"]
+    assert ext_cb["provider"] == "openai"
+    assert ext_cb["model"] == "gpt-4.1-mini"
+    assert ext_cb["prompt_tokens"] == 800
+
+    # 3. Context Compaction (GPT-4o-mini)
+    comp_cb = res["cost_breakdown"]["llm_compaction"]
+    assert comp_cb["provider"] == "openai"
+    assert comp_cb["model"] == "gpt-4o-mini"
+    assert comp_cb["prompt_tokens"] == 600
+
+    # 4. Post-Call Intelligence (Claude 3.5 Sonnet)
+    pci_cb = res["post_call_breakdown"]["llm_pci"]
+    assert pci_cb["provider"] == "anthropic"
+    assert pci_cb["model"] == "claude-3-5-sonnet"
+    assert pci_cb["prompt_tokens"] == 2500
+    assert pci_cb["cached_tokens"] == 1000
+
+    # 5. QA Analysis (Gemini 1.5 Flash)
+    qa_cb = res["post_call_breakdown"]["llm_qa_analysis"]
+    assert qa_cb["provider"] == "google"
+    assert qa_cb["model"] == "gemini-1.5-flash"
+    assert qa_cb["prompt_tokens"] == 1800
+
+    # Operational in-call cost includes Conv + Ext + Compaction (NOT PCI or QA)
+    operational_llm_cost = conv_cb["cost_inr"] + ext_cb["cost_inr"] + comp_cb["cost_inr"]
+    assert pytest.approx(res["llm_inr"], abs=0.001) == operational_llm_cost
+
+    # Post-call cost includes QA + PCI
+    assert pytest.approx(res["post_call_cost_inr"], abs=0.001) == qa_cb["cost_inr"] + pci_cb["cost_inr"]
+
+    # All-in cost is operational + post-call
+    assert pytest.approx(res["total_all_in_cost_inr"], abs=0.001) == res["total_cost_inr"] + res["post_call_cost_inr"]
+
+
+def test_cartesia_whisper_and_voice_providers_attribution():
+    """Verify Cartesia STT, Cartesia Sonic TTS, and Whisper STT are correctly attributed and priced."""
+    call_log = {
+        "duration_seconds": 60,
+        "cost_to_customer_paise": 600,
+        "call_status": "completed",
+    }
+    workflow_run = {
+        "duration_seconds": 60,
+        "usage_info": {
+            "stt": {
+                "CartesiaSTTService#0": {"audio_seconds": 60.0}
+            },
+            "tts": {
+                "CartesiaTTSService#0": {"characters": 1000}
+            },
+            "llm": {
+                "OpenAILLMService#0|||gpt-4.1-mini": {
+                    "prompt_tokens": 500,
+                    "completion_tokens": 50,
+                }
+            }
+        },
+        "runtime_configuration": {
+            "stt_provider": "cartesia",
+            "stt_model": "ink-2",
+            "tts_provider": "cartesia",
+            "tts_model": "sonic-3.5",
+            "llm_model": "gpt-4.1-mini",
+        },
+    }
+
+    res = calculate_call_unit_economics(call_log, workflow_run)
+
+    # 1. STT: Cartesia Ink-2 ($0.005/min)
+    stt_cb = res["cost_breakdown"]["stt"]
+    assert stt_cb["provider"] == "cartesia"
+    assert stt_cb["model"] == "ink-2"
+    assert pytest.approx(stt_cb["cost_inr"], abs=0.01) == 0.005 * res["exchange_rate_used"]
+
+    # 2. TTS: Cartesia Sonic-3.5 ($0.040 / 1k chars)
+    tts_cb = res["cost_breakdown"]["tts"]
+    assert tts_cb["provider"] == "cartesia"
+    assert tts_cb["model"] == "sonic-3.5"
+    assert pytest.approx(tts_cb["cost_inr"], abs=0.01) == 0.040 * res["exchange_rate_used"]
+
+
+def test_composite_key_attribution_with_voice_uuids_and_extended_vendors():
+    """
+    Validates that composite keys with provider prefixes (e.g. 'cartesia|||<uuid>',
+    'elevenlabs|||<voice_id>', 'sarvam|||<speaker>') are robustly attributed to their
+    exact vendor and priced accurately, without defaulting to Smallest AI or Deepgram.
+    """
+    call_log = {"duration_seconds": 60, "cost_to_customer_paise": 500}
+    workflow_run = {
+        "usage_info": {
+            "stt": {"google|||chirp-2": {"audio_seconds": 60.0}},
+            "tts": {
+                "cartesia|||a0e99841-438c-4a64-b679-ae501e7d6091": {"characters": 1000},
+            },
+            "llm": {
+                "assistant|||claude-3-5-sonnet": {"prompt_tokens": 1000, "completion_tokens": 100},
+                "variable_extraction:node_1|||gemini-1.5-flash": {"prompt_tokens": 500, "completion_tokens": 50},
+                "context_compaction:compaction|||gpt-4o-mini": {"prompt_tokens": 800, "completion_tokens": 80},
+                "QAAnalysis|||gpt-4.1": {"prompt_tokens": 600, "completion_tokens": 60},
+                "PostCallIntelligence|||deepseek-r1": {"prompt_tokens": 700, "completion_tokens": 70},
+            },
+        },
+    }
+
+    res = calculate_call_unit_economics(call_log, workflow_run)
+
+    # 1. STT: Google Chirp-2 ($0.016/min)
+    stt_cb = res["cost_breakdown"]["stt"]
+    assert stt_cb["provider"] == "google"
+    assert stt_cb["model"] == "chirp-2"
+    assert pytest.approx(stt_cb["cost_inr"], abs=0.01) == 0.016 * res["exchange_rate_used"]
+
+    # 2. TTS: Cartesia Sonic ($0.040 / 1k chars)
+    tts_cb = res["cost_breakdown"]["tts"]
+    assert tts_cb["provider"] == "cartesia"
+    assert pytest.approx(tts_cb["cost_inr"], abs=0.01) == 0.040 * res["exchange_rate_used"]
+
+    # 3. LLMs
+    conv_cb = res["cost_breakdown"]["llm_conversation"]
+    assert conv_cb["provider"] == "anthropic"
+    assert conv_cb["model"] == "claude-3-5-sonnet"
+
+    ext_cb = res["cost_breakdown"]["llm_extraction"]
+    assert ext_cb["provider"] == "google"
+    assert ext_cb["model"] == "gemini-1.5-flash"
+
+    comp_cb = res["cost_breakdown"]["llm_compaction"]
+    assert comp_cb["provider"] == "openai"
+    assert comp_cb["model"] == "gpt-4o-mini"
+
+    qa_cb = res["post_call_breakdown"]["llm_qa_analysis"]
+    assert qa_cb["provider"] == "openai"
+    assert qa_cb["model"] == "gpt-4.1"
+
+    pci_cb = res["post_call_breakdown"]["llm_pci"]
+    assert pci_cb["provider"] == "deepseek"
+    assert pci_cb["model"] == "deepseek-reasoner"
+
+    # Verify no fallback notices were generated
+    fallback_notices = [n for n in res["notices"] if "Fallback" in n]
+    assert fallback_notices == []
+
+
+
+
+
 

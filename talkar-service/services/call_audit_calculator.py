@@ -14,6 +14,11 @@ import math
 import re
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+try:
+    from services.forex_service import forex_service
+except ImportError:
+    from forex_service import forex_service
+
 
 # ==============================================================================
 # 1. UNIFIED VENDOR PRICING REGISTRY
@@ -80,9 +85,6 @@ VENDOR_PRICING_REGISTRY: Dict[str, Any] = {
                 "saaras-v3",
                 "saaras:v3",
                 "saaras_v3",
-                "saaras-v4",
-                "saaras:v4",
-                "saaras_v4",
                 "sarvam-stt",
                 "sarvam_stt",
             ],
@@ -113,6 +115,126 @@ VENDOR_PRICING_REGISTRY: Dict[str, Any] = {
             "description": "Smallest AI Pulse STT streaming",
             "aliases": ["smallest_ai_pulse", "pulse", "smallest-stt"],
         },
+        "cartesia_ink": {
+            "provider": "cartesia",
+            "model": "ink-2",
+            "rate": 0.0050,
+            "currency": "USD",
+            "unit": "min",
+            "description": "Cartesia Ink-2 streaming STT",
+            "aliases": [
+                "cartesia_ink",
+                "cartesia",
+                "ink-2",
+                "ink-whisper",
+                "ink",
+                "cartesia-stt",
+                "cartesia_stt",
+            ],
+        },
+        "openai_whisper": {
+            "provider": "openai",
+            "model": "whisper-1",
+            "rate": 0.0060,
+            "currency": "USD",
+            "unit": "min",
+            "description": "OpenAI Whisper STT",
+            "aliases": [
+                "whisper-1",
+                "whisper",
+                "openai_whisper",
+                "openai-stt",
+                "openai_stt",
+            ],
+        },
+        "elevenlabs_scribe": {
+            "provider": "elevenlabs",
+            "model": "scribe_v1",
+            "rate": 0.0070,
+            "currency": "USD",
+            "unit": "min",
+            "description": "ElevenLabs Scribe STT",
+            "aliases": [
+                "scribe",
+                "scribe_v1",
+                "elevenlabs_scribe",
+                "elevenlabs_stt",
+                "elevenlabs-stt",
+            ],
+        },
+        "google_stt": {
+            "provider": "google",
+            "model": "chirp-2",
+            "rate": 0.0160,
+            "currency": "USD",
+            "unit": "min",
+            "description": "Google Cloud Speech-to-Text standard",
+            "aliases": [
+                "google_stt",
+                "google",
+                "google-stt",
+                "chirp",
+                "chirp-2",
+                "google_speech",
+                "google-speech",
+            ],
+        },
+        "azure_stt": {
+            "provider": "azure",
+            "model": "azure-speech",
+            "rate": 0.0167,
+            "currency": "USD",
+            "unit": "min",
+            "description": "Azure Speech-to-Text standard ($1.00/hour)",
+            "aliases": [
+                "azure_stt",
+                "azure",
+                "azure-stt",
+                "azure_speech",
+                "azure-speech",
+            ],
+        },
+        "assemblyai": {
+            "provider": "assemblyai",
+            "model": "conformer-2",
+            "rate": 0.0150,
+            "currency": "USD",
+            "unit": "min",
+            "description": "AssemblyAI Streaming Speech-to-Text",
+            "aliases": [
+                "assemblyai",
+                "assembly_ai",
+                "assembly",
+                "assemblyai_stt",
+                "assembly-stt",
+            ],
+        },
+        "gladia": {
+            "provider": "gladia",
+            "model": "gladia-realtime",
+            "rate": 0.0125,
+            "currency": "USD",
+            "unit": "min",
+            "description": "Gladia Real-time STT",
+            "aliases": [
+                "gladia",
+                "gladia_stt",
+                "gladia-stt",
+            ],
+        },
+        "speechmatics": {
+            "provider": "speechmatics",
+            "model": "speechmatics-rt",
+            "rate": 0.0175,
+            "currency": "USD",
+            "unit": "min",
+            "description": "Speechmatics Real-time STT",
+            "aliases": [
+                "speechmatics",
+                "speechmatics_stt",
+                "speechmatics-stt",
+            ],
+        },
     },
     "llm": {
         "sarvam-105b": {
@@ -141,9 +263,39 @@ VENDOR_PRICING_REGISTRY: Dict[str, Any] = {
             "description": "OpenAI GPT-4.1-mini verified PAYG",
             "aliases": [
                 "gpt-4.1-mini",
-                "gpt-4.1",
                 "gpt-4-1-mini",
                 "gpt-4.1-mini-2026",
+            ],
+        },
+        "gpt-4.1": {
+            "provider": "openai",
+            "model": "gpt-4.1",
+            "input_per_million": 2.00,
+            "cached_per_million": 0.50,
+            "output_per_million": 8.00,
+            "currency": "USD",
+            "description": "OpenAI GPT-4.1 frontier model",
+            "aliases": [
+                "gpt-4.1",
+                "gpt-4-1",
+                "gpt-4.1-frontier",
+            ],
+        },
+        "o3-mini": {
+            "provider": "openai",
+            "model": "o3-mini",
+            "input_per_million": 1.10,
+            "cached_per_million": 0.55,
+            "output_per_million": 4.40,
+            "currency": "USD",
+            "description": "OpenAI o3-mini reasoning model",
+            "aliases": [
+                "o3-mini",
+                "o3_mini",
+                "o1-mini",
+                "o1_mini",
+                "o1",
+                "o3",
             ],
         },
         "gpt-4.1-nano": {
@@ -191,6 +343,183 @@ VENDOR_PRICING_REGISTRY: Dict[str, Any] = {
                 "gpt-4o-2024-05-13",
             ],
         },
+        "claude-3-5-sonnet": {
+            "provider": "anthropic",
+            "model": "claude-3-5-sonnet",
+            "input_per_million": 3.00,
+            "cached_per_million": 0.30,
+            "output_per_million": 15.00,
+            "currency": "USD",
+            "description": "Anthropic Claude 3.5 Sonnet frontier model",
+            "aliases": [
+                "claude-3-5-sonnet",
+                "claude-3.5-sonnet",
+                "claude-sonnet-3-5",
+                "claude-3-5-sonnet-20241022",
+                "claude-3-5-sonnet-latest",
+            ],
+        },
+        "claude-3-7-sonnet": {
+            "provider": "anthropic",
+            "model": "claude-3-7-sonnet",
+            "input_per_million": 3.00,
+            "cached_per_million": 0.30,
+            "output_per_million": 15.00,
+            "currency": "USD",
+            "description": "Anthropic Claude 3.7 Sonnet reasoning & agent model",
+            "aliases": [
+                "claude-3-7-sonnet",
+                "claude-3.7-sonnet",
+                "claude-sonnet-3-7",
+                "claude-3-7-sonnet-latest",
+            ],
+        },
+        "claude-3-5-haiku": {
+            "provider": "anthropic",
+            "model": "claude-3-5-haiku",
+            "input_per_million": 0.80,
+            "cached_per_million": 0.08,
+            "output_per_million": 4.00,
+            "currency": "USD",
+            "description": "Anthropic Claude 3.5 Haiku high-speed intelligence",
+            "aliases": [
+                "claude-3-5-haiku",
+                "claude-3.5-haiku",
+                "claude-haiku-3-5",
+                "claude-3-5-haiku-latest",
+            ],
+        },
+        "gemini-1.5-flash": {
+            "provider": "google",
+            "model": "gemini-1.5-flash",
+            "input_per_million": 0.075,
+            "cached_per_million": 0.01875,
+            "output_per_million": 0.30,
+            "currency": "USD",
+            "description": "Google Gemini 1.5 Flash lightweight multimodal",
+            "aliases": [
+                "gemini-1.5-flash",
+                "gemini-flash",
+                "gemini_1_5_flash",
+                "gemini-1.5-flash-latest",
+            ],
+        },
+        "gemini-1.5-pro": {
+            "provider": "google",
+            "model": "gemini-1.5-pro",
+            "input_per_million": 1.25,
+            "cached_per_million": 0.3125,
+            "output_per_million": 5.00,
+            "currency": "USD",
+            "description": "Google Gemini 1.5 Pro complex reasoning",
+            "aliases": [
+                "gemini-1.5-pro",
+                "gemini-pro",
+                "gemini_1_5_pro",
+                "gemini-1.5-pro-latest",
+            ],
+        },
+        "gemini-2.0-flash": {
+            "provider": "google",
+            "model": "gemini-2.0-flash",
+            "input_per_million": 0.10,
+            "cached_per_million": 0.025,
+            "output_per_million": 0.40,
+            "currency": "USD",
+            "description": "Google Gemini 2.0 Flash generation",
+            "aliases": [
+                "gemini-2.0-flash",
+                "gemini-2.0-flash-exp",
+                "gemini-2-flash",
+            ],
+        },
+        "llama-3.3-70b": {
+            "provider": "groq",
+            "model": "llama-3.3-70b-versatile",
+            "input_per_million": 0.59,
+            "cached_per_million": 0.59,
+            "output_per_million": 0.79,
+            "currency": "USD",
+            "description": "Groq Llama 3.3 70B Versatile ultra-low latency",
+            "aliases": [
+                "llama-3.3-70b",
+                "llama-3.3-70b-versatile",
+                "groq/llama-3.3-70b",
+            ],
+        },
+        "deepseek-v3": {
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "input_per_million": 0.14,
+            "cached_per_million": 0.014,
+            "output_per_million": 0.28,
+            "currency": "USD",
+            "description": "DeepSeek V3 Chat PAYG",
+            "aliases": [
+                "deepseek-chat",
+                "deepseek-v3",
+                "deepseek",
+            ],
+        },
+        "deepseek-r1": {
+            "provider": "deepseek",
+            "model": "deepseek-reasoner",
+            "input_per_million": 0.55,
+            "cached_per_million": 0.14,
+            "output_per_million": 2.19,
+            "currency": "USD",
+            "description": "DeepSeek R1 Reasoning model",
+            "aliases": [
+                "deepseek-reasoner",
+                "deepseek-r1",
+                "deepseek_r1",
+                "r1",
+            ],
+        },
+        "llama-3.1-8b": {
+            "provider": "groq",
+            "model": "llama-3.1-8b-instant",
+            "input_per_million": 0.05,
+            "cached_per_million": 0.05,
+            "output_per_million": 0.08,
+            "currency": "USD",
+            "description": "Groq Llama 3.1 8B Instant",
+            "aliases": [
+                "llama-3.1-8b",
+                "llama-3.1-8b-instant",
+                "llama-8b",
+                "llama-3-8b",
+                "groq/llama-3.1-8b",
+            ],
+        },
+        "claude-3-haiku": {
+            "provider": "anthropic",
+            "model": "claude-3-haiku",
+            "input_per_million": 0.25,
+            "cached_per_million": 0.025,
+            "output_per_million": 1.25,
+            "currency": "USD",
+            "description": "Anthropic Claude 3 Haiku",
+            "aliases": [
+                "claude-3-haiku",
+                "claude-haiku",
+                "claude-3-haiku-20240307",
+            ],
+        },
+        "claude-3-opus": {
+            "provider": "anthropic",
+            "model": "claude-3-opus",
+            "input_per_million": 15.00,
+            "cached_per_million": 1.50,
+            "output_per_million": 75.00,
+            "currency": "USD",
+            "description": "Anthropic Claude 3 Opus",
+            "aliases": [
+                "claude-3-opus",
+                "claude-opus",
+                "claude-3-opus-20240229",
+            ],
+        },
     },
     "tts": {
         "smallest_ai_lightning": {
@@ -227,6 +556,10 @@ VENDOR_PRICING_REGISTRY: Dict[str, Any] = {
                 "bulbul_v4_flash",
                 "v4-flash",
                 "sarvam_bulbul_v4",
+                "sarvam",
+                "sarvam_tts",
+                "sarvam-tts",
+                "bulbul",
             ],
         },
         "sarvam_bulbul_v3": {
@@ -307,6 +640,112 @@ VENDOR_PRICING_REGISTRY: Dict[str, Any] = {
                 "elevenlabs-multilingual-v3",
             ],
         },
+        "cartesia_sonic": {
+            "provider": "cartesia",
+            "model": "sonic-3.5",
+            "rate_per_1k_chars": 0.040,
+            "published_rate": "$0.040 / 1K chars",
+            "currency": "USD",
+            "description": "Cartesia Sonic-3.5 ultra-low latency TTS",
+            "aliases": [
+                "cartesia",
+                "cartesia_sonic",
+                "cartesia-tts",
+                "cartesia_tts",
+                "sonic",
+                "sonic-3.5",
+                "sonic-3",
+                "sonic_3.5",
+                "sonic_3",
+            ],
+        },
+        "openai_tts": {
+            "provider": "openai",
+            "model": "tts-1",
+            "rate_per_1k_chars": 0.015,
+            "published_rate": "$0.015 / 1K chars",
+            "currency": "USD",
+            "description": "OpenAI TTS-1 standard",
+            "aliases": [
+                "openai",
+                "openai_tts",
+                "openai-tts",
+                "tts-1",
+                "tts-1-hd",
+            ],
+        },
+        "azure_tts": {
+            "provider": "azure",
+            "model": "azure-neural",
+            "rate_per_1k_chars": 0.015,
+            "published_rate": "$0.015 / 1K chars",
+            "currency": "USD",
+            "description": "Azure Neural Text-to-Speech",
+            "aliases": [
+                "azure",
+                "azure_speech",
+                "azure-tts",
+                "azure_tts",
+                "azure-speech",
+            ],
+        },
+        "google_tts": {
+            "provider": "google",
+            "model": "journey",
+            "rate_per_1k_chars": 0.016,
+            "published_rate": "$0.016 / 1K chars",
+            "currency": "USD",
+            "description": "Google Cloud Text-to-Speech Journey / Neural2",
+            "aliases": [
+                "google",
+                "google_tts",
+                "google-tts",
+                "journey",
+                "neural2",
+                "wavenet",
+            ],
+        },
+        "inworld_tts": {
+            "provider": "inworld",
+            "model": "inworld-voice",
+            "rate_per_1k_chars": 0.015,
+            "published_rate": "$0.015 / 1K chars",
+            "currency": "USD",
+            "description": "Inworld Character TTS",
+            "aliases": [
+                "inworld",
+                "inworld_tts",
+                "inworld-tts",
+            ],
+        },
+        "minimax_tts": {
+            "provider": "minimax",
+            "model": "speech-01",
+            "rate_per_1k_chars": 0.010,
+            "published_rate": "$0.010 / 1K chars",
+            "currency": "USD",
+            "description": "MiniMax Speech TTS",
+            "aliases": [
+                "minimax",
+                "minimax_tts",
+                "minimax-tts",
+                "speech-01",
+                "speech-02",
+            ],
+        },
+        "rime_tts": {
+            "provider": "rime",
+            "model": "rime-voice",
+            "rate_per_1k_chars": 0.020,
+            "published_rate": "$0.020 / 1K chars",
+            "currency": "USD",
+            "description": "Rime Expressive TTS",
+            "aliases": [
+                "rime",
+                "rime_tts",
+                "rime-tts",
+            ],
+        },
     },
 }
 
@@ -323,25 +762,55 @@ def resolve_stt_pricing(name_or_provider: Optional[str]) -> Tuple[Dict[str, Any]
     if not name_or_provider:
         return VENDOR_PRICING_REGISTRY["stt"]["deepgram_nova_3"], False
 
-    clean = name_or_provider.lower().strip()
+    clean = str(name_or_provider).lower().strip()
+    left_part = ""
+    right_part = ""
     if "|||" in clean:
-        _, clean = clean.split("|||", 1)
+        parts = clean.split("|||", 1)
+        left_part = parts[0].strip()
+        right_part = parts[1].strip()
 
-    # Exact key or alias match
+    # Step 1: Exact key or alias match on right_part (model)
+    if right_part:
+        for key, cfg in VENDOR_PRICING_REGISTRY["stt"].items():
+            if right_part == key or right_part in cfg.get("aliases", []):
+                return cfg, False
+
+    # Step 2: Exact key or alias match on left_part or clean
+    candidate = left_part if left_part else clean
     for key, cfg in VENDOR_PRICING_REGISTRY["stt"].items():
-        if clean == key or clean in cfg.get("aliases", []):
+        if candidate == key or candidate in cfg.get("aliases", []):
             return cfg, False
 
-    # Regex / prefix fallback match (EC-6)
-    if "v4" in clean and ("saaras" in clean or "sarvam" in clean):
+    # Step 3: Regex / prefix fallback match (EC-6) on combined parts or clean
+    check_str = f"{left_part} {right_part}".strip() if (left_part or right_part) else clean
+    if "v4" in check_str and ("saaras" in check_str or "sarvam" in check_str):
         return VENDOR_PRICING_REGISTRY["stt"]["sarvam_saaras_v4"], False
-    if "saaras" in clean or "sarvam" in clean:
+    if "saaras" in check_str or "sarvam" in check_str:
         return VENDOR_PRICING_REGISTRY["stt"]["sarvam_saaras"], False
-    if "pulse" in clean:
+    if "cartesia" in check_str or "ink" in check_str:
+        return VENDOR_PRICING_REGISTRY["stt"]["cartesia_ink"], False
+    if "whisper" in check_str:
+        return VENDOR_PRICING_REGISTRY["stt"]["openai_whisper"], False
+    if "scribe" in check_str or ("eleven" in check_str and "stt" in check_str):
+        return VENDOR_PRICING_REGISTRY["stt"]["elevenlabs_scribe"], False
+    if "chirp" in check_str or ("google" in check_str and "stt" in check_str):
+        return VENDOR_PRICING_REGISTRY["stt"]["google_stt"], False
+    if "google" in check_str:
+        return VENDOR_PRICING_REGISTRY["stt"]["google_stt"], False
+    if "azure" in check_str:
+        return VENDOR_PRICING_REGISTRY["stt"]["azure_stt"], False
+    if "assembly" in check_str:
+        return VENDOR_PRICING_REGISTRY["stt"]["assemblyai"], False
+    if "gladia" in check_str:
+        return VENDOR_PRICING_REGISTRY["stt"]["gladia"], False
+    if "speechmatics" in check_str:
+        return VENDOR_PRICING_REGISTRY["stt"]["speechmatics"], False
+    if "pulse" in check_str:
         return VENDOR_PRICING_REGISTRY["stt"]["smallest_ai_pulse"], True
-    if "nova-2" in clean or "nova_2" in clean:
+    if "nova-2" in check_str or "nova_2" in check_str:
         return VENDOR_PRICING_REGISTRY["stt"]["deepgram_nova_2"], True
-    if re.search(r"nova.*", clean) or "deepgram" in clean:
+    if re.search(r"nova.*", check_str) or "deepgram" in check_str:
         return VENDOR_PRICING_REGISTRY["stt"]["deepgram_nova_3"], True
 
     # Global default fallback
@@ -356,28 +825,67 @@ def resolve_llm_pricing(name_or_model: Optional[str]) -> Tuple[Dict[str, Any], b
     if not name_or_model:
         return VENDOR_PRICING_REGISTRY["llm"]["gpt-4o-mini"], False
 
-    clean = name_or_model.lower().strip()
+    clean = str(name_or_model).lower().strip()
+    left_part = ""
+    right_part = ""
     if "|||" in clean:
-        # e.g. "openai|||gpt-4.1-mini" or "sarvam|||sarvam-105b"
-        _, clean = clean.split("|||", 1)
+        parts = clean.split("|||", 1)
+        left_part = parts[0].strip()
+        right_part = parts[1].strip()
 
-    # Exact key or alias match
+    # Step 1: Exact key or alias match on right_part (model)
+    if right_part:
+        for key, cfg in VENDOR_PRICING_REGISTRY["llm"].items():
+            if right_part == key or right_part in cfg.get("aliases", []):
+                return cfg, False
+
+    # Step 2: Exact key or alias match on left_part or clean
+    candidate = left_part if left_part else clean
     for key, cfg in VENDOR_PRICING_REGISTRY["llm"].items():
-        if clean == key or clean in cfg.get("aliases", []):
+        if candidate == key or candidate in cfg.get("aliases", []):
             return cfg, False
 
-    # Regex / prefix fallback match (EC-6)
-    if "105b" in clean or "sarvam" in clean:
-        return VENDOR_PRICING_REGISTRY["llm"]["sarvam-105b"], True
-    if "nano" in clean:
+    # Step 3: Regex / prefix fallback match (EC-6)
+    check_str = f"{left_part} {right_part}".strip() if (left_part or right_part) else clean
+    if "sonnet" in check_str or "claude-3-5-sonnet" in check_str or "claude-3.5-sonnet" in check_str:
+        return VENDOR_PRICING_REGISTRY["llm"]["claude-3-5-sonnet"], False
+    if "opus" in check_str:
+        return VENDOR_PRICING_REGISTRY["llm"]["claude-3-opus"], False
+    if "3-haiku" in check_str or "3.0-haiku" in check_str:
+        return VENDOR_PRICING_REGISTRY["llm"]["claude-3-haiku"], False
+    if "haiku" in check_str or "claude-3-5-haiku" in check_str or "claude-3.5-haiku" in check_str:
+        return VENDOR_PRICING_REGISTRY["llm"]["claude-3-5-haiku"], False
+    if "claude" in check_str or "anthropic" in check_str:
+        return VENDOR_PRICING_REGISTRY["llm"]["claude-3-5-sonnet"], True
+    if "gemini-2" in check_str or "2.0-flash" in check_str:
+        return VENDOR_PRICING_REGISTRY["llm"]["gemini-2.0-flash"], False
+    if "gemini-1.5-pro" in check_str or ("gemini" in check_str and "pro" in check_str):
+        return VENDOR_PRICING_REGISTRY["llm"]["gemini-1.5-pro"], False
+    if "gemini" in check_str or ("flash" in check_str and "gemini" in check_str):
+        return VENDOR_PRICING_REGISTRY["llm"]["gemini-1.5-flash"], False
+    if "r1" in check_str and "deepseek" in check_str:
+        return VENDOR_PRICING_REGISTRY["llm"]["deepseek-r1"], False
+    if "deepseek" in check_str:
+        return VENDOR_PRICING_REGISTRY["llm"]["deepseek-v3"], False
+    if "llama-3.3" in check_str or ("llama" in check_str and "70b" in check_str):
+        return VENDOR_PRICING_REGISTRY["llm"]["llama-3.3-70b"], False
+    if "8b" in check_str and "llama" in check_str:
+        return VENDOR_PRICING_REGISTRY["llm"]["llama-3.1-8b"], False
+    if "groq" in check_str:
+        return VENDOR_PRICING_REGISTRY["llm"]["llama-3.3-70b"], True
+    if "105b" in check_str or "sarvam" in check_str:
+        return VENDOR_PRICING_REGISTRY["llm"]["sarvam-105b"], False
+    if "nano" in check_str:
         return VENDOR_PRICING_REGISTRY["llm"]["gpt-4.1-nano"], False
-    if "4.1" in clean:
+    if "o3" in check_str or "o1" in check_str:
+        return VENDOR_PRICING_REGISTRY["llm"]["o3-mini"], False
+    if "4.1" in check_str:
         return VENDOR_PRICING_REGISTRY["llm"]["gpt-4.1-mini"], True
-    if "4o-mini" in clean or "4o_mini" in clean:
+    if "4o-mini" in check_str or "4o_mini" in check_str:
         return VENDOR_PRICING_REGISTRY["llm"]["gpt-4o-mini"], True
-    if "gpt-4o" in clean:
+    if "gpt-4o" in check_str:
         return VENDOR_PRICING_REGISTRY["llm"]["gpt-4o"], True
-    if re.search(r"gpt-4.*", clean):
+    if re.search(r"gpt-4.*", check_str):
         return VENDOR_PRICING_REGISTRY["llm"]["gpt-4.1-mini"], True
 
     # Global default fallback
@@ -392,30 +900,58 @@ def resolve_tts_pricing(name_or_model: Optional[str]) -> Tuple[Dict[str, Any], b
     if not name_or_model:
         return VENDOR_PRICING_REGISTRY["tts"]["smallest_ai_lightning"], False
 
-    clean = name_or_model.lower().strip()
+    clean = str(name_or_model).lower().strip()
+    left_part = ""
+    right_part = ""
     if "|||" in clean:
-        _, clean = clean.split("|||", 1)
+        parts = clean.split("|||", 1)
+        left_part = parts[0].strip()
+        right_part = parts[1].strip()
 
-    # Exact key or alias match
+    # Step 1: Exact key or alias match on right_part (model or voice)
+    if right_part:
+        for key, cfg in VENDOR_PRICING_REGISTRY["tts"].items():
+            if right_part == key or right_part in cfg.get("aliases", []):
+                return cfg, False
+
+    # Step 2: Exact key or alias match on left_part (provider) or clean
+    candidate = left_part if left_part else clean
     for key, cfg in VENDOR_PRICING_REGISTRY["tts"].items():
-        if clean == key or clean in cfg.get("aliases", []):
+        if candidate == key or candidate in cfg.get("aliases", []):
             return cfg, False
 
-    # Substring / prefix matches (EC-6, EC-14)
-    if "multilingual" in clean and "eleven" in clean:
-        return VENDOR_PRICING_REGISTRY["tts"]["elevenlabs_multilingual"], True
-    if "eleven" in clean or "flash" in clean or "turbo" in clean:
-        return VENDOR_PRICING_REGISTRY["tts"]["elevenlabs_flash"], True
-    if "bulbul-v4" in clean or "bulbul_v4" in clean or "v4-flash" in clean:
-        return VENDOR_PRICING_REGISTRY["tts"]["sarvam_bulbul_v4"], True
-    if "bulbul" in clean:
-        return VENDOR_PRICING_REGISTRY["tts"]["sarvam_bulbul_v3"], True
-    if "aura-2" in clean or "aura_2" in clean:
-        return VENDOR_PRICING_REGISTRY["tts"]["deepgram_aura_2"], True
-    if "aura" in clean:
-        return VENDOR_PRICING_REGISTRY["tts"]["deepgram_aura_1"], True
-    if "smallest" in clean or "lightning" in clean or "waves" in clean:
-        return VENDOR_PRICING_REGISTRY["tts"]["smallest_ai_lightning"], True
+    # Step 3: Substring / prefix matches (EC-6, EC-14)
+    check_str = f"{left_part} {right_part}".strip() if (left_part or right_part) else clean
+    if "cartesia" in check_str or "sonic" in check_str:
+        return VENDOR_PRICING_REGISTRY["tts"]["cartesia_sonic"], False
+    if "multilingual" in check_str and "eleven" in check_str:
+        return VENDOR_PRICING_REGISTRY["tts"]["elevenlabs_multilingual"], False
+    if "eleven" in check_str or "flash" in check_str or "turbo" in check_str:
+        return VENDOR_PRICING_REGISTRY["tts"]["elevenlabs_flash"], False
+    if "bulbul-v4" in check_str or "bulbul_v4" in check_str or "v4-flash" in check_str:
+        return VENDOR_PRICING_REGISTRY["tts"]["sarvam_bulbul_v4"], False
+    if "bulbul-v3" in check_str or "bulbul_v3" in check_str:
+        return VENDOR_PRICING_REGISTRY["tts"]["sarvam_bulbul_v3"], False
+    if "bulbul" in check_str or "sarvam" in check_str:
+        return VENDOR_PRICING_REGISTRY["tts"]["sarvam_bulbul_v4"], False
+    if "aura-2" in check_str or "aura_2" in check_str:
+        return VENDOR_PRICING_REGISTRY["tts"]["deepgram_aura_2"], False
+    if "aura" in check_str or "deepgram" in check_str:
+        return VENDOR_PRICING_REGISTRY["tts"]["deepgram_aura_1"], False
+    if "openai" in check_str or "tts-1" in check_str:
+        return VENDOR_PRICING_REGISTRY["tts"]["openai_tts"], False
+    if "azure" in check_str:
+        return VENDOR_PRICING_REGISTRY["tts"]["azure_tts"], False
+    if "google" in check_str or "journey" in check_str or "neural2" in check_str or "wavenet" in check_str:
+        return VENDOR_PRICING_REGISTRY["tts"]["google_tts"], False
+    if "inworld" in check_str:
+        return VENDOR_PRICING_REGISTRY["tts"]["inworld_tts"], False
+    if "minimax" in check_str:
+        return VENDOR_PRICING_REGISTRY["tts"]["minimax_tts"], False
+    if "rime" in check_str:
+        return VENDOR_PRICING_REGISTRY["tts"]["rime_tts"], False
+    if "smallest" in check_str or "lightning" in check_str or "waves" in check_str:
+        return VENDOR_PRICING_REGISTRY["tts"]["smallest_ai_lightning"], False
 
     # Global fallback
     return VENDOR_PRICING_REGISTRY["tts"]["smallest_ai_lightning"], True
@@ -465,11 +1001,11 @@ def calculate_call_unit_economics(
     overrides = overrides or {}
     notices: List[str] = []
 
-    # --- 1. Forex Configuration (EC-9) ---
+    # --- 1. Forex Configuration (EC-9) with Live Auto-Updating Rate ---
     exchange_rate = float(
         overrides.get("exchange_rate")
         or overrides.get("usd_to_inr")
-        or VENDOR_PRICING_REGISTRY["forex"]["default"]
+        or forex_service.get_usd_to_inr_rate()
     )
 
     # --- 2. Extract Duration & Status ---
@@ -793,11 +1329,23 @@ def calculate_call_unit_economics(
     cost_llm_ext = 0.0
     ext_items: List[Dict[str, Any]] = []
 
+    comp_prompt_tokens = 0
+    comp_comp_tokens = 0
+    comp_cached_tokens = 0
+    cost_llm_comp = 0.0
+    comp_items: List[Dict[str, Any]] = []
+
     qa_prompt_tokens = 0
     qa_comp_tokens = 0
     qa_cached_tokens = 0
     cost_llm_qa = 0.0
     qa_items: List[Dict[str, Any]] = []
+
+    pci_prompt_tokens = 0
+    pci_comp_tokens = 0
+    pci_cached_tokens = 0
+    cost_llm_pci = 0.0
+    pci_items: List[Dict[str, Any]] = []
 
     has_extraction_metrics = False
 
@@ -809,38 +1357,49 @@ def calculate_call_unit_economics(
         c_tok = int(val.get("completion_tokens") or 0)
         cache_tok = int(val.get("cache_read_input_tokens") or val.get("cached_tokens") or 0)
 
-        # Categorization: QA vs Extraction vs Conversation (EC-8, EC-12)
-        is_qa = model_key.startswith("QAAnalysis") or "qa_analysis" in model_key
-        is_extraction = ":extraction" in model_key or "extraction|||" in model_key
+        # Categorization: QA vs PCI vs Extraction vs Compaction vs Conversation (EC-8, EC-12)
+        m_lower = model_key.lower()
+        is_qa = "qaanalysis" in m_lower or "qa_analysis" in m_lower or m_lower.startswith("qa")
+        is_pci = "postcallintelligence" in m_lower or "post_call" in m_lower
+        is_compaction = "compaction" in m_lower
+        is_extraction = "variable_extraction" in m_lower or "extraction" in m_lower
 
         if is_extraction:
             has_extraction_metrics = True
 
-        if is_extraction:
-            # Check model name candidate from model_key
-            ext_model_candidate = model_key.split("|||", 1)[1].strip() if "|||" in model_key else None
-            if not ext_model_candidate or ext_model_candidate.lower() in ("unknown", "default", "none", "extraction"):
-                ext_model_candidate = None
+        model_candidate = model_key.split("|||", 1)[1].strip() if "|||" in model_key else model_key.strip()
+        if model_candidate.lower() in ("unknown", "default", "none", "extraction", "compaction"):
+            model_candidate = None
 
-            # Priority: simulation override > configured extraction model from runtime_config > metric key candidate
+        if is_extraction:
             chosen_key = (
                 overrides.get("extraction_llm_model")
                 or rc.get("extraction_llm_model")
-                or ext_model_candidate
+                or model_candidate
                 or configured_ext_llm
             )
+        elif is_compaction:
+            chosen_key = (
+                model_candidate
+                or rc.get("extraction_llm_model")
+                or configured_ext_llm
+            )
+        elif is_pci:
+            chosen_key = (
+                model_candidate
+                or rc.get("extraction_llm_model")
+                or configured_ext_llm
+            )
+        elif is_qa:
+            chosen_key = (
+                model_candidate
+                or rc.get("qa_model")
+                or "gpt-4o-mini"
+            )
         else:
-            if "|||" in model_key:
-                conv_model_candidate = model_key.split("|||", 1)[1].strip()
-            else:
-                conv_model_candidate = model_key.strip()
-
-            if conv_model_candidate and conv_model_candidate.lower() in ("unknown", "default", "none"):
-                conv_model_candidate = None
-
             chosen_key = (
                 override_llm_model
-                or conv_model_candidate
+                or model_candidate
                 or rc.get("llm_model")
                 or configured_conv_llm
             )
@@ -866,7 +1425,7 @@ def calculate_call_unit_economics(
         display_model = cfg["model"]
         if is_extraction and rc.get("extraction_llm_model"):
             display_model = rc.get("extraction_llm_model")
-        elif not is_extraction and not is_qa and rc.get("llm_model"):
+        elif not is_extraction and not is_qa and not is_pci and not is_compaction and rc.get("llm_model"):
             display_model = rc.get("llm_model")
 
         item_entry = {
@@ -885,12 +1444,24 @@ def calculate_call_unit_economics(
             qa_cached_tokens += cache_tok
             cost_llm_qa += item_cost_inr
             qa_items.append(item_entry)
+        elif is_pci:
+            pci_prompt_tokens += p_tok
+            pci_comp_tokens += c_tok
+            pci_cached_tokens += cache_tok
+            cost_llm_pci += item_cost_inr
+            pci_items.append(item_entry)
         elif is_extraction:
             ext_prompt_tokens += p_tok
             ext_comp_tokens += c_tok
             ext_cached_tokens += cache_tok
             cost_llm_ext += item_cost_inr
             ext_items.append(item_entry)
+        elif is_compaction:
+            comp_prompt_tokens += p_tok
+            comp_comp_tokens += c_tok
+            comp_cached_tokens += cache_tok
+            cost_llm_comp += item_cost_inr
+            comp_items.append(item_entry)
         else:
             conv_prompt_tokens += p_tok
             conv_comp_tokens += c_tok
@@ -914,9 +1485,17 @@ def calculate_call_unit_economics(
         "provider": ext_cfg["provider"],
         "model": rc.get("extraction_llm_model") or ext_cfg["model"],
     }
+    primary_comp = comp_items[0] if comp_items else {
+        "provider": ext_cfg["provider"],
+        "model": rc.get("extraction_llm_model") or ext_cfg["model"],
+    }
     primary_qa = qa_items[0] if qa_items else {
         "provider": "openai",
         "model": "gpt-4o-mini",
+    }
+    primary_pci = pci_items[0] if pci_items else {
+        "provider": ext_cfg["provider"],
+        "model": rc.get("extraction_llm_model") or ext_cfg["model"],
     }
 
     llm_conv_breakdown = {
@@ -939,6 +1518,16 @@ def calculate_call_unit_economics(
         "items": ext_items,
     }
 
+    llm_comp_breakdown = {
+        "provider": primary_comp["provider"],
+        "model": primary_comp["model"],
+        "prompt_tokens": comp_prompt_tokens,
+        "completion_tokens": comp_comp_tokens,
+        "cached_tokens": comp_cached_tokens,
+        "cost_inr": cost_llm_comp,
+        "items": comp_items,
+    }
+
     llm_qa_breakdown = {
         "provider": primary_qa["provider"],
         "model": primary_qa["model"],
@@ -949,9 +1538,20 @@ def calculate_call_unit_economics(
         "items": qa_items,
     }
 
+    llm_pci_breakdown = {
+        "provider": primary_pci["provider"],
+        "model": primary_pci["model"],
+        "prompt_tokens": pci_prompt_tokens,
+        "completion_tokens": pci_comp_tokens,
+        "cached_tokens": pci_cached_tokens,
+        "cost_inr": cost_llm_pci,
+        "items": pci_items,
+    }
+
     # --- 8. Cost Aggregations (Operational vs Post-Call Intelligence - EC-12) ---
-    total_operational_cost_inr = cost_plivo + cost_stt + cost_tts + cost_llm_conv + cost_llm_ext
-    total_all_in_cost_inr = total_operational_cost_inr + cost_llm_qa
+    total_operational_cost_inr = cost_plivo + cost_stt + cost_tts + cost_llm_conv + cost_llm_ext + cost_llm_comp
+    cost_llm_post_call = cost_llm_qa + cost_llm_pci
+    total_all_in_cost_inr = total_operational_cost_inr + cost_llm_post_call
 
     # --- 9. Revenue & Profitability Math (EC-3, EC-17) ---
     rev_raw = _get_val(call_log, "cost_to_customer_paise")
@@ -1009,13 +1609,15 @@ def calculate_call_unit_economics(
             "stt": stt_breakdown,
             "llm_conversation": llm_conv_breakdown,
             "llm_extraction": llm_ext_breakdown,
+            "llm_compaction": llm_comp_breakdown,
             "tts": tts_breakdown,
         },
         "post_call_breakdown": {
             "llm_qa_analysis": llm_qa_breakdown,
+            "llm_pci": llm_pci_breakdown,
         },
         "total_cost_inr": total_operational_cost_inr,
-        "post_call_cost_inr": cost_llm_qa,
+        "post_call_cost_inr": cost_llm_post_call,
         "total_all_in_cost_inr": total_all_in_cost_inr,
         "cost_per_minute_inr": cost_per_minute_inr,
         "profit_inr": profit_inr,
@@ -1026,12 +1628,12 @@ def calculate_call_unit_economics(
         "plivo_inr": cost_plivo,
         "stt_inr": cost_stt,
         "tts_inr": cost_tts,
-        "llm_inr": cost_llm_conv + cost_llm_ext,
+        "llm_inr": cost_llm_conv + cost_llm_ext + cost_llm_comp,
         "tts_chars": tts_total_chars,
         "stt_seconds": stt_total_seconds,
-        "llm_prompt_tokens": conv_prompt_tokens + ext_prompt_tokens,
-        "llm_completion_tokens": conv_comp_tokens + ext_comp_tokens,
-        "llm_cached_tokens": conv_cached_tokens + ext_cached_tokens,
+        "llm_prompt_tokens": conv_prompt_tokens + ext_prompt_tokens + comp_prompt_tokens,
+        "llm_completion_tokens": conv_comp_tokens + ext_comp_tokens + comp_comp_tokens,
+        "llm_cached_tokens": conv_cached_tokens + ext_cached_tokens + comp_cached_tokens,
     }
 
 
@@ -1073,3 +1675,42 @@ def estimate_call_cost_inr(
         "llm_cached_tokens": res["llm_cached_tokens"],
         "notices": res["notices"],
     }
+
+
+def get_cost_assumptions() -> Dict[str, Any]:
+    """
+    Returns the comprehensive, unified cost assumptions dictionary.
+    Exposes live auto-updating Forex rate metadata, full LLM, TTS, STT, and Telephony pricing.
+    Ensures safe compatibility across all admin profitability and diagnostic endpoints.
+    """
+    live_forex = forex_service.get_usd_to_inr_rate()
+    forex_meta = forex_service.get_rate_metadata()
+
+    # Safely derive OpenAI rates (USD per 1M tokens) from registry
+    openai_rates = {
+        model_key: {
+            "input": cfg.get("input_per_million", 0.0),
+            "cached": cfg.get("cached_per_million", 0.0),
+            "output": cfg.get("output_per_million", 0.0),
+        }
+        for model_key, cfg in VENDOR_PRICING_REGISTRY.get("llm", {}).items()
+        if cfg.get("provider") == "openai"
+    }
+
+    return {
+        "usd_to_inr": round(live_forex, 4),
+        "forex": forex_meta,
+        "plivo_per_min_inr": VENDOR_PRICING_REGISTRY["telephony"]["plivo"]["outbound_india"]["rate_inr_per_min"],
+        "telephony": VENDOR_PRICING_REGISTRY["telephony"],
+        "deepgram_stt_usd_per_min": VENDOR_PRICING_REGISTRY["stt"]["deepgram_nova_3"]["rate"],
+        "deepgram_tts_usd_per_1k_chars": VENDOR_PRICING_REGISTRY["tts"]["deepgram_aura_1"]["rate_per_1k_chars"],
+        "elevenlabs_tts_usd_per_1k_chars": VENDOR_PRICING_REGISTRY["tts"]["elevenlabs_flash"]["rate_per_1k_chars"],
+        "smallest_ai_tts_usd_per_1k_chars": VENDOR_PRICING_REGISTRY["tts"]["smallest_ai_lightning"]["rate_per_1k_chars"],
+        "smallest_ai_stt_usd_per_min": VENDOR_PRICING_REGISTRY["stt"]["smallest_ai_pulse"]["rate"],
+        "tts_speaking_ratio": 0.47,
+        "openai_rates": openai_rates,
+        "llm_rates": VENDOR_PRICING_REGISTRY["llm"],
+        "stt_rates": VENDOR_PRICING_REGISTRY["stt"],
+        "tts_rates": VENDOR_PRICING_REGISTRY["tts"],
+    }
+
