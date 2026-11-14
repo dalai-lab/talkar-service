@@ -1652,16 +1652,17 @@ def estimate_call_cost_inr(
         "duration_seconds": duration_seconds,
         "cost_to_customer_paise": 0,
         "call_status": "completed",
+        "tts_provider": tts_provider,
+        "stt_provider": stt_provider,
+        "llm_model": llm_model,
     }
     workflow_run_mock = {
         "usage_info": usage_info or {},
     }
     merged_overrides = dict(overrides or {})
-    merged_overrides.setdefault("tts_provider", tts_provider)
-    merged_overrides.setdefault("stt_provider", stt_provider)
-    merged_overrides.setdefault("llm_model", llm_model)
 
     res = calculate_call_unit_economics(call_log_mock, workflow_run_mock, merged_overrides)
+    cb = res.get("cost_breakdown", {})
     return {
         "plivo_inr": round(res["plivo_inr"], 4),
         "stt_inr": round(res["stt_inr"], 4),
@@ -1674,6 +1675,13 @@ def estimate_call_cost_inr(
         "llm_completion_tokens": res["llm_completion_tokens"],
         "llm_cached_tokens": res["llm_cached_tokens"],
         "notices": res["notices"],
+        "cost_breakdown": cb,
+        "stt_vendor": cb.get("stt", {}).get("provider", stt_provider),
+        "stt_model": cb.get("stt", {}).get("model", "nova-3"),
+        "tts_vendor": cb.get("tts", {}).get("provider", tts_provider),
+        "tts_model": cb.get("tts", {}).get("model", "lightning"),
+        "llm_vendor": cb.get("llm_conversation", {}).get("provider", "openai"),
+        "llm_model": cb.get("llm_conversation", {}).get("model", llm_model),
     }
 
 

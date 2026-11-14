@@ -1988,9 +1988,14 @@ async def get_profitability(
     from config import TIER_CONFIG, resolve_tier_config
 
     def empty_bucket():
-        return {"calls": 0, "total_minutes": 0.0, "revenue_inr": 0.0,
-                "cost_inr": 0.0, "plivo_inr": 0.0, "stt_inr": 0.0,
-                "tts_inr": 0.0, "llm_inr": 0.0}
+        return {
+            "calls": 0, "total_minutes": 0.0, "revenue_inr": 0.0,
+            "cost_inr": 0.0, "plivo_inr": 0.0, "stt_inr": 0.0,
+            "tts_inr": 0.0, "llm_inr": 0.0,
+            "stt_vendors": defaultdict(float),
+            "tts_vendors": defaultdict(float),
+            "llm_vendors": defaultdict(float),
+        }
 
     # keyed by customer_id → totals
     per_customer: dict = defaultdict(empty_bucket)
@@ -2081,6 +2086,16 @@ async def get_profitability(
 
                 plan_key = (cid, active_plan, tts_provider)
 
+                # Extract granular vendor costs from estimate_call_cost_inr result
+                stt_items = cost_breakdown.get("cost_breakdown", {}).get("stt", {}).get("items", [])
+                tts_items = cost_breakdown.get("cost_breakdown", {}).get("tts", {}).get("items", [])
+                llm_cb = cost_breakdown.get("cost_breakdown", {})
+                llm_items = (
+                    llm_cb.get("llm_conversation", {}).get("items", [])
+                    + llm_cb.get("llm_extraction", {}).get("items", [])
+                    + llm_cb.get("llm_compaction", {}).get("items", [])
+                )
+
                 for bucket in [per_customer[cid], per_plan[plan_key]]:
                     bucket["calls"] += 1
                     bucket["total_minutes"] += row.duration_seconds / 60.0
@@ -2090,6 +2105,33 @@ async def get_profitability(
                     bucket["stt_inr"] += cost_breakdown["stt_inr"]
                     bucket["tts_inr"] += cost_breakdown["tts_inr"]
                     bucket["llm_inr"] += cost_breakdown["llm_inr"]
+
+                    # 1. Accumulate STT vendors
+                    if stt_items:
+                        for s_it in stt_items:
+                            p_name = s_it.get("provider") or stt_provider
+                            bucket["stt_vendors"][p_name] += s_it.get("cost_inr", 0.0)
+                    else:
+                        p_name = cost_breakdown.get("stt_vendor") or stt_provider
+                        bucket["stt_vendors"][p_name] += cost_breakdown["stt_inr"]
+
+                    # 2. Accumulate TTS vendors
+                    if tts_items:
+                        for t_it in tts_items:
+                            p_name = t_it.get("provider") or tts_provider
+                            bucket["tts_vendors"][p_name] += t_it.get("cost_inr", 0.0)
+                    else:
+                        p_name = cost_breakdown.get("tts_vendor") or tts_provider
+                        bucket["tts_vendors"][p_name] += cost_breakdown["tts_inr"]
+
+                    # 3. Accumulate LLM vendors
+                    if llm_items:
+                        for l_it in llm_items:
+                            p_name = l_it.get("provider") or "openai"
+                            bucket["llm_vendors"][p_name] += l_it.get("cost_inr", 0.0)
+                    else:
+                        p_name = cost_breakdown.get("llm_vendor") or "openai"
+                        bucket["llm_vendors"][p_name] += cost_breakdown["llm_inr"]
 
                 total_revenue_inr += revenue_inr
                 total_cost_inr += cost_breakdown["total_cost_inr"]
@@ -2141,6 +2183,9 @@ async def get_profitability(
                     "stt_inr": round(pdata["stt_inr"], 2),
                     "tts_inr": round(pdata["tts_inr"], 2),
                     "llm_inr": round(pdata["llm_inr"], 2),
+                    "stt_vendors": {k: round(v, 2) for k, v in pdata["stt_vendors"].items()},
+                    "tts_vendors": {k: round(v, 2) for k, v in pdata["tts_vendors"].items()},
+                    "llm_vendors": {k: round(v, 2) for k, v in pdata["llm_vendors"].items()},
                 },
             }
             for pk, pdata in per_plan.items() if pk[0] == cid
@@ -2164,6 +2209,9 @@ async def get_profitability(
                 "stt_inr": round(data["stt_inr"], 2),
                 "tts_inr": round(data["tts_inr"], 2),
                 "llm_inr": round(data["llm_inr"], 2),
+                "stt_vendors": {k: round(v, 2) for k, v in data["stt_vendors"].items()},
+                "tts_vendors": {k: round(v, 2) for k, v in data["tts_vendors"].items()},
+                "llm_vendors": {k: round(v, 2) for k, v in data["llm_vendors"].items()},
             },
             "plan_breakdown": plan_buckets,
         })

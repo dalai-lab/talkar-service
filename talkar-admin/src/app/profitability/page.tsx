@@ -31,6 +31,9 @@ interface PlanBucket {
     stt_inr: number;
     tts_inr: number;
     llm_inr: number;
+    stt_vendors?: Record<string, number>;
+    tts_vendors?: Record<string, number>;
+    llm_vendors?: Record<string, number>;
   };
 }
 
@@ -51,8 +54,74 @@ interface CustomerRow {
     stt_inr: number;
     tts_inr: number;
     llm_inr: number;
+    stt_vendors?: Record<string, number>;
+    tts_vendors?: Record<string, number>;
+    llm_vendors?: Record<string, number>;
   };
   plan_breakdown: PlanBucket[];
+}
+
+const VENDOR_DISPLAY_NAMES: Record<string, string> = {
+  deepgram: "Deepgram",
+  smallest_ai: "Smallest AI",
+  smallest: "Smallest AI",
+  elevenlabs: "ElevenLabs",
+  eleven: "ElevenLabs",
+  cartesia: "Cartesia",
+  sarvam: "Sarvam AI",
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  google: "Google Gemini",
+  gemini: "Google Gemini",
+  deepseek: "DeepSeek",
+  groq: "Groq",
+  azure: "Azure Speech",
+  assemblyai: "AssemblyAI",
+  gladia: "Gladia",
+  speechmatics: "Speechmatics",
+};
+
+function formatVendorName(name: string): string {
+  const clean = name.toLowerCase().replace(/[-_]/g, " ").trim();
+  for (const [key, label] of Object.entries(VENDOR_DISPLAY_NAMES)) {
+    if (clean === key || clean.includes(key)) return label;
+  }
+  return clean.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function getVendorBadge(
+  type: "stt" | "tts" | "llm",
+  vendors?: Record<string, number>,
+  fallbackProvider?: string
+): { label: string; tooltip?: string; isMixed: boolean } {
+  const icon = type === "stt" ? "🎤 STT" : type === "tts" ? "🔊 TTS" : "🤖 LLM";
+  const vendorEntries = vendors ? Object.entries(vendors).filter(([_, cost]) => cost >= 0) : [];
+
+  if (vendorEntries.length === 0) {
+    const fallback = fallbackProvider
+      ? formatVendorName(fallbackProvider)
+      : type === "stt"
+      ? "Deepgram"
+      : type === "tts"
+      ? "Smallest AI"
+      : "OpenAI";
+    return { label: `${icon} (${fallback})`, isMixed: false };
+  }
+
+  if (vendorEntries.length === 1) {
+    const [name] = vendorEntries[0];
+    return { label: `${icon} (${formatVendorName(name)})`, isMixed: false };
+  }
+
+  const tooltip = vendorEntries
+    .map(([name, cost]) => `${formatVendorName(name)}: ₹${cost.toFixed(2)}`)
+    .join(" • ");
+
+  return {
+    label: `${icon} (Mixed · ${vendorEntries.length})`,
+    tooltip,
+    isMixed: true,
+  };
 }
 
 interface Summary {
@@ -122,8 +191,9 @@ function CostBar({ breakdown, total }: { breakdown: CustomerRow["breakdown"]; to
 }
 
 function PlanBucketRow({ b }: { b: PlanBucket }) {
-  const sttLabel = b.tts_provider.includes("smallest") ? "🎤 STT (Smallest AI)" : "🎤 STT (Deepgram)";
-  const ttsLabel = b.tts_provider.includes("smallest") ? "🔊 TTS (Smallest AI)" : b.tts_provider.includes("elevenlabs") ? "🔊 TTS (ElevenLabs)" : "🔊 TTS (Deepgram)";
+  const sttBadge = getVendorBadge("stt", b.breakdown.stt_vendors, "deepgram");
+  const ttsBadge = getVendorBadge("tts", b.breakdown.tts_vendors, b.tts_provider);
+  const llmBadge = getVendorBadge("llm", b.breakdown.llm_vendors, "openai");
   const planColors: Record<string, string> = {
     starter: "bg-slate-100 text-slate-700 border-slate-200",
     growth: "bg-emerald-50 text-emerald-800 border-emerald-200",
@@ -160,13 +230,18 @@ function PlanBucketRow({ b }: { b: PlanBucket }) {
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2.5">
           {[
             { label: "📞 Plivo", value: b.breakdown.plivo_inr },
-            { label: sttLabel, value: b.breakdown.stt_inr },
-            { label: ttsLabel, value: b.breakdown.tts_inr },
-            { label: "🤖 LLM", value: b.breakdown.llm_inr },
+            { label: sttBadge.label, value: b.breakdown.stt_inr, tooltip: sttBadge.tooltip },
+            { label: ttsBadge.label, value: b.breakdown.tts_inr, tooltip: ttsBadge.tooltip },
+            { label: llmBadge.label, value: b.breakdown.llm_inr, tooltip: llmBadge.tooltip },
           ].map((item) => (
-            <div key={item.label} className="bg-slate-50/70 border border-slate-200 rounded-md p-2 text-center">
-              <div className="text-[10px] text-slate-500">{item.label}</div>
+            <div key={item.label} className="bg-slate-50/70 border border-slate-200 rounded-md p-2 text-center" title={item.tooltip}>
+              <div className="text-[10px] text-slate-500 truncate">{item.label}</div>
               <div className="font-semibold text-xs text-slate-900 mt-0.5">{inr(item.value)}</div>
+              {item.tooltip && (
+                <div className="text-[9px] text-slate-400 mt-0.5 truncate" title={item.tooltip}>
+                  {item.tooltip}
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -178,8 +253,6 @@ function PlanBucketRow({ b }: { b: PlanBucket }) {
 
 function CustomerRowCard({ c }: { c: CustomerRow }) {
   const [open, setOpen] = useState(false);
-  const isGrowth = c.plan === "growth";
-  const isPro = c.plan === "pro" || c.plan === "elite";
   const planColors: Record<string, string> = {
     starter: "bg-slate-100 text-slate-700 border-slate-200",
     growth: "bg-emerald-50 text-emerald-800 border-emerald-200",
@@ -187,6 +260,14 @@ function CustomerRowCard({ c }: { c: CustomerRow }) {
     elite: "bg-purple-50 text-purple-800 border-purple-200",
   };
   const hasMultiplePlans = c.plan_breakdown && c.plan_breakdown.length > 1;
+
+  const sttBadge = getVendorBadge("stt", c.breakdown.stt_vendors, "deepgram");
+  const ttsBadge = getVendorBadge(
+    "tts",
+    c.breakdown.tts_vendors,
+    c.plan_breakdown?.[0]?.tts_provider
+  );
+  const llmBadge = getVendorBadge("llm", c.breakdown.llm_vendors, "openai");
   return (
     <div className="border border-slate-200/80 rounded-xl overflow-hidden bg-white shadow-none">
       <button
@@ -253,20 +334,20 @@ function CustomerRowCard({ c }: { c: CustomerRow }) {
             <>
               <CostBar breakdown={c.breakdown} total={c.cost_inr} />
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                {(c.plan_breakdown?.[0] ? [
+                {[
                   { label: "📞 Plivo (telephony)", value: c.breakdown.plivo_inr },
-                  { label: c.plan_breakdown[0].tts_provider.includes("smallest") ? "🎤 STT (Smallest AI)" : "🎤 STT (Deepgram)", value: c.breakdown.stt_inr },
-                  { label: c.plan_breakdown[0].tts_provider.includes("smallest") ? "🔊 TTS (Smallest AI)" : isGrowth || isPro ? "🔊 TTS (ElevenLabs)" : "🔊 TTS (Deepgram)", value: c.breakdown.tts_inr },
-                  { label: "🤖 LLM (OpenAI)", value: c.breakdown.llm_inr },
-                ] : [
-                  { label: "📞 Plivo (telephony)", value: c.breakdown.plivo_inr },
-                  { label: "🎤 STT", value: c.breakdown.stt_inr },
-                  { label: "🔊 TTS", value: c.breakdown.tts_inr },
-                  { label: "🤖 LLM (OpenAI)", value: c.breakdown.llm_inr },
-                ]).map((item) => (
-                  <div key={item.label} className="bg-white border border-slate-200 rounded-lg p-2.5 text-center">
-                    <div className="text-[10px] text-slate-500">{item.label}</div>
+                  { label: sttBadge.label, value: c.breakdown.stt_inr, tooltip: sttBadge.tooltip },
+                  { label: ttsBadge.label, value: c.breakdown.tts_inr, tooltip: ttsBadge.tooltip },
+                  { label: llmBadge.label, value: c.breakdown.llm_inr, tooltip: llmBadge.tooltip },
+                ].map((item) => (
+                  <div key={item.label} className="bg-white border border-slate-200 rounded-lg p-2.5 text-center" title={item.tooltip}>
+                    <div className="text-[10px] text-slate-500 truncate">{item.label}</div>
                     <div className="font-semibold text-xs text-slate-900 mt-1">{inr(item.value)}</div>
+                    {item.tooltip && (
+                      <div className="text-[9px] text-slate-400 mt-0.5 truncate" title={item.tooltip}>
+                        {item.tooltip}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
