@@ -322,4 +322,140 @@ async def test_profitability_post_call_intelligence_and_compaction_aggregation()
     assert "gpt-4o-mini" in llm_models
 
 
+@pytest.mark.asyncio
+async def test_profitability_deepgram_flux_stt_model_inventory():
+    """
+    Verifies that calls configured with Deepgram Flux (flux-general-multi) accurately
+    report 'flux-general-multi' in the models_used inventory rather than defaulting
+    to 'nova-3', and that pricing uses the exact Deepgram Flux rate ($0.0048/min).
+    """
+    from types import SimpleNamespace
+    from db.models import Customer, Subscription
+
+    mock_db = MagicMock()
+
+    mock_customer = Customer(
+        id=25,
+        company_name="Flux Voice AI",
+        contact_email="admin@flux.ai",
+        status="active",
+        is_test_account=False,
+        report_settings={},
+    )
+    mock_sub = Subscription(
+        customer_id=25,
+        plan="growth",
+        per_minute_rate_paise=600,
+    )
+    call_flux = SimpleNamespace(
+        id=801,
+        customer_id=25,
+        dograh_run_id=8001,
+        duration_seconds=60,
+        cost_to_customer_paise=600,
+        plan="growth",
+        tts_provider="smallest_ai",
+        call_status="completed",
+    )
+    call_nova = SimpleNamespace(
+        id=802,
+        customer_id=25,
+        dograh_run_id=8002,
+        duration_seconds=120,
+        cost_to_customer_paise=1200,
+        plan="growth",
+        tts_provider="smallest_ai",
+        call_status="completed",
+    )
+
+    def mock_db_side_effect(query):
+        res = MagicMock()
+        q_str = str(query).lower()
+        if "from call_logs" in q_str or "call_logs" in q_str:
+            res.all.return_value = [call_flux, call_nova]
+            res.scalars.return_value.all.return_value = [call_flux, call_nova]
+        elif "from subscriptions" in q_str:
+            res.scalars.return_value.all.return_value = [mock_sub]
+        elif "from global_platform_settings" in q_str:
+            res.scalar_one_or_none.return_value = None
+        elif "from customers" in q_str:
+            res.scalars.return_value.all.return_value = [mock_customer]
+        elif "from wallet_transactions" in q_str or "wallet_transactions" in q_str:
+            res.scalar.return_value = 0
+        else:
+            res.scalars.return_value.all.return_value = []
+            res.all.return_value = []
+            res.scalar.return_value = 0
+        return res
+
+    mock_db.execute = AsyncMock(side_effect=mock_db_side_effect)
+
+    # Mock workflow_runs with initial_context containing runtime_configuration
+    run_8001 = SimpleNamespace(
+        id=8001,
+        usage_info={"stt": {"DeepgramSTTService#0": {"audio_seconds": 60.0}}},
+        state="completed",
+        mode="pipeline",
+        initial_context={
+            "runtime_configuration": {
+                "stt_provider": "deepgram",
+                "stt_model": "flux-general-multi",
+                "tts_provider": "smallest_ai",
+                "tts_model": "lightning_v3.1_pro",
+                "llm_provider": "openai",
+                "llm_model": "gpt-4o-mini",
+            }
+        },
+    )
+    run_8002 = SimpleNamespace(
+        id=8002,
+        usage_info={"stt": {"DeepgramSTTService#0": {"audio_seconds": 120.0}}},
+        state="completed",
+        mode="pipeline",
+        initial_context={
+            "runtime_configuration": {
+                "stt_provider": "deepgram",
+                "stt_model": "nova-3",
+                "tts_provider": "smallest_ai",
+                "tts_model": "lightning_v3.1_pro",
+                "llm_provider": "openai",
+                "llm_model": "gpt-4o-mini",
+            }
+        },
+    )
+
+    mock_ddb = AsyncMock()
+    mock_ddb.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[run_8001, run_8002])))
+
+    with patch("services.dograh_client.DograhSessionLocal") as mock_dograh_session_cls:
+        session_ctx = MagicMock()
+        session_ctx.__aenter__ = AsyncMock(return_value=mock_ddb)
+        session_ctx.__aexit__ = AsyncMock(return_value=None)
+        mock_dograh_session_cls.return_value = session_ctx
+
+        res = await get_profitability(period="month", db=mock_db, current_admin=MagicMock())
+
+    assert len(res["customers"]) == 1
+    cust = res["customers"][0]
+    mu = cust["models_used"]
+
+    stt_models = {m["model"]: m for m in mu["stt"]}
+    # Both flux-general-multi and nova-3 must be present in the models_used inventory!
+    assert "flux-general-multi" in stt_models
+    assert "nova-3" in stt_models
+
+    flux_entry = stt_models["flux-general-multi"]
+    assert flux_entry["calls"] == 1
+    assert flux_entry["provider"] == "deepgram"
+    assert flux_entry["minutes"] == 1.0
+    assert flux_entry["cost_inr"] > 0
+
+    nova_entry = stt_models["nova-3"]
+    assert nova_entry["calls"] == 1
+    assert nova_entry["provider"] == "deepgram"
+    assert nova_entry["minutes"] == 2.0
+    assert nova_entry["cost_inr"] > 0
+
+
+
 

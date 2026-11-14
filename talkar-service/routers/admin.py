@@ -1915,6 +1915,9 @@ def _estimate_call_cost_inr(
     stt_provider: str = "deepgram",
     llm_model: str = "gpt-4o-mini",
     overrides: dict | None = None,
+    stt_model: str | None = None,
+    tts_model: str | None = None,
+    runtime_configuration: dict | None = None,
 ) -> dict:
     """
     Estimate the real AI+telephony cost for a single call in INR.
@@ -1927,6 +1930,9 @@ def _estimate_call_cost_inr(
         stt_provider=stt_provider,
         llm_model=llm_model,
         overrides=overrides,
+        stt_model=stt_model,
+        tts_model=tts_model,
+        runtime_configuration=runtime_configuration,
     )
 
 
@@ -2082,16 +2088,46 @@ async def get_profitability(
         for i in range(0, len(call_rows), BATCH_SIZE):
             batch_rows = call_rows[i : i + BATCH_SIZE]
             batch_run_ids = [r.dograh_run_id for r in batch_rows if r.dograh_run_id]
-            batch_usage_map = {}
+            batch_run_data_map = {}
             if ddb and batch_run_ids:
                 try:
-                    usage_rows = (await ddb.execute(
-                        text("SELECT id, usage_info FROM workflow_runs WHERE id = ANY(:ids)"),
+                    run_rows = (await ddb.execute(
+                        text("SELECT id, usage_info, state, mode, initial_context FROM workflow_runs WHERE id = ANY(:ids)"),
                         {"ids": batch_run_ids},
                     )).all()
-                    batch_usage_map = {r.id: r.usage_info for r in usage_rows}
+                    for r in run_rows:
+                        u_info = getattr(r, "usage_info", None)
+                        if isinstance(u_info, str):
+                            try:
+                                import json
+                                u_info = json.loads(u_info)
+                            except Exception:
+                                u_info = {}
+                        elif not isinstance(u_info, dict):
+                            u_info = {}
+
+                        runtime_config = {}
+                        init_ctx = getattr(r, "initial_context", None)
+                        if init_ctx and isinstance(init_ctx, (dict, str)):
+                            if isinstance(init_ctx, str):
+                                try:
+                                    import json
+                                    init_ctx = json.loads(init_ctx)
+                                except Exception:
+                                    init_ctx = {}
+                            if isinstance(init_ctx, dict):
+                                rc_candidate = init_ctx.get("runtime_configuration")
+                                if isinstance(rc_candidate, dict):
+                                    runtime_config = rc_candidate
+
+                        batch_run_data_map[r.id] = {
+                            "usage_info": u_info,
+                            "status": getattr(r, "state", "completed"),
+                            "mode": getattr(r, "mode", None),
+                            "runtime_configuration": runtime_config,
+                        }
                 except Exception as e:
-                    _log.warning(f"Could not fetch usage_info batch from Dograh DB: {e}")
+                    _log.warning(f"Could not fetch workflow_runs batch from Dograh DB: {e}")
                     try:
                         await ddb.rollback()
                     except Exception:
@@ -2109,38 +2145,57 @@ async def get_profitability(
                 effective_overrides.update(global_overrides)
                 effective_overrides.update(c_overrides)
 
+                run_data = batch_run_data_map.get(row.dograh_run_id) or {}
+                usage_info = run_data.get("usage_info")
+                runtime_config = run_data.get("runtime_configuration") or {}
+
+                # Extract runtime telemetry stamped on live call if available
+                actual_stt_provider = runtime_config.get("stt_provider")
+                actual_stt_model = runtime_config.get("stt_model")
+                actual_tts_provider = runtime_config.get("tts_provider") or getattr(row, "tts_provider", None)
+                actual_tts_model = runtime_config.get("tts_model")
+                actual_llm_provider = runtime_config.get("llm_provider")
+                actual_llm_model = runtime_config.get("llm_model")
+
                 # Use the plan stamped on the call_log at billing time (accurate for mid-month
                 # plan switches). Fall back to current subscription if column is NULL (old rows).
                 stamped_plan = getattr(row, "plan", None)
                 stamped_tts = getattr(row, "tts_provider", None)
 
                 if stamped_plan and stamped_tts:
-                    tts_provider = stamped_tts
+                    tts_provider = actual_tts_provider or stamped_tts
                     if stamped_plan == "custom":
                         sub = subs.get(cid)
                         tier_cfg = resolve_tier_config(sub) if sub else {}
                     else:
                         tier_cfg = TIER_CONFIG.get(stamped_plan, {})
-                    llm_model = tier_cfg.get("llm_model", "gpt-4o-mini")
-                    stt_provider = tier_cfg.get("stt_provider", "deepgram")
+                    llm_model = actual_llm_model or tier_cfg.get("llm_model", "gpt-4o-mini")
+                    stt_provider = actual_stt_provider or tier_cfg.get("stt_provider", "deepgram")
                     active_plan = stamped_plan
                 else:
                     # Legacy rows: fall back to current subscription
                     sub = subs.get(cid)
-                    tts_provider = "deepgram"
-                    stt_provider = "deepgram"
-                    llm_model = "gpt-4o-mini"
+                    tts_provider = actual_tts_provider or "deepgram"
+                    stt_provider = actual_stt_provider or "deepgram"
+                    llm_model = actual_llm_model or "gpt-4o-mini"
                     active_plan = "starter"
                     if sub:
                         tier_cfg = TIER_CONFIG.get(sub.plan, {})
-                        tts_provider = tier_cfg.get("tts_provider", "deepgram")
-                        stt_provider = tier_cfg.get("stt_provider", "deepgram")
-                        llm_model = tier_cfg.get("llm_model", "gpt-4o-mini")
+                        tts_provider = actual_tts_provider or tier_cfg.get("tts_provider", "deepgram")
+                        stt_provider = actual_stt_provider or tier_cfg.get("stt_provider", "deepgram")
+                        llm_model = actual_llm_model or tier_cfg.get("llm_model", "gpt-4o-mini")
                         active_plan = sub.plan
 
-                usage_info = batch_usage_map.get(row.dograh_run_id)
                 cost_breakdown = _estimate_call_cost_inr(
-                    row.duration_seconds, usage_info, tts_provider, stt_provider, llm_model, effective_overrides
+                    duration_seconds=row.duration_seconds,
+                    usage_info=usage_info,
+                    tts_provider=tts_provider,
+                    stt_provider=stt_provider,
+                    llm_model=llm_model,
+                    overrides=effective_overrides,
+                    stt_model=actual_stt_model,
+                    tts_model=actual_tts_model,
+                    runtime_configuration=runtime_config,
                 )
                 revenue_inr = row.cost_to_customer_paise / 100.0
 
@@ -2179,7 +2234,7 @@ async def get_profitability(
                         seen_stt = set()
                         for s_it in stt_items:
                             p_name = s_it.get("provider") or stt_provider
-                            m_name = s_it.get("model") or "nova-3"
+                            m_name = s_it.get("model") or actual_stt_model or stt_provider
                             sec = float(s_it.get("seconds") or 0.0)
                             c_inr = float(s_it.get("cost_inr") or 0.0)
                             bucket["stt_vendors"][p_name] += c_inr
@@ -2193,7 +2248,7 @@ async def get_profitability(
                             m_entry["cost_inr"] += c_inr
                     else:
                         p_name = cost_breakdown.get("stt_vendor") or stt_provider
-                        m_name = cost_breakdown.get("stt_model") or "nova-3"
+                        m_name = cost_breakdown.get("stt_model") or actual_stt_model or stt_provider
                         c_inr = cost_breakdown["stt_inr"]
                         bucket["stt_vendors"][p_name] += c_inr
                         m_key = (p_name, m_name)
@@ -2207,7 +2262,7 @@ async def get_profitability(
                         seen_tts = set()
                         for t_it in tts_items:
                             p_name = t_it.get("provider") or tts_provider
-                            m_name = t_it.get("model") or "lightning"
+                            m_name = t_it.get("model") or actual_tts_model or tts_provider
                             chars = int(t_it.get("characters") or 0)
                             c_inr = float(t_it.get("cost_inr") or 0.0)
                             bucket["tts_vendors"][p_name] += c_inr
@@ -2221,7 +2276,7 @@ async def get_profitability(
                             m_entry["cost_inr"] += c_inr
                     else:
                         p_name = cost_breakdown.get("tts_vendor") or tts_provider
-                        m_name = cost_breakdown.get("tts_model") or "lightning"
+                        m_name = cost_breakdown.get("tts_model") or actual_tts_model or tts_provider
                         c_inr = cost_breakdown["tts_inr"]
                         bucket["tts_vendors"][p_name] += c_inr
                         m_key = (p_name, m_name)
@@ -2235,7 +2290,7 @@ async def get_profitability(
                         seen_llm = set()
                         for l_it in llm_items:
                             p_name = l_it.get("provider") or "openai"
-                            m_name = l_it.get("model") or "gpt-4o-mini"
+                            m_name = l_it.get("model") or actual_llm_model or llm_model
                             p_tok = int(l_it.get("prompt_tokens") or 0)
                             c_tok = int(l_it.get("completion_tokens") or 0)
                             cache_tok = int(l_it.get("cached_tokens") or 0)
@@ -2253,7 +2308,7 @@ async def get_profitability(
                             m_entry["cost_inr"] += c_inr
                     else:
                         p_name = cost_breakdown.get("llm_vendor") or "openai"
-                        m_name = cost_breakdown.get("llm_model") or "gpt-4o-mini"
+                        m_name = cost_breakdown.get("llm_model") or actual_llm_model or llm_model
                         c_inr = cost_breakdown["llm_inr"]
                         bucket["llm_vendors"][p_name] += c_inr
                         m_key = (p_name, m_name)
@@ -2269,7 +2324,7 @@ async def get_profitability(
                         seen_pc = set()
                         for p_it in post_call_items:
                             p_name = p_it.get("provider") or "openai"
-                            m_name = p_it.get("model") or "gpt-4o-mini"
+                            m_name = p_it.get("model") or "gpt-4.1-mini"
                             p_tok = int(p_it.get("prompt_tokens") or 0)
                             c_tok = int(p_it.get("completion_tokens") or 0)
                             cache_tok = int(p_it.get("cached_tokens") or 0)
@@ -2289,7 +2344,7 @@ async def get_profitability(
                 total_revenue_inr += revenue_inr
                 total_cost_inr += run_cost_inr
 
-            batch_usage_map.clear()
+            batch_run_data_map.clear()
     finally:
         if ddb_session_ctx:
             try:

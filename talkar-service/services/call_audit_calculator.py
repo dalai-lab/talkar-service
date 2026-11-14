@@ -52,6 +52,24 @@ VENDOR_PRICING_REGISTRY: Dict[str, Any] = {
         }
     },
     "stt": {
+        "deepgram_flux": {
+            "provider": "deepgram",
+            "model": "flux-general-multi",
+            "rate": 0.0048,
+            "currency": "USD",
+            "unit": "min",
+            "description": "Deepgram Flux streaming conversational STT",
+            "aliases": [
+                "flux",
+                "deepgram_flux",
+                "flux-general-multi",
+                "flux-general-en",
+                "flux-general",
+                "flux_general_multi",
+                "flux_general_en",
+                "dograh_flux",
+            ],
+        },
         "deepgram_nova_3": {
             "provider": "deepgram",
             "model": "nova-3",
@@ -59,7 +77,7 @@ VENDOR_PRICING_REGISTRY: Dict[str, Any] = {
             "currency": "USD",
             "unit": "min",
             "description": "Deepgram Nova-3 promotional streaming PAYG",
-            "aliases": ["nova-3", "nova_3", "deepgram_nova_3", "nova3", "deepgram"],
+            "aliases": ["nova-3", "nova_3", "deepgram_nova_3", "nova3", "nova-3-general", "nova-3-medical", "deepgram"],
         },
         "deepgram_nova_2": {
             "provider": "deepgram",
@@ -68,7 +86,7 @@ VENDOR_PRICING_REGISTRY: Dict[str, Any] = {
             "currency": "USD",
             "unit": "min",
             "description": "Deepgram Nova-2 streaming standard tier",
-            "aliases": ["nova-2", "nova_2", "deepgram_nova_2", "nova2"],
+            "aliases": ["nova-2", "nova_2", "deepgram_nova_2", "nova2", "nova-2-general", "nova-2-medical"],
         },
         "sarvam_saaras": {
             "provider": "sarvam",
@@ -808,6 +826,8 @@ def resolve_stt_pricing(name_or_provider: Optional[str]) -> Tuple[Dict[str, Any]
         return VENDOR_PRICING_REGISTRY["stt"]["speechmatics"], False
     if "pulse" in check_str:
         return VENDOR_PRICING_REGISTRY["stt"]["smallest_ai_pulse"], True
+    if "flux" in check_str:
+        return VENDOR_PRICING_REGISTRY["stt"]["deepgram_flux"], False
     if "nova-2" in check_str or "nova_2" in check_str:
         return VENDOR_PRICING_REGISTRY["stt"]["deepgram_nova_2"], True
     if re.search(r"nova.*", check_str) or "deepgram" in check_str:
@@ -1158,7 +1178,8 @@ def calculate_call_unit_economics(
             curr = cfg.get("currency", "USD")
             rate_inr = rate * exchange_rate if curr == "USD" else rate
             item_cost = (audio_sec / 60.0) * rate_inr
-            display_model = rc.get("stt_model") if (cfg["provider"] == rc.get("stt_provider") and rc.get("stt_model")) else cfg["model"]
+            model_candidate = rc.get("stt_model") or _get_val(call_log, "stt_model")
+            display_model = model_candidate if (model_candidate and (not rc.get("stt_provider") or cfg["provider"] == rc.get("stt_provider") or cfg["provider"] == _get_val(call_log, "stt_provider"))) else cfg["model"]
             stt_items.append({
                 "key": stt_key,
                 "provider": cfg["provider"],
@@ -1186,7 +1207,8 @@ def calculate_call_unit_economics(
         curr = cfg.get("currency", "USD")
         rate_inr = rate * exchange_rate if curr == "USD" else rate
         item_cost = (stt_total_seconds / 60.0) * rate_inr
-        display_model = rc.get("stt_model") if (cfg["provider"] == rc.get("stt_provider") and rc.get("stt_model")) else cfg["model"]
+        model_candidate = rc.get("stt_model") or _get_val(call_log, "stt_model")
+        display_model = model_candidate if (model_candidate and (not rc.get("stt_provider") or cfg["provider"] == rc.get("stt_provider") or cfg["provider"] == _get_val(call_log, "stt_provider"))) else cfg["model"]
         stt_items.append({
             "key": chosen_key or cfg["model"],
             "provider": cfg["provider"],
@@ -1199,8 +1221,8 @@ def calculate_call_unit_economics(
 
     cost_stt = sum(item["cost_inr"] for item in stt_items)
     primary_stt = stt_items[0] if stt_items else {
-        "provider": "deepgram",
-        "model": "nova-3",
+        "provider": configured_stt or "deepgram",
+        "model": rc.get("stt_model") or _get_val(call_log, "stt_model") or "flux-general-multi",
         "rate": 0.0048,
         "currency": "USD",
     }
@@ -1249,7 +1271,8 @@ def calculate_call_unit_economics(
             curr = cfg.get("currency", "USD")
             rate_inr_1k = rate_1k * exchange_rate if curr == "USD" else rate_1k
             item_cost = (chars / 1000.0) * rate_inr_1k
-            display_model = rc.get("tts_model") if (cfg["provider"] == rc.get("tts_provider") and rc.get("tts_model")) else cfg["model"]
+            model_candidate = rc.get("tts_model") or _get_val(call_log, "tts_model")
+            display_model = model_candidate if (model_candidate and (not rc.get("tts_provider") or cfg["provider"] == rc.get("tts_provider") or cfg["provider"] == _get_val(call_log, "tts_provider"))) else cfg["model"]
 
             tts_items.append({
                 "key": tts_key,
@@ -1272,7 +1295,8 @@ def calculate_call_unit_economics(
 
         rate_1k = float(override_tts_rate if override_tts_rate is not None else cfg["rate_per_1k_chars"])
         curr = cfg.get("currency", "USD")
-        display_model = rc.get("tts_model") if (cfg["provider"] == rc.get("tts_provider") and rc.get("tts_model")) else cfg["model"]
+        model_candidate = rc.get("tts_model") or _get_val(call_log, "tts_model")
+        display_model = model_candidate if (model_candidate and (not rc.get("tts_provider") or cfg["provider"] == rc.get("tts_provider") or cfg["provider"] == _get_val(call_log, "tts_provider"))) else cfg["model"]
         tts_items.append({
             "key": chosen_key or cfg["model"],
             "provider": cfg["provider"],
@@ -1285,8 +1309,8 @@ def calculate_call_unit_economics(
 
     cost_tts = sum(item["cost_inr"] for item in tts_items)
     primary_tts = tts_items[0] if tts_items else {
-        "provider": "smallest_ai",
-        "model": "lightning-v3.1",
+        "provider": configured_tts or "smallest_ai",
+        "model": rc.get("tts_model") or _get_val(call_log, "tts_model") or "lightning-v3.1",
         "rate_per_1k": 0.0175,
         "currency": "USD",
     }
@@ -1423,10 +1447,12 @@ def calculate_call_unit_economics(
         item_cost_inr = item_cost_native * exchange_rate if curr == "USD" else item_cost_native
 
         display_model = cfg["model"]
-        if is_extraction and rc.get("extraction_llm_model"):
-            display_model = rc.get("extraction_llm_model")
-        elif not is_extraction and not is_qa and not is_pci and not is_compaction and rc.get("llm_model"):
-            display_model = rc.get("llm_model")
+        if is_extraction:
+            if rc.get("extraction_llm_model") and (not rc.get("extraction_llm_provider") or cfg["provider"] == rc.get("extraction_llm_provider")):
+                display_model = rc.get("extraction_llm_model")
+        elif not is_extraction and not is_qa and not is_pci and not is_compaction:
+            if rc.get("llm_model") and (not rc.get("llm_provider") or cfg["provider"] == rc.get("llm_provider")):
+                display_model = rc.get("llm_model")
 
         item_entry = {
             "key": model_key,
@@ -1644,20 +1670,28 @@ def estimate_call_cost_inr(
     stt_provider: str = "deepgram",
     llm_model: str = "gpt-4o-mini",
     overrides: Optional[Dict[str, Any]] = None,
+    stt_model: Optional[str] = None,
+    tts_model: Optional[str] = None,
+    runtime_configuration: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Backwards-compatible drop-in replacement for the router's _estimate_call_cost_inr.
     """
+    rc = runtime_configuration or {}
     call_log_mock = {
         "duration_seconds": duration_seconds,
         "cost_to_customer_paise": 0,
         "call_status": "completed",
         "tts_provider": tts_provider,
+        "tts_model": tts_model or rc.get("tts_model"),
         "stt_provider": stt_provider,
-        "llm_model": llm_model,
+        "stt_model": stt_model or rc.get("stt_model"),
+        "llm_model": llm_model or rc.get("llm_model"),
+        "runtime_configuration": rc,
     }
     workflow_run_mock = {
         "usage_info": usage_info or {},
+        "runtime_configuration": rc,
     }
     merged_overrides = dict(overrides or {})
 
@@ -1685,11 +1719,11 @@ def estimate_call_cost_inr(
         "cost_breakdown": cb,
         "post_call_breakdown": post_cb,
         "stt_vendor": cb.get("stt", {}).get("provider", stt_provider),
-        "stt_model": cb.get("stt", {}).get("model", "nova-3"),
+        "stt_model": cb.get("stt", {}).get("model") or stt_model or stt_provider,
         "tts_vendor": cb.get("tts", {}).get("provider", tts_provider),
-        "tts_model": cb.get("tts", {}).get("model", "lightning"),
+        "tts_model": cb.get("tts", {}).get("model") or tts_model or tts_provider,
         "llm_vendor": cb.get("llm_conversation", {}).get("provider", "openai"),
-        "llm_model": cb.get("llm_conversation", {}).get("model", llm_model),
+        "llm_model": cb.get("llm_conversation", {}).get("model") or llm_model,
     }
 
 
