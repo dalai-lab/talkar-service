@@ -201,3 +201,125 @@ async def test_profitability_mixed_model_vendor_aggregation():
     assert bdown["llm_vendors"]["openai"] > 0
     assert bdown["llm_vendors"]["anthropic"] > 0
 
+    # Models Used Inventory verification
+    assert "models_used" in cust
+    mu = cust["models_used"]
+    stt_models = {m["model"] for m in mu["stt"]}
+    assert "nova-3" in stt_models
+    assert "saaras-v3" in stt_models
+
+    tts_models = {m["model"] for m in mu["tts"]}
+    assert "lightning-v3.1" in tts_models
+    assert "sonic" in tts_models or "sonic-3.5" in tts_models
+
+    llm_models = {m["model"] for m in mu["llm"]}
+    assert "gpt-4o-mini" in llm_models
+    assert "claude-3-5-sonnet" in llm_models
+
+    # Calls without Post-Call or QA must have empty post_call list and 0 cost
+    assert mu.get("post_call") == []
+    assert bdown.get("post_call_inr", 0.0) == 0.0
+    assert bdown.get("post_call_vendors", {}) == {}
+
+
+@pytest.mark.asyncio
+async def test_profitability_post_call_intelligence_and_compaction_aggregation():
+    """
+    Verifies that when a call uses Post-Call Intelligence (PCI), QA Analysis,
+    or Context Compaction, the profitability dashboard:
+    1. Aggregates post_call_inr and post_call_vendors.
+    2. Items appear in models_used['post_call'].
+    3. In-call compaction tokens are properly accounted for in models_used['llm'].
+    """
+    mock_db = MagicMock()
+    mock_ddb = MagicMock()
+
+    call1 = MagicMock(
+        customer_id=15,
+        dograh_run_id=201,
+        duration_seconds=120,
+        cost_to_customer_paise=1500,
+        plan="growth",
+        tts_provider="smallest_ai",
+        stt_provider="deepgram",
+    )
+
+    mock_db.execute = AsyncMock()
+
+    def mock_db_side_effect(query):
+        res = MagicMock()
+        q_str = str(query).lower()
+        if "from call_logs" in q_str or "call_logs" in q_str:
+            res.all.return_value = [call1]
+            res.scalars.return_value.all.return_value = [call1]
+        elif "from subscriptions" in q_str:
+            sub = MagicMock(customer_id=15, plan="growth")
+            res.scalars.return_value.all.return_value = [sub]
+        elif "from global_platform_settings" in q_str:
+            res.scalar_one_or_none.return_value = None
+        elif "from customers" in q_str:
+            cust = MagicMock(id=15, company_name="PCI Intelligence Labs", contact_email="admin@pci.com", status="active", is_test_account=False, report_settings={})
+            res.scalars.return_value.all.return_value = [cust]
+        elif "from wallet_transactions" in q_str or "wallet_transactions" in q_str:
+            res.scalar.return_value = 0
+        else:
+            res.scalars.return_value.all.return_value = []
+            res.all.return_value = []
+            res.scalar.return_value = 0
+        return res
+
+    mock_db.execute.side_effect = mock_db_side_effect
+
+    # Call with In-Call Compaction, PCI, and QA Analysis
+    usage_info_201 = {
+        "stt": {"deepgram_nova_3": 120.0},
+        "tts": {"smallest_ai_lightning": 800},
+        "llm": {
+            "OpenAILLMService#0|||gpt-4o-mini": {"prompt_tokens": 1500, "completion_tokens": 150},
+            "context_compaction:compaction|||gpt-4o-mini": {"prompt_tokens": 500, "completion_tokens": 80},
+            "PostCallIntelligence|||gpt-4.1-mini": {"prompt_tokens": 2000, "completion_tokens": 300},
+            "QAAnalysis|||gemini-1.5-flash": {"prompt_tokens": 1200, "completion_tokens": 200},
+        },
+    }
+
+    mock_ddb.execute = AsyncMock()
+    run_row_201 = MagicMock(id=201, usage_info=usage_info_201)
+
+    def mock_ddb_side_effect(query, params=None):
+        res = MagicMock()
+        res.all.return_value = [run_row_201]
+        return res
+
+    mock_ddb.execute.side_effect = mock_ddb_side_effect
+
+    with patch("services.dograh_client.DograhSessionLocal") as mock_dograh_session_cls:
+        session_ctx = MagicMock()
+        session_ctx.__aenter__ = AsyncMock(return_value=mock_ddb)
+        session_ctx.__aexit__ = AsyncMock(return_value=None)
+        mock_dograh_session_cls.return_value = session_ctx
+
+        res = await get_profitability(period="month", db=mock_db, current_admin=MagicMock())
+
+    assert len(res["customers"]) == 1
+    cust = res["customers"][0]
+    bdown = cust["breakdown"]
+
+    # Post-call cost must be > 0
+    assert bdown["post_call_inr"] > 0
+    assert "openai" in bdown["post_call_vendors"]
+    assert "google" in bdown["post_call_vendors"] or "gemini" in bdown["post_call_vendors"]
+
+    # Models used inventory must list PCI & QA models under post_call
+    mu = cust["models_used"]
+    assert "post_call" in mu
+    assert len(mu["post_call"]) == 2
+    pc_models = {m["model"] for m in mu["post_call"]}
+    assert "gpt-4.1-mini" in pc_models
+    assert "gemini-1.5-flash" in pc_models
+
+    # Compaction + conversational tokens aggregated in in-call LLM
+    llm_models = {m["model"] for m in mu["llm"]}
+    assert "gpt-4o-mini" in llm_models
+
+
+

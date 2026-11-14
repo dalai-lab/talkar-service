@@ -1663,12 +1663,19 @@ def estimate_call_cost_inr(
 
     res = calculate_call_unit_economics(call_log_mock, workflow_run_mock, merged_overrides)
     cb = res.get("cost_breakdown", {})
+    post_cb = res.get("post_call_breakdown", {})
+    post_call_inr = round(res.get("post_call_cost_inr", 0.0), 4)
+    total_operational_cost_inr = round(res["total_cost_inr"], 4)
+    total_all_in_cost_inr = round(res.get("total_all_in_cost_inr", total_operational_cost_inr + post_call_inr), 4)
     return {
         "plivo_inr": round(res["plivo_inr"], 4),
         "stt_inr": round(res["stt_inr"], 4),
         "tts_inr": round(res["tts_inr"], 4),
         "llm_inr": round(res["llm_inr"], 4),
-        "total_cost_inr": round(res["total_cost_inr"], 4),
+        "post_call_inr": post_call_inr,
+        "total_cost_inr": total_all_in_cost_inr,
+        "total_operational_cost_inr": total_operational_cost_inr,
+        "total_all_in_cost_inr": total_all_in_cost_inr,
         "tts_chars": res["tts_chars"],
         "stt_seconds": round(res["stt_seconds"], 1),
         "llm_prompt_tokens": res["llm_prompt_tokens"],
@@ -1676,6 +1683,7 @@ def estimate_call_cost_inr(
         "llm_cached_tokens": res["llm_cached_tokens"],
         "notices": res["notices"],
         "cost_breakdown": cb,
+        "post_call_breakdown": post_cb,
         "stt_vendor": cb.get("stt", {}).get("provider", stt_provider),
         "stt_model": cb.get("stt", {}).get("model", "nova-3"),
         "tts_vendor": cb.get("tts", {}).get("provider", tts_provider),

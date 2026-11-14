@@ -1991,10 +1991,70 @@ async def get_profitability(
         return {
             "calls": 0, "total_minutes": 0.0, "revenue_inr": 0.0,
             "cost_inr": 0.0, "plivo_inr": 0.0, "stt_inr": 0.0,
-            "tts_inr": 0.0, "llm_inr": 0.0,
+            "tts_inr": 0.0, "llm_inr": 0.0, "post_call_inr": 0.0,
             "stt_vendors": defaultdict(float),
             "tts_vendors": defaultdict(float),
             "llm_vendors": defaultdict(float),
+            "post_call_vendors": defaultdict(float),
+            "stt_models": defaultdict(lambda: {"calls": 0, "seconds": 0.0, "cost_inr": 0.0}),
+            "tts_models": defaultdict(lambda: {"calls": 0, "characters": 0, "cost_inr": 0.0}),
+            "llm_models": defaultdict(lambda: {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "cost_inr": 0.0}),
+            "post_call_models": defaultdict(lambda: {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "cost_inr": 0.0}),
+        }
+
+    def _format_model_inventory(bucket_data: dict) -> dict:
+        stt_list = [
+            {
+                "provider": k[0],
+                "model": k[1],
+                "calls": v["calls"],
+                "minutes": round(v["seconds"] / 60.0, 1),
+                "cost_inr": round(v["cost_inr"], 2),
+            }
+            for k, v in sorted(bucket_data["stt_models"].items(), key=lambda x: -x[1]["cost_inr"])
+        ]
+        tts_list = [
+            {
+                "provider": k[0],
+                "model": k[1],
+                "calls": v["calls"],
+                "characters": v["characters"],
+                "cost_inr": round(v["cost_inr"], 2),
+            }
+            for k, v in sorted(bucket_data["tts_models"].items(), key=lambda x: -x[1]["cost_inr"])
+        ]
+        llm_list = [
+            {
+                "provider": k[0],
+                "model": k[1],
+                "calls": v["calls"],
+                "tokens": v["prompt_tokens"] + v["completion_tokens"],
+                "prompt_tokens": v["prompt_tokens"],
+                "completion_tokens": v["completion_tokens"],
+                "cached_tokens": v["cached_tokens"],
+                "cost_inr": round(v["cost_inr"], 2),
+            }
+            for k, v in sorted(bucket_data["llm_models"].items(), key=lambda x: -x[1]["cost_inr"])
+        ]
+        pc_list = [
+            {
+                "provider": k[0],
+                "model": k[1],
+                "calls": v["calls"],
+                "tokens": v["prompt_tokens"] + v["completion_tokens"],
+                "prompt_tokens": v["prompt_tokens"],
+                "completion_tokens": v["completion_tokens"],
+                "cached_tokens": v["cached_tokens"],
+                "cost_inr": round(v["cost_inr"], 2),
+            }
+            for k, v in sorted(bucket_data.get("post_call_models", {}).items(), key=lambda x: -x[1]["cost_inr"])
+            if v["cost_inr"] > 0 or v["calls"] > 0
+        ]
+        return {
+            "stt": stt_list,
+            "tts": tts_list,
+            "llm": llm_list,
+            "post_call": pc_list,
         }
 
     # keyed by customer_id → totals
@@ -2095,46 +2155,139 @@ async def get_profitability(
                     + llm_cb.get("llm_extraction", {}).get("items", [])
                     + llm_cb.get("llm_compaction", {}).get("items", [])
                 )
+                post_cb = cost_breakdown.get("post_call_breakdown", {})
+                post_call_items = (
+                    post_cb.get("llm_qa_analysis", {}).get("items", [])
+                    + post_cb.get("llm_pci", {}).get("items", [])
+                )
+                post_call_inr = float(cost_breakdown.get("post_call_inr", 0.0))
+                run_cost_inr = float(cost_breakdown.get("total_all_in_cost_inr") or (cost_breakdown["total_cost_inr"] + post_call_inr))
 
                 for bucket in [per_customer[cid], per_plan[plan_key]]:
                     bucket["calls"] += 1
                     bucket["total_minutes"] += row.duration_seconds / 60.0
                     bucket["revenue_inr"] += revenue_inr
-                    bucket["cost_inr"] += cost_breakdown["total_cost_inr"]
+                    bucket["cost_inr"] += run_cost_inr
                     bucket["plivo_inr"] += cost_breakdown["plivo_inr"]
                     bucket["stt_inr"] += cost_breakdown["stt_inr"]
                     bucket["tts_inr"] += cost_breakdown["tts_inr"]
                     bucket["llm_inr"] += cost_breakdown["llm_inr"]
+                    bucket["post_call_inr"] += post_call_inr
 
-                    # 1. Accumulate STT vendors
+                    # 1. Accumulate STT vendors & models
                     if stt_items:
+                        seen_stt = set()
                         for s_it in stt_items:
                             p_name = s_it.get("provider") or stt_provider
-                            bucket["stt_vendors"][p_name] += s_it.get("cost_inr", 0.0)
+                            m_name = s_it.get("model") or "nova-3"
+                            sec = float(s_it.get("seconds") or 0.0)
+                            c_inr = float(s_it.get("cost_inr") or 0.0)
+                            bucket["stt_vendors"][p_name] += c_inr
+
+                            m_key = (p_name, m_name)
+                            m_entry = bucket["stt_models"][m_key]
+                            if m_key not in seen_stt:
+                                m_entry["calls"] += 1
+                                seen_stt.add(m_key)
+                            m_entry["seconds"] += sec
+                            m_entry["cost_inr"] += c_inr
                     else:
                         p_name = cost_breakdown.get("stt_vendor") or stt_provider
-                        bucket["stt_vendors"][p_name] += cost_breakdown["stt_inr"]
+                        m_name = cost_breakdown.get("stt_model") or "nova-3"
+                        c_inr = cost_breakdown["stt_inr"]
+                        bucket["stt_vendors"][p_name] += c_inr
+                        m_key = (p_name, m_name)
+                        m_entry = bucket["stt_models"][m_key]
+                        m_entry["calls"] += 1
+                        m_entry["seconds"] += row.duration_seconds
+                        m_entry["cost_inr"] += c_inr
 
-                    # 2. Accumulate TTS vendors
+                    # 2. Accumulate TTS vendors & models
                     if tts_items:
+                        seen_tts = set()
                         for t_it in tts_items:
                             p_name = t_it.get("provider") or tts_provider
-                            bucket["tts_vendors"][p_name] += t_it.get("cost_inr", 0.0)
+                            m_name = t_it.get("model") or "lightning"
+                            chars = int(t_it.get("characters") or 0)
+                            c_inr = float(t_it.get("cost_inr") or 0.0)
+                            bucket["tts_vendors"][p_name] += c_inr
+
+                            m_key = (p_name, m_name)
+                            m_entry = bucket["tts_models"][m_key]
+                            if m_key not in seen_tts:
+                                m_entry["calls"] += 1
+                                seen_tts.add(m_key)
+                            m_entry["characters"] += chars
+                            m_entry["cost_inr"] += c_inr
                     else:
                         p_name = cost_breakdown.get("tts_vendor") or tts_provider
-                        bucket["tts_vendors"][p_name] += cost_breakdown["tts_inr"]
+                        m_name = cost_breakdown.get("tts_model") or "lightning"
+                        c_inr = cost_breakdown["tts_inr"]
+                        bucket["tts_vendors"][p_name] += c_inr
+                        m_key = (p_name, m_name)
+                        m_entry = bucket["tts_models"][m_key]
+                        m_entry["calls"] += 1
+                        m_entry["characters"] += int(cost_breakdown.get("tts_chars") or 0)
+                        m_entry["cost_inr"] += c_inr
 
-                    # 3. Accumulate LLM vendors
+                    # 3. Accumulate LLM vendors & models
                     if llm_items:
+                        seen_llm = set()
                         for l_it in llm_items:
                             p_name = l_it.get("provider") or "openai"
-                            bucket["llm_vendors"][p_name] += l_it.get("cost_inr", 0.0)
+                            m_name = l_it.get("model") or "gpt-4o-mini"
+                            p_tok = int(l_it.get("prompt_tokens") or 0)
+                            c_tok = int(l_it.get("completion_tokens") or 0)
+                            cache_tok = int(l_it.get("cached_tokens") or 0)
+                            c_inr = float(l_it.get("cost_inr") or 0.0)
+                            bucket["llm_vendors"][p_name] += c_inr
+
+                            m_key = (p_name, m_name)
+                            m_entry = bucket["llm_models"][m_key]
+                            if m_key not in seen_llm:
+                                m_entry["calls"] += 1
+                                seen_llm.add(m_key)
+                            m_entry["prompt_tokens"] += p_tok
+                            m_entry["completion_tokens"] += c_tok
+                            m_entry["cached_tokens"] += cache_tok
+                            m_entry["cost_inr"] += c_inr
                     else:
                         p_name = cost_breakdown.get("llm_vendor") or "openai"
-                        bucket["llm_vendors"][p_name] += cost_breakdown["llm_inr"]
+                        m_name = cost_breakdown.get("llm_model") or "gpt-4o-mini"
+                        c_inr = cost_breakdown["llm_inr"]
+                        bucket["llm_vendors"][p_name] += c_inr
+                        m_key = (p_name, m_name)
+                        m_entry = bucket["llm_models"][m_key]
+                        m_entry["calls"] += 1
+                        m_entry["prompt_tokens"] += int(cost_breakdown.get("llm_prompt_tokens") or 0)
+                        m_entry["completion_tokens"] += int(cost_breakdown.get("llm_completion_tokens") or 0)
+                        m_entry["cached_tokens"] += int(cost_breakdown.get("llm_cached_tokens") or 0)
+                        m_entry["cost_inr"] += c_inr
+
+                    # 4. Accumulate Post-Call Intelligence & QA models if present
+                    if post_call_items:
+                        seen_pc = set()
+                        for p_it in post_call_items:
+                            p_name = p_it.get("provider") or "openai"
+                            m_name = p_it.get("model") or "gpt-4o-mini"
+                            p_tok = int(p_it.get("prompt_tokens") or 0)
+                            c_tok = int(p_it.get("completion_tokens") or 0)
+                            cache_tok = int(p_it.get("cached_tokens") or 0)
+                            c_inr = float(p_it.get("cost_inr") or 0.0)
+                            bucket["post_call_vendors"][p_name] += c_inr
+
+                            m_key = (p_name, m_name)
+                            m_entry = bucket["post_call_models"][m_key]
+                            if m_key not in seen_pc:
+                                m_entry["calls"] += 1
+                                seen_pc.add(m_key)
+                            m_entry["prompt_tokens"] += p_tok
+                            m_entry["completion_tokens"] += c_tok
+                            m_entry["cached_tokens"] += cache_tok
+                            m_entry["cost_inr"] += c_inr
 
                 total_revenue_inr += revenue_inr
-                total_cost_inr += cost_breakdown["total_cost_inr"]
+                total_cost_inr += run_cost_inr
 
             batch_usage_map.clear()
     finally:
@@ -2183,10 +2336,13 @@ async def get_profitability(
                     "stt_inr": round(pdata["stt_inr"], 2),
                     "tts_inr": round(pdata["tts_inr"], 2),
                     "llm_inr": round(pdata["llm_inr"], 2),
+                    "post_call_inr": round(pdata.get("post_call_inr", 0.0), 2),
                     "stt_vendors": {k: round(v, 2) for k, v in pdata["stt_vendors"].items()},
                     "tts_vendors": {k: round(v, 2) for k, v in pdata["tts_vendors"].items()},
                     "llm_vendors": {k: round(v, 2) for k, v in pdata["llm_vendors"].items()},
+                    "post_call_vendors": {k: round(v, 2) for k, v in pdata.get("post_call_vendors", {}).items() if v > 0},
                 },
+                "models_used": _format_model_inventory(pdata),
             }
             for pk, pdata in per_plan.items() if pk[0] == cid
         ]
@@ -2209,10 +2365,13 @@ async def get_profitability(
                 "stt_inr": round(data["stt_inr"], 2),
                 "tts_inr": round(data["tts_inr"], 2),
                 "llm_inr": round(data["llm_inr"], 2),
+                "post_call_inr": round(data.get("post_call_inr", 0.0), 2),
                 "stt_vendors": {k: round(v, 2) for k, v in data["stt_vendors"].items()},
                 "tts_vendors": {k: round(v, 2) for k, v in data["tts_vendors"].items()},
                 "llm_vendors": {k: round(v, 2) for k, v in data["llm_vendors"].items()},
+                "post_call_vendors": {k: round(v, 2) for k, v in data.get("post_call_vendors", {}).items() if v > 0},
             },
+            "models_used": _format_model_inventory(data),
             "plan_breakdown": plan_buckets,
         })
 

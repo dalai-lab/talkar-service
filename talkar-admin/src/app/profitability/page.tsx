@@ -17,6 +17,26 @@ import {
   X,
 } from "lucide-react";
 
+interface ModelUsageItem {
+  provider: string;
+  model: string;
+  calls: number;
+  minutes?: number;
+  characters?: number;
+  tokens?: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  cached_tokens?: number;
+  cost_inr: number;
+}
+
+interface ModelsUsedInventory {
+  stt?: ModelUsageItem[];
+  tts?: ModelUsageItem[];
+  llm?: ModelUsageItem[];
+  post_call?: ModelUsageItem[];
+}
+
 interface PlanBucket {
   plan: string;
   tts_provider: string;
@@ -31,10 +51,13 @@ interface PlanBucket {
     stt_inr: number;
     tts_inr: number;
     llm_inr: number;
+    post_call_inr?: number;
     stt_vendors?: Record<string, number>;
     tts_vendors?: Record<string, number>;
     llm_vendors?: Record<string, number>;
+    post_call_vendors?: Record<string, number>;
   };
+  models_used?: ModelsUsedInventory;
 }
 
 interface CustomerRow {
@@ -54,10 +77,13 @@ interface CustomerRow {
     stt_inr: number;
     tts_inr: number;
     llm_inr: number;
+    post_call_inr?: number;
     stt_vendors?: Record<string, number>;
     tts_vendors?: Record<string, number>;
     llm_vendors?: Record<string, number>;
+    post_call_vendors?: Record<string, number>;
   };
+  models_used?: ModelsUsedInventory;
   plan_breakdown: PlanBucket[];
 }
 
@@ -90,12 +116,12 @@ function formatVendorName(name: string): string {
 }
 
 function getVendorBadge(
-  type: "stt" | "tts" | "llm",
+  type: "stt" | "tts" | "llm" | "post_call",
   vendors?: Record<string, number>,
   fallbackProvider?: string
 ): { label: string; tooltip?: string; isMixed: boolean } {
-  const icon = type === "stt" ? "🎤 STT" : type === "tts" ? "🔊 TTS" : "🤖 LLM";
-  const vendorEntries = vendors ? Object.entries(vendors).filter(([_, cost]) => cost >= 0) : [];
+  const icon = type === "stt" ? "🎤 STT" : type === "tts" ? "🔊 TTS" : type === "post_call" ? "🧠 Post-Call" : "🤖 LLM";
+  const vendorEntries = vendors ? Object.entries(vendors).filter(([_, cost]) => cost > 0) : [];
 
   if (vendorEntries.length === 0) {
     const fallback = fallbackProvider
@@ -165,6 +191,9 @@ function CostBar({ breakdown, total }: { breakdown: CustomerRow["breakdown"]; to
     { label: "TTS", value: breakdown.tts_inr, color: "bg-amber-500" },
     { label: "LLM", value: breakdown.llm_inr, color: "bg-emerald-500" },
   ];
+  if (breakdown.post_call_inr && breakdown.post_call_inr > 0) {
+    segments.push({ label: "Post-Call", value: breakdown.post_call_inr, color: "bg-indigo-500" });
+  }
   return (
     <div className="flex gap-2 items-center">
       <div className="flex h-2 flex-1 rounded-full overflow-hidden gap-0.5 bg-slate-100">
@@ -185,7 +214,162 @@ function CostBar({ breakdown, total }: { breakdown: CustomerRow["breakdown"]; to
           </span>
         ))}
       </div>
+    </div>
+  );
+}
 
+const formatTokens = (tok?: number) => {
+  if (!tok) return "0 tok";
+  if (tok >= 1000000) return `${(tok / 1000000).toFixed(1)}M tok`;
+  if (tok >= 1000) return `${(tok / 1000).toFixed(1)}k tok`;
+  return `${tok} tok`;
+};
+
+const formatChars = (chars?: number) => {
+  if (!chars) return "0 chars";
+  if (chars >= 1000000) return `${(chars / 1000000).toFixed(2)}M chars`;
+  if (chars >= 1000) return `${(chars / 1000).toFixed(1)}k chars`;
+  return `${chars} chars`;
+};
+
+const formatMinutes = (min?: number) => {
+  if (min === undefined || min === null) return "0.0m";
+  return `${min.toFixed(1)}m`;
+};
+
+function ModelsInventorySection({ models }: { models?: ModelsUsedInventory }) {
+  if (!models) return null;
+  const hasStt = models.stt && models.stt.length > 0;
+  const hasTts = models.tts && models.tts.length > 0;
+  const hasLlm = models.llm && models.llm.length > 0;
+  const hasPostCall = models.post_call && models.post_call.length > 0;
+  if (!hasStt && !hasTts && !hasLlm && !hasPostCall) return null;
+
+  const totalCols = [hasLlm, hasPostCall, hasTts, hasStt].filter(Boolean).length;
+  const gridColsClass =
+    totalCols >= 4
+      ? "grid-cols-1 sm:grid-cols-2 lg:grid-cols-4"
+      : totalCols === 3
+      ? "grid-cols-1 md:grid-cols-3"
+      : totalCols === 2
+      ? "grid-cols-1 sm:grid-cols-2"
+      : "grid-cols-1";
+
+  return (
+    <div className="mt-3 pt-3 border-t border-slate-200/80">
+      <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-2">
+        <span>⚡ Models & Engines Inventory</span>
+        <span className="text-[10px] font-normal text-slate-400 capitalize">(Live Telemetry Breakdown)</span>
+      </div>
+      <div className={`grid ${gridColsClass} gap-2.5`}>
+        {/* LLM Models */}
+        {hasLlm && (
+          <div className="bg-slate-50/80 border border-slate-200 rounded-lg p-2.5">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5 flex items-center justify-between">
+              <span>🤖 In-Call LLM</span>
+              <span className="text-[9px] text-slate-400">{models.llm!.length} active</span>
+            </div>
+            <div className="space-y-1.5">
+              {models.llm!.map((item, idx) => (
+                <div key={idx} className="flex items-center justify-between bg-white px-2 py-1 rounded border border-slate-200/60 text-xs">
+                  <div className="min-w-0 pr-1">
+                    <div className="font-semibold text-slate-800 text-[11px] truncate">
+                      {formatVendorName(item.provider)} <span className="font-mono text-[10px] text-slate-500 font-normal">({item.model})</span>
+                    </div>
+                    <div className="text-[9px] text-slate-400">
+                      {item.calls} {item.calls === 1 ? "call" : "calls"} • {formatTokens(item.tokens)}
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0 font-semibold text-[11px] text-slate-900">
+                    {inr(item.cost_inr)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Post-Call & QA */}
+        {hasPostCall && (
+          <div className="bg-slate-50/80 border border-slate-200 rounded-lg p-2.5">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5 flex items-center justify-between">
+              <span>🧠 Post-Call & QA</span>
+              <span className="text-[9px] text-slate-400">{models.post_call!.length} active</span>
+            </div>
+            <div className="space-y-1.5">
+              {models.post_call!.map((item, idx) => (
+                <div key={idx} className="flex items-center justify-between bg-white px-2 py-1 rounded border border-slate-200/60 text-xs">
+                  <div className="min-w-0 pr-1">
+                    <div className="font-semibold text-slate-800 text-[11px] truncate">
+                      {formatVendorName(item.provider)} <span className="font-mono text-[10px] text-slate-500 font-normal">({item.model})</span>
+                    </div>
+                    <div className="text-[9px] text-slate-400">
+                      {item.calls} {item.calls === 1 ? "call" : "calls"} • {formatTokens(item.tokens)}
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0 font-semibold text-[11px] text-slate-900">
+                    {inr(item.cost_inr)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* TTS Voices */}
+        {hasTts && (
+          <div className="bg-slate-50/80 border border-slate-200 rounded-lg p-2.5">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5 flex items-center justify-between">
+              <span>🔊 Voice (TTS)</span>
+              <span className="text-[9px] text-slate-400">{models.tts!.length} active</span>
+            </div>
+            <div className="space-y-1.5">
+              {models.tts!.map((item, idx) => (
+                <div key={idx} className="flex items-center justify-between bg-white px-2 py-1 rounded border border-slate-200/60 text-xs">
+                  <div className="min-w-0 pr-1">
+                    <div className="font-semibold text-slate-800 text-[11px] truncate">
+                      {formatVendorName(item.provider)} <span className="font-mono text-[10px] text-slate-500 font-normal">({item.model})</span>
+                    </div>
+                    <div className="text-[9px] text-slate-400">
+                      {item.calls} {item.calls === 1 ? "call" : "calls"} • {formatChars(item.characters)}
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0 font-semibold text-[11px] text-slate-900">
+                    {inr(item.cost_inr)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* STT Engines */}
+        {hasStt && (
+          <div className="bg-slate-50/80 border border-slate-200 rounded-lg p-2.5">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5 flex items-center justify-between">
+              <span>🎤 Speech (STT)</span>
+              <span className="text-[9px] text-slate-400">{models.stt!.length} active</span>
+            </div>
+            <div className="space-y-1.5">
+              {models.stt!.map((item, idx) => (
+                <div key={idx} className="flex items-center justify-between bg-white px-2 py-1 rounded border border-slate-200/60 text-xs">
+                  <div className="min-w-0 pr-1">
+                    <div className="font-semibold text-slate-800 text-[11px] truncate">
+                      {formatVendorName(item.provider)} <span className="font-mono text-[10px] text-slate-500 font-normal">({item.model})</span>
+                    </div>
+                    <div className="text-[9px] text-slate-400">
+                      {item.calls} {item.calls === 1 ? "call" : "calls"} • {formatMinutes(item.minutes)}
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0 font-semibold text-[11px] text-slate-900">
+                    {inr(item.cost_inr)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -194,6 +378,10 @@ function PlanBucketRow({ b }: { b: PlanBucket }) {
   const sttBadge = getVendorBadge("stt", b.breakdown.stt_vendors, "deepgram");
   const ttsBadge = getVendorBadge("tts", b.breakdown.tts_vendors, b.tts_provider);
   const llmBadge = getVendorBadge("llm", b.breakdown.llm_vendors, "openai");
+  const hasPostCall = Boolean(b.breakdown.post_call_inr && b.breakdown.post_call_inr > 0);
+  const pcBadge = hasPostCall
+    ? getVendorBadge("post_call", b.breakdown.post_call_vendors, "openai")
+    : null;
   const planColors: Record<string, string> = {
     starter: "bg-slate-100 text-slate-700 border-slate-200",
     growth: "bg-emerald-50 text-emerald-800 border-emerald-200",
@@ -227,12 +415,15 @@ function PlanBucketRow({ b }: { b: PlanBucket }) {
       </div>
       <div className="px-4 py-3 bg-white">
         <CostBar breakdown={b.breakdown} total={b.cost_inr} />
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2.5">
+        <div className={`grid grid-cols-2 ${hasPostCall ? "sm:grid-cols-5" : "sm:grid-cols-4"} gap-2 mt-2.5`}>
           {[
             { label: "📞 Plivo", value: b.breakdown.plivo_inr },
             { label: sttBadge.label, value: b.breakdown.stt_inr, tooltip: sttBadge.tooltip },
             { label: ttsBadge.label, value: b.breakdown.tts_inr, tooltip: ttsBadge.tooltip },
             { label: llmBadge.label, value: b.breakdown.llm_inr, tooltip: llmBadge.tooltip },
+            ...(hasPostCall && pcBadge
+              ? [{ label: pcBadge.label, value: b.breakdown.post_call_inr!, tooltip: pcBadge.tooltip }]
+              : []),
           ].map((item) => (
             <div key={item.label} className="bg-slate-50/70 border border-slate-200 rounded-md p-2 text-center" title={item.tooltip}>
               <div className="text-[10px] text-slate-500 truncate">{item.label}</div>
@@ -245,6 +436,7 @@ function PlanBucketRow({ b }: { b: PlanBucket }) {
             </div>
           ))}
         </div>
+        <ModelsInventorySection models={b.models_used} />
       </div>
 
     </div>
@@ -268,6 +460,10 @@ function CustomerRowCard({ c }: { c: CustomerRow }) {
     c.plan_breakdown?.[0]?.tts_provider
   );
   const llmBadge = getVendorBadge("llm", c.breakdown.llm_vendors, "openai");
+  const hasPostCall = Boolean(c.breakdown.post_call_inr && c.breakdown.post_call_inr > 0);
+  const pcBadge = hasPostCall
+    ? getVendorBadge("post_call", c.breakdown.post_call_vendors, "openai")
+    : null;
   return (
     <div className="border border-slate-200/80 rounded-xl overflow-hidden bg-white shadow-none">
       <button
@@ -333,12 +529,15 @@ function CustomerRowCard({ c }: { c: CustomerRow }) {
           ) : (
             <>
               <CostBar breakdown={c.breakdown} total={c.cost_inr} />
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              <div className={`grid grid-cols-2 ${hasPostCall ? "sm:grid-cols-5" : "sm:grid-cols-4"} gap-2.5`}>
                 {[
                   { label: "📞 Plivo (telephony)", value: c.breakdown.plivo_inr },
                   { label: sttBadge.label, value: c.breakdown.stt_inr, tooltip: sttBadge.tooltip },
                   { label: ttsBadge.label, value: c.breakdown.tts_inr, tooltip: ttsBadge.tooltip },
                   { label: llmBadge.label, value: c.breakdown.llm_inr, tooltip: llmBadge.tooltip },
+                  ...(hasPostCall && pcBadge
+                    ? [{ label: pcBadge.label, value: c.breakdown.post_call_inr!, tooltip: pcBadge.tooltip }]
+                    : []),
                 ].map((item) => (
                   <div key={item.label} className="bg-white border border-slate-200 rounded-lg p-2.5 text-center" title={item.tooltip}>
                     <div className="text-[10px] text-slate-500 truncate">{item.label}</div>
@@ -351,6 +550,7 @@ function CustomerRowCard({ c }: { c: CustomerRow }) {
                   </div>
                 ))}
               </div>
+              <ModelsInventorySection models={c.models_used} />
             </>
           )}
         </div>
