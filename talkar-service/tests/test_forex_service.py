@@ -142,3 +142,4 @@ def test_admin_forex_endpoints_http():
             assert post_data["metadata"]["rate"] == 94.40
     finally:
         app.dependency_overrides.clear()
+

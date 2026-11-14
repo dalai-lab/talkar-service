@@ -199,3 +199,4 @@ class ForexService:
 
 # Global singleton instance
 forex_service = ForexService()
+
