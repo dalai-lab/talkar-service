@@ -2247,23 +2247,26 @@ async def get_profitability(
                             c_inr = float(s_it.get("cost_inr") or 0.0)
                             bucket["stt_vendors"][p_name] += c_inr
 
-                            m_key = (p_name, m_name)
-                            m_entry = bucket["stt_models"][m_key]
-                            if m_key not in seen_stt:
-                                m_entry["calls"] += 1
-                                seen_stt.add(m_key)
-                            m_entry["seconds"] += sec
-                            m_entry["cost_inr"] += c_inr
+                            if sec > 0 or c_inr > 0:
+                                m_key = (p_name, m_name)
+                                m_entry = bucket["stt_models"][m_key]
+                                if m_key not in seen_stt:
+                                    m_entry["calls"] += 1
+                                    seen_stt.add(m_key)
+                                m_entry["seconds"] += sec
+                                m_entry["cost_inr"] += c_inr
                     else:
                         p_name = cost_breakdown.get("stt_vendor") or stt_provider
                         m_name = cost_breakdown.get("stt_model") or actual_stt_model or stt_provider
                         c_inr = cost_breakdown["stt_inr"]
-                        bucket["stt_vendors"][p_name] += c_inr
-                        m_key = (p_name, m_name)
-                        m_entry = bucket["stt_models"][m_key]
-                        m_entry["calls"] += 1
-                        m_entry["seconds"] += row.duration_seconds
-                        m_entry["cost_inr"] += c_inr
+                        sec = row.duration_seconds
+                        if sec > 0 or c_inr > 0:
+                            bucket["stt_vendors"][p_name] += c_inr
+                            m_key = (p_name, m_name)
+                            m_entry = bucket["stt_models"][m_key]
+                            m_entry["calls"] += 1
+                            m_entry["seconds"] += sec
+                            m_entry["cost_inr"] += c_inr
 
                     # 2. Accumulate TTS vendors & models
                     if tts_items:
@@ -2275,23 +2278,26 @@ async def get_profitability(
                             c_inr = float(t_it.get("cost_inr") or 0.0)
                             bucket["tts_vendors"][p_name] += c_inr
 
-                            m_key = (p_name, m_name)
-                            m_entry = bucket["tts_models"][m_key]
-                            if m_key not in seen_tts:
-                                m_entry["calls"] += 1
-                                seen_tts.add(m_key)
-                            m_entry["characters"] += chars
-                            m_entry["cost_inr"] += c_inr
+                            if chars > 0 or c_inr > 0:
+                                m_key = (p_name, m_name)
+                                m_entry = bucket["tts_models"][m_key]
+                                if m_key not in seen_tts:
+                                    m_entry["calls"] += 1
+                                    seen_tts.add(m_key)
+                                m_entry["characters"] += chars
+                                m_entry["cost_inr"] += c_inr
                     else:
                         p_name = cost_breakdown.get("tts_vendor") or tts_provider
                         m_name = cost_breakdown.get("tts_model") or actual_tts_model or tts_provider
                         c_inr = cost_breakdown["tts_inr"]
-                        bucket["tts_vendors"][p_name] += c_inr
-                        m_key = (p_name, m_name)
-                        m_entry = bucket["tts_models"][m_key]
-                        m_entry["calls"] += 1
-                        m_entry["characters"] += int(cost_breakdown.get("tts_chars") or 0)
-                        m_entry["cost_inr"] += c_inr
+                        chars = int(cost_breakdown.get("tts_chars") or 0)
+                        if chars > 0 or c_inr > 0:
+                            bucket["tts_vendors"][p_name] += c_inr
+                            m_key = (p_name, m_name)
+                            m_entry = bucket["tts_models"][m_key]
+                            m_entry["calls"] += 1
+                            m_entry["characters"] += chars
+                            m_entry["cost_inr"] += c_inr
 
                     # 3. Accumulate LLM vendors & models
                     if llm_items:
@@ -2305,27 +2311,32 @@ async def get_profitability(
                             c_inr = float(l_it.get("cost_inr") or 0.0)
                             bucket["llm_vendors"][p_name] += c_inr
 
-                            m_key = (p_name, m_name)
-                            m_entry = bucket["llm_models"][m_key]
-                            if m_key not in seen_llm:
-                                m_entry["calls"] += 1
-                                seen_llm.add(m_key)
-                            m_entry["prompt_tokens"] += p_tok
-                            m_entry["completion_tokens"] += c_tok
-                            m_entry["cached_tokens"] += cache_tok
-                            m_entry["cost_inr"] += c_inr
+                            if (p_tok + c_tok) > 0 or c_inr > 0:
+                                m_key = (p_name, m_name)
+                                m_entry = bucket["llm_models"][m_key]
+                                if m_key not in seen_llm:
+                                    m_entry["calls"] += 1
+                                    seen_llm.add(m_key)
+                                m_entry["prompt_tokens"] += p_tok
+                                m_entry["completion_tokens"] += c_tok
+                                m_entry["cached_tokens"] += cache_tok
+                                m_entry["cost_inr"] += c_inr
                     else:
                         p_name = cost_breakdown.get("llm_vendor") or "openai"
                         m_name = cost_breakdown.get("llm_model") or actual_llm_model or llm_model
                         c_inr = cost_breakdown["llm_inr"]
-                        bucket["llm_vendors"][p_name] += c_inr
-                        m_key = (p_name, m_name)
-                        m_entry = bucket["llm_models"][m_key]
-                        m_entry["calls"] += 1
-                        m_entry["prompt_tokens"] += int(cost_breakdown.get("llm_prompt_tokens") or 0)
-                        m_entry["completion_tokens"] += int(cost_breakdown.get("llm_completion_tokens") or 0)
-                        m_entry["cached_tokens"] += int(cost_breakdown.get("llm_cached_tokens") or 0)
-                        m_entry["cost_inr"] += c_inr
+                        p_tok = int(cost_breakdown.get("llm_prompt_tokens") or 0)
+                        c_tok = int(cost_breakdown.get("llm_completion_tokens") or 0)
+                        cache_tok = int(cost_breakdown.get("llm_cached_tokens") or 0)
+                        if (p_tok + c_tok) > 0 or c_inr > 0:
+                            bucket["llm_vendors"][p_name] += c_inr
+                            m_key = (p_name, m_name)
+                            m_entry = bucket["llm_models"][m_key]
+                            m_entry["calls"] += 1
+                            m_entry["prompt_tokens"] += p_tok
+                            m_entry["completion_tokens"] += c_tok
+                            m_entry["cached_tokens"] += cache_tok
+                            m_entry["cost_inr"] += c_inr
 
                     # 4. Accumulate Post-Call Intelligence & QA models if present
                     if post_call_items:
@@ -2339,15 +2350,16 @@ async def get_profitability(
                             c_inr = float(p_it.get("cost_inr") or 0.0)
                             bucket["post_call_vendors"][p_name] += c_inr
 
-                            m_key = (p_name, m_name)
-                            m_entry = bucket["post_call_models"][m_key]
-                            if m_key not in seen_pc:
-                                m_entry["calls"] += 1
-                                seen_pc.add(m_key)
-                            m_entry["prompt_tokens"] += p_tok
-                            m_entry["completion_tokens"] += c_tok
-                            m_entry["cached_tokens"] += cache_tok
-                            m_entry["cost_inr"] += c_inr
+                            if (p_tok + c_tok) > 0 or c_inr > 0:
+                                m_key = (p_name, m_name)
+                                m_entry = bucket["post_call_models"][m_key]
+                                if m_key not in seen_pc:
+                                    m_entry["calls"] += 1
+                                    seen_pc.add(m_key)
+                                m_entry["prompt_tokens"] += p_tok
+                                m_entry["completion_tokens"] += c_tok
+                                m_entry["cached_tokens"] += cache_tok
+                                m_entry["cost_inr"] += c_inr
 
                 total_revenue_inr += revenue_inr
                 total_cost_inr += run_cost_inr

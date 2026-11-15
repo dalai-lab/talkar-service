@@ -576,6 +576,13 @@ async def test_profitability_zero_duration_unanswered_carrier_suppression_and_si
     assert pytest.approx(cust["breakdown"]["plivo_inr"], abs=0.01) == 0.45
     assert pytest.approx(pb[0]["breakdown"]["plivo_inr"], abs=0.45) == 0.45
 
+    # 3. Model Inventory Call Counts: Smallest AI must show exactly 1 call (the answered one),
+    # NOT 2 calls, because the 0-second unanswered call never ran voice synthesis.
+    tts_inventory = {m["model"]: m for m in cust["models_used"]["tts"]}
+    assert "lightning_v3.1_pro" in tts_inventory
+    assert tts_inventory["lightning_v3.1_pro"]["calls"] == 1
+    assert tts_inventory["lightning_v3.1_pro"]["characters"] == 800
+
 
 
 
