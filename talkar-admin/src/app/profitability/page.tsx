@@ -451,7 +451,8 @@ function CustomerRowCard({ c }: { c: CustomerRow }) {
     pro: "bg-amber-50 text-amber-800 border-amber-200",
     elite: "bg-purple-50 text-purple-800 border-purple-200",
   };
-  const hasMultiplePlans = c.plan_breakdown && c.plan_breakdown.length > 1;
+  const distinctPlans = Array.from(new Set(c.plan_breakdown?.map((b) => b.plan) || []));
+  const hasMultiplePlans = distinctPlans.length > 1;
 
   const sttBadge = getVendorBadge("stt", c.breakdown.stt_vendors, "deepgram");
   const ttsBadge = getVendorBadge(

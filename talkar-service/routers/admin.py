@@ -1918,6 +1918,7 @@ def _estimate_call_cost_inr(
     stt_model: str | None = None,
     tts_model: str | None = None,
     runtime_configuration: dict | None = None,
+    call_status: str | None = None,
 ) -> dict:
     """
     Estimate the real AI+telephony cost for a single call in INR.
@@ -1933,6 +1934,7 @@ def _estimate_call_cost_inr(
         stt_model=stt_model,
         tts_model=tts_model,
         runtime_configuration=runtime_configuration,
+        call_status=call_status,
     )
 
 
@@ -2186,6 +2188,11 @@ async def get_profitability(
                         llm_model = actual_llm_model or tier_cfg.get("llm_model", "gpt-4o-mini")
                         active_plan = sub.plan
 
+                call_status = getattr(row, "call_status", None)
+                if not call_status:
+                    run_state = run_data.get("status")
+                    call_status = run_state if run_state in ("failed", "rejected", "unanswered") else ("completed" if row.duration_seconds > 0 else "unanswered")
+
                 cost_breakdown = _estimate_call_cost_inr(
                     duration_seconds=row.duration_seconds,
                     usage_info=usage_info,
@@ -2196,10 +2203,11 @@ async def get_profitability(
                     stt_model=actual_stt_model,
                     tts_model=actual_tts_model,
                     runtime_configuration=runtime_config,
+                    call_status=call_status,
                 )
                 revenue_inr = row.cost_to_customer_paise / 100.0
 
-                plan_key = (cid, active_plan, tts_provider)
+                plan_key = (cid, active_plan)
 
                 # Extract granular vendor costs from estimate_call_cost_inr result
                 stt_items = cost_breakdown.get("cost_breakdown", {}).get("stt", {}).get("items", [])
@@ -2376,7 +2384,7 @@ async def get_profitability(
         plan_buckets = [
             {
                 "plan": pk[1],
-                "tts_provider": pk[2],
+                "tts_provider": max(pdata["tts_vendors"].items(), key=lambda x: x[1])[0] if pdata["tts_vendors"] else "default",
                 "calls": pdata["calls"],
                 "total_minutes": round(pdata["total_minutes"], 1),
                 "revenue_inr": round(pdata["revenue_inr"], 2),

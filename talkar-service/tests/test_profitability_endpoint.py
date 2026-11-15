@@ -457,5 +457,126 @@ async def test_profitability_deepgram_flux_stt_model_inventory():
     assert nova_entry["cost_inr"] > 0
 
 
+@pytest.mark.asyncio
+async def test_profitability_zero_duration_unanswered_carrier_suppression_and_single_plan_bucket():
+    """
+    Validates:
+    1. Unanswered / 0-second calls have ZERO carrier (Plivo) cost (₹0.00), preventing
+       false losses and negative margin spikes on non-connected calls.
+    2. Calls under the same subscription plan (e.g. 'custom') are unified into a single
+       plan_breakdown bucket rather than splitting by tts_provider into duplicate buckets.
+    """
+    from types import SimpleNamespace
+    from db.models import Customer, Subscription
+
+    mock_db = MagicMock()
+
+    mock_customer = Customer(
+        id=30,
+        company_name="Unified Analytics",
+        contact_email="billing@unified.ai",
+        status="active",
+        is_test_account=False,
+        report_settings={},
+    )
+    mock_sub = Subscription(
+        customer_id=30,
+        plan="custom",
+        per_minute_rate_paise=600,
+    )
+    # Answered 60s call
+    call_answered = SimpleNamespace(
+        id=901,
+        customer_id=30,
+        dograh_run_id=9001,
+        duration_seconds=60,
+        cost_to_customer_paise=600,
+        plan="custom",
+        tts_provider="smallest_ai",
+        call_status="completed",
+    )
+    # Unanswered 0s call (no audio synthesized, tts_provider is None)
+    call_unanswered = SimpleNamespace(
+        id=902,
+        customer_id=30,
+        dograh_run_id=9002,
+        duration_seconds=0,
+        cost_to_customer_paise=0,
+        plan="custom",
+        tts_provider=None,
+        call_status="unanswered",
+    )
+
+    def mock_db_side_effect(query):
+        res = MagicMock()
+        q_str = str(query).lower()
+        if "from call_logs" in q_str or "call_logs" in q_str:
+            res.all.return_value = [call_answered, call_unanswered]
+            res.scalars.return_value.all.return_value = [call_answered, call_unanswered]
+        elif "from subscriptions" in q_str:
+            res.scalars.return_value.all.return_value = [mock_sub]
+        elif "from global_platform_settings" in q_str:
+            res.scalar_one_or_none.return_value = None
+        elif "from customers" in q_str:
+            res.scalars.return_value.all.return_value = [mock_customer]
+        elif "from wallet_transactions" in q_str or "wallet_transactions" in q_str:
+            res.scalar.return_value = 0
+        else:
+            res.scalars.return_value.all.return_value = []
+            res.all.return_value = []
+            res.scalar.return_value = 0
+        return res
+
+    mock_db.execute = AsyncMock(side_effect=mock_db_side_effect)
+
+    run_9001 = SimpleNamespace(
+        id=9001,
+        usage_info={"tts": {"smallest_ai_lightning": 800}},
+        state="completed",
+        mode="pipeline",
+        initial_context={
+            "runtime_configuration": {
+                "tts_provider": "smallest_ai",
+                "tts_model": "lightning_v3.1_pro",
+            }
+        },
+    )
+    run_9002 = SimpleNamespace(
+        id=9002,
+        usage_info={},
+        state="completed",
+        mode="pipeline",
+        initial_context={},
+    )
+
+    mock_ddb = AsyncMock()
+    mock_ddb.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[run_9001, run_9002])))
+
+    with patch("services.dograh_client.DograhSessionLocal") as mock_dograh_session_cls:
+        session_ctx = MagicMock()
+        session_ctx.__aenter__ = AsyncMock(return_value=mock_ddb)
+        session_ctx.__aexit__ = AsyncMock(return_value=None)
+        mock_dograh_session_cls.return_value = session_ctx
+
+        res = await get_profitability(period="month", db=mock_db, current_admin=MagicMock())
+
+    assert len(res["customers"]) == 1
+    cust = res["customers"][0]
+    assert cust["calls"] == 2
+    assert cust["total_minutes"] == 1.0
+
+    # 1. Unified Plan Breakdown: Must have exactly 1 bucket for 'custom', NOT duplicate buckets!
+    pb = cust["plan_breakdown"]
+    assert len(pb) == 1
+    assert pb[0]["plan"] == "custom"
+    assert pb[0]["calls"] == 2
+
+    # 2. Carrier Cost Suppression: Only the 60s call incurred carrier cost (1 min * 0.45 = ₹0.45)
+    # The 0-second unanswered call incurred ₹0.00 carrier cost.
+    assert pytest.approx(cust["breakdown"]["plivo_inr"], abs=0.01) == 0.45
+    assert pytest.approx(pb[0]["breakdown"]["plivo_inr"], abs=0.45) == 0.45
+
+
+
 
 

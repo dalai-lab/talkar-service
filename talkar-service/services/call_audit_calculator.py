@@ -1096,9 +1096,13 @@ def calculate_call_unit_economics(
         billed_telephony_minutes = 0
         cost_plivo = 0.0
         notices.append("EARLY DISCONNECT / UNCOMPLETED (Zero Carrier Cost)")
+    elif duration_seconds <= 0:
+        billed_telephony_minutes = 0
+        cost_plivo = 0.0
+        notices.append("ZERO DURATION (Zero Carrier Cost)")
     else:
         # Carrier 60/60 block ceiling rounding (EC-4, EC-20)
-        billed_telephony_minutes = math.ceil(max(duration_seconds, 1) / 60.0)
+        billed_telephony_minutes = math.ceil(duration_seconds / 60.0)
         cost_plivo = float(billed_telephony_minutes * plivo_rate_inr)
 
     plivo_breakdown = {
@@ -1673,15 +1677,17 @@ def estimate_call_cost_inr(
     stt_model: Optional[str] = None,
     tts_model: Optional[str] = None,
     runtime_configuration: Optional[Dict[str, Any]] = None,
+    call_status: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Backwards-compatible drop-in replacement for the router's _estimate_call_cost_inr.
     """
     rc = runtime_configuration or {}
+    resolved_status = call_status or ("completed" if duration_seconds > 0 else "unanswered")
     call_log_mock = {
         "duration_seconds": duration_seconds,
         "cost_to_customer_paise": 0,
-        "call_status": "completed",
+        "call_status": resolved_status,
         "tts_provider": tts_provider,
         "tts_model": tts_model or rc.get("tts_model"),
         "stt_provider": stt_provider,
