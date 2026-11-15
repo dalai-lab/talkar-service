@@ -1401,19 +1401,19 @@ export default function ProfitabilityPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 pt-1 text-[11px] leading-relaxed">
             <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-100">
               <span className="font-semibold text-slate-700 block mb-0.5">📞 Telephony</span>
-              Plivo India: ₹0.60/min billed per full connected pulse. Unanswered or 0s calls incur ₹0.
+              Plivo India: ₹0.45/min standard (₹0.30 inbound, ₹1.80 intl). Unanswered or 0s calls incur ₹0.
             </div>
             <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-100">
               <span className="font-semibold text-slate-700 block mb-0.5">🎤 Speech (STT)</span>
-              Deepgram Flux ($0.0055/min) · Nova-3 ($0.0048/min) · Smallest AI STT (~$0.003/min).
+              Deepgram Flux & Nova-3 ($0.0048/min) · Smallest AI STT (~$0.003/min) · Sarvam (₹0.49/min).
             </div>
             <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-100">
               <span className="font-semibold text-slate-700 block mb-0.5">🔊 Voice (TTS)</span>
-              Smallest AI Lightning v3.1 ($0.0175/1k chars) · ElevenLabs ($0.18/1k chars) · Deepgram TTS ($0.015/1k chars).
+              Smallest AI Lightning v3.1 ($0.0175/1k chars) · ElevenLabs ($0.040-$0.18/1k chars) · Deepgram Aura ($0.015/1k chars).
             </div>
             <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-100">
               <span className="font-semibold text-slate-700 block mb-0.5">🤖 Intelligence (LLM)</span>
-              GPT-4.1-mini & GPT-4o-mini ($0.15 in / $0.60 out per 1M tok). USD/INR pegged at ₹95.70.
+              GPT-4.1-mini & GPT-4o-mini ($0.15 in / $0.60 out per 1M tok). USD/INR baseline ₹88.00.
             </div>
           </div>
           <div className="text-[11px] text-amber-700/90 pt-1 flex items-center gap-1.5 font-medium">
@@ -1464,7 +1464,7 @@ export default function ProfitabilityPage() {
                     <input
                       type="number"
                       step="0.01"
-                      placeholder="Default: 0.60"
+                      placeholder="Default: 0.45"
                       className="w-full h-8 px-2.5 mt-1 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-1 focus:ring-[#fe6905] focus:border-[#fe6905]"
                       value={overrides.telephony_cost_per_min_inr ?? ""}
                       onChange={(e) => setOverride("telephony_cost_per_min_inr", e.target.value)}
@@ -1477,7 +1477,7 @@ export default function ProfitabilityPage() {
                     <input
                       type="number"
                       step="0.1"
-                      placeholder="Default: 95.70"
+                      placeholder="Default: 88.00"
                       className="w-full h-8 px-2.5 mt-1 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-1 focus:ring-[#fe6905] focus:border-[#fe6905]"
                       value={overrides.usd_to_inr ?? ""}
                       onChange={(e) => setOverride("usd_to_inr", e.target.value)}

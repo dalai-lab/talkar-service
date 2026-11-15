@@ -1,4 +1,5 @@
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -582,6 +583,109 @@ async def test_profitability_zero_duration_unanswered_carrier_suppression_and_si
     assert "lightning_v3.1_pro" in tts_inventory
     assert tts_inventory["lightning_v3.1_pro"]["calls"] == 1
     assert tts_inventory["lightning_v3.1_pro"]["characters"] == 800
+
+
+@pytest.mark.asyncio
+async def test_profitability_telephony_direction_and_usd_conversion():
+    """
+    Verifies that get_profitability:
+    1. Distinguishes inbound (₹0.30/min), international (₹1.80/min), and outbound domestic (₹0.45/min).
+    2. Accurately converts USD enterprise revenue (currency='USD') using the exchange rate.
+    """
+    cust_usd = MagicMock(
+        id=20,
+        company_name="Global Enterprise Inc",
+        contact_email="billing@global.com",
+        status="active",
+        is_test_account=False,
+        report_settings={"currency": "USD"},
+    )
+
+    # Call 1: Inbound domestic call (60s) - ₹0.30 carrier cost, $1.00 billed (100 cents)
+    call_inbound = MagicMock(
+        dograh_run_id=9101,
+        customer_id=20,
+        duration_seconds=60,
+        cost_to_customer_paise=100,  # 100 cents = $1.00
+        called_at=datetime.now(timezone.utc),
+        plan="growth",
+        tts_provider="smallest_ai",
+        call_type="inbound",
+        caller_number="+919876543210",
+        call_status="completed",
+    )
+
+    # Call 2: International outbound call to US (+1) (60s) - ₹1.80 carrier cost, $2.00 billed (200 cents)
+    call_intl = MagicMock(
+        dograh_run_id=9102,
+        customer_id=20,
+        duration_seconds=60,
+        cost_to_customer_paise=200,  # 200 cents = $2.00
+        called_at=datetime.now(timezone.utc),
+        plan="growth",
+        tts_provider="smallest_ai",
+        call_type="outbound",
+        caller_number="+14155552671",
+        call_status="completed",
+    )
+
+    sub = MagicMock(customer_id=20, plan="growth")
+
+    mock_db = AsyncMock()
+    async def mock_execute(query, *args, **kwargs):
+        q_str = str(query).lower()
+        res = MagicMock()
+        if "from subscriptions" in q_str:
+            res.scalars.return_value.all.return_value = [sub]
+        elif "from global_platform_settings" in q_str:
+            res.scalar_one_or_none.return_value = None
+        elif "from customers" in q_str:
+            res.scalars.return_value.all.return_value = [cust_usd]
+        else:
+            res.all.return_value = [call_inbound, call_intl]
+        return res
+
+    mock_db.execute = AsyncMock(side_effect=mock_execute)
+
+    run_9101 = MagicMock(
+        id=9101,
+        usage_info={"tts": {"smallest_ai_lightning": {"characters": 200}}},
+        state="completed",
+        mode="inbound",
+        initial_context={},
+    )
+    run_9102 = MagicMock(
+        id=9102,
+        usage_info={"tts": {"smallest_ai_lightning": {"characters": 200}}},
+        state="completed",
+        mode="outbound",
+        initial_context={},
+    )
+
+    mock_ddb = AsyncMock()
+    mock_ddb.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[run_9101, run_9102])))
+
+    with patch("services.dograh_client.DograhSessionLocal") as mock_dograh_session_cls:
+        session_ctx = MagicMock()
+        session_ctx.__aenter__ = AsyncMock(return_value=mock_ddb)
+        session_ctx.__aexit__ = AsyncMock(return_value=None)
+        mock_dograh_session_cls.return_value = session_ctx
+
+        res = await get_profitability(period="month", db=mock_db, current_admin=MagicMock())
+
+    assert len(res["customers"]) == 1
+    cust = res["customers"][0]
+    assert cust["calls"] == 2
+    assert cust["total_minutes"] == 2.0
+
+    # 1. USD Revenue Conversion:
+    # 300 cents = $3.00. At 88.0 baseline exchange rate = ₹264.00
+    assert pytest.approx(cust["revenue_inr"], abs=0.01) == 264.00
+
+    # 2. Telephony Carrier Rates:
+    # Inbound 1 min @ ₹0.30 + International 1 min @ ₹1.80 = ₹2.10
+    assert pytest.approx(cust["breakdown"]["plivo_inr"], abs=0.01) == 2.10
+
 
 
 

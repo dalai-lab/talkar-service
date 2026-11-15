@@ -5,7 +5,8 @@ from db.session import get_db
 from db.models import (
     Customer, Wallet, WalletTransaction, CallLog, Agent, TalkarAdmin, 
     Subscription, Notification, TransactionType, PhoneNumber, 
-    PhoneNumberRequest, SupportRequest, Invoice, AutomationAuditLog
+    PhoneNumberRequest, SupportRequest, Invoice, AutomationAuditLog,
+    GlobalPlatformSettings
 )
 from services import razorpay_client, notification_service, dograh_client
 from services.admin_auth import get_current_admin, create_admin_access_token
@@ -1919,6 +1920,8 @@ def _estimate_call_cost_inr(
     tts_model: str | None = None,
     runtime_configuration: dict | None = None,
     call_status: str | None = None,
+    direction: str | None = None,
+    to_phone_number: str | None = None,
 ) -> dict:
     """
     Estimate the real AI+telephony cost for a single call in INR.
@@ -1935,6 +1938,8 @@ def _estimate_call_cost_inr(
         tts_model=tts_model,
         runtime_configuration=runtime_configuration,
         call_status=call_status,
+        direction=direction,
+        to_phone_number=to_phone_number,
     )
 
 
@@ -1973,7 +1978,8 @@ async def get_profitability(
     # --- Fetch call logs ---
     run_id_list_q = select(CallLog.dograh_run_id, CallLog.customer_id,
                            CallLog.duration_seconds, CallLog.cost_to_customer_paise,
-                           CallLog.called_at, CallLog.plan, CallLog.tts_provider)
+                           CallLog.called_at, CallLog.plan, CallLog.tts_provider,
+                           CallLog.call_type, CallLog.caller_number)
     if since:
         run_id_list_q = run_id_list_q.where(CallLog.called_at >= since)
     call_rows = (await db.execute(run_id_list_q)).all()
@@ -2204,8 +2210,17 @@ async def get_profitability(
                     tts_model=actual_tts_model,
                     runtime_configuration=runtime_config,
                     call_status=call_status,
+                    direction=getattr(row, "call_type", None),
+                    to_phone_number=getattr(row, "caller_number", None),
                 )
-                revenue_inr = row.cost_to_customer_paise / 100.0
+                c_settings = c_obj.report_settings or {}
+                c_currency = str(c_settings.get("currency", "INR")).upper()
+                c_fx = float(effective_overrides.get("exchange_rate") or effective_overrides.get("usd_to_inr") or 88.0)
+                raw_rev = float(row.cost_to_customer_paise or 0.0)
+                if c_currency == "USD":
+                    revenue_inr = (raw_rev / 100.0) * c_fx
+                else:
+                    revenue_inr = raw_rev / 100.0
 
                 plan_key = (cid, active_plan)
 
@@ -2673,8 +2688,12 @@ async def get_call_audit_customers(
     customers_list = []
     for r in rows:
         settings = r.report_settings or {}
-        currency = settings.get("currency", "INR")
+        currency = str(settings.get("currency", "INR")).upper()
         rev_paise = float(r.total_revenue_paise or 0)
+        if currency == "USD":
+            total_rev = (rev_paise / 100.0) * 88.0
+        else:
+            total_rev = rev_paise / 100.0
         resolved_name = (
             r.company_name
             or (r.onboarding_form.get("businessName") if r.onboarding_form else None)
@@ -2692,7 +2711,7 @@ async def get_call_audit_customers(
             "currency": currency,
             "total_calls": int(r.total_calls or 0),
             "total_duration_seconds": int(r.total_duration_seconds or 0),
-            "total_revenue_inr": round(rev_paise / 100.0, 2),
+            "total_revenue_inr": round(total_rev, 2),
         })
 
     return {
@@ -2747,10 +2766,18 @@ async def get_call_audit_calls(
     query = query.offset((page - 1) * limit).limit(limit)
     call_logs = (await db.execute(query)).scalars().all()
 
+    cust_res = await db.execute(select(Customer.report_settings).where(Customer.id == customer_id))
+    cust_settings = cust_res.scalar_one_or_none() or {}
+    cust_currency = str(cust_settings.get("currency", "INR")).upper()
+
     calls_list = []
     for c in call_logs:
         dur = int(c.duration_seconds or 0)
         rev_paise = int(c.cost_to_customer_paise or 0)
+        if cust_currency == "USD":
+            call_rev_inr = round((rev_paise / 100.0) * 88.0, 2)
+        else:
+            call_rev_inr = round(rev_paise / 100.0, 2)
         calls_list.append({
             "id": c.id,
             "dograh_run_id": c.dograh_run_id,
@@ -2759,7 +2786,7 @@ async def get_call_audit_calls(
             "called_at": c.called_at.isoformat() if c.called_at else None,
             "duration_seconds": dur,
             "cost_to_customer_paise": rev_paise,
-            "revenue_inr": round(rev_paise / 100.0, 2),
+            "revenue_inr": call_rev_inr,
             "caller_number": c.caller_number,
             "direction": c.call_type or "outbound",
             "plan": c.plan,
@@ -2791,7 +2818,17 @@ async def get_call_audit_run(
     if not call_log and not workflow_run_data:
         raise HTTPException(404, f"Call run {dograh_run_id} not found")
 
-    overrides = {}
+    # Global overrides -> Customer overrides -> Query param overrides
+    global_overrides = {}
+    try:
+        global_res = await db.execute(select(GlobalPlatformSettings).limit(1))
+        global_settings_row = global_res.scalar_one_or_none()
+        if global_settings_row and hasattr(global_settings_row, "settings") and isinstance(global_settings_row.settings, dict):
+            global_overrides = global_settings_row.settings.get("profitability_overrides", {}) or {}
+    except Exception as e:
+        logger.warning(f"Could not load GlobalPlatformSettings in call audit: {e}")
+
+    overrides = dict(global_overrides)
     if customer and customer.report_settings:
         overrides.update(customer.report_settings.get("profitability_overrides", {}))
     if exchange_rate is not None:
@@ -2903,7 +2940,16 @@ async def simulate_call_audit(
     if not call_log and not workflow_run_data:
         raise HTTPException(404, f"Call run {req.dograh_run_id} not found")
 
-    base_overrides = {}
+    global_overrides = {}
+    try:
+        global_res = await db.execute(select(GlobalPlatformSettings).limit(1))
+        global_settings_row = global_res.scalar_one_or_none()
+        if global_settings_row and hasattr(global_settings_row, "settings") and isinstance(global_settings_row.settings, dict):
+            global_overrides = global_settings_row.settings.get("profitability_overrides", {}) or {}
+    except Exception as e:
+        logger.warning(f"Could not load GlobalPlatformSettings in simulate: {e}")
+
+    base_overrides = dict(global_overrides)
     if customer and customer.report_settings:
         base_overrides.update(customer.report_settings.get("profitability_overrides", {}))
 

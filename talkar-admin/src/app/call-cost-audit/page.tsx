@@ -361,7 +361,9 @@ export default function CallCostAuditPage() {
   // Calculations for Stacked Bar
   const displayAudit = simulation ? simulation.simulated : auditDetail;
   const cb = displayAudit?.cost_breakdown;
-  const totalCost = displayAudit?.total_cost_inr || 0;
+  const totalCost = (displayAudit?.total_all_in_cost_inr && displayAudit.total_all_in_cost_inr > 0)
+    ? displayAudit.total_all_in_cost_inr
+    : (displayAudit?.total_cost_inr || 0);
 
   const costSegments = useMemo(() => {
     if (!cb || totalCost <= 0) return [];
@@ -406,8 +408,20 @@ export default function CallCostAuditPage() {
         color: "#f59e0b", // amber
         bg: "bg-amber-500",
       },
+      ...(displayAudit?.post_call_cost_inr && displayAudit.post_call_cost_inr > 0
+        ? [
+            {
+              id: "post_call",
+              label: "Post-Call & QA",
+              cost: displayAudit.post_call_cost_inr,
+              pct: (displayAudit.post_call_cost_inr / totalCost) * 100,
+              color: "#6366f1", // indigo
+              bg: "bg-indigo-500",
+            },
+          ]
+        : []),
     ].filter((s) => s.cost > 0);
-  }, [cb, totalCost]);
+  }, [cb, totalCost, displayAudit?.post_call_cost_inr]);
 
   // Margin status styles
   const marginBadge = useMemo(() => {
@@ -758,10 +772,12 @@ export default function CallCostAuditPage() {
                       Total AI+Carrier Cost
                     </span>
                     <span className="text-base font-black text-zinc-900 block">
-                      {inr(displayAudit.total_cost_inr)}
+                      {inr(totalCost)}
                     </span>
                     <span className="text-[10px] text-zinc-500">
-                      {inr(displayAudit.cost_per_minute_inr)} / minute
+                      {displayAudit.post_call_cost_inr && displayAudit.post_call_cost_inr > 0
+                        ? `Incl. ${inr(displayAudit.post_call_cost_inr)} post-call`
+                        : `${inr(displayAudit.cost_per_minute_inr)} / minute`}
                     </span>
                   </div>
 
@@ -783,13 +799,13 @@ export default function CallCostAuditPage() {
                     </span>
                     <span
                       className={`text-base font-black block ${
-                        displayAudit.profit_inr >= 0 ? "text-emerald-600" : "text-red-600"
+                        (displayAudit.revenue_inr - totalCost) >= 0 ? "text-emerald-600" : "text-red-600"
                       }`}
                     >
-                      {inr(displayAudit.profit_inr)}
+                      {inr(displayAudit.revenue_inr - totalCost)}
                     </span>
                     <span className="text-[10px] text-zinc-500">
-                      Margin: {displayAudit.margin_pct.toFixed(1)}%
+                      Margin: {displayAudit.revenue_inr > 0 ? (((displayAudit.revenue_inr - totalCost) / displayAudit.revenue_inr) * 100).toFixed(1) : "0.0"}%
                     </span>
                   </div>
                 </div>

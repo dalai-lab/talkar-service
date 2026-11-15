@@ -1175,8 +1175,12 @@ def calculate_call_unit_economics(
                 notices.append(f"Default Fallback Rate Applied for STT: {chosen_key}")
 
             rate = float(override_stt_rate if override_stt_rate is not None else cfg["rate"])
-            # Sarvam special rate support
-            if cfg["provider"] == "sarvam" and sarvam_stt_rate_override is not None:
+            # Provider-specific override keys
+            if cfg["provider"] == "deepgram" and overrides.get("deepgram_stt_cost_per_min_usd") is not None:
+                rate = float(overrides["deepgram_stt_cost_per_min_usd"])
+            elif cfg["provider"] == "smallest_ai" and overrides.get("smallest_stt_cost_per_min_usd") is not None:
+                rate = float(overrides["smallest_stt_cost_per_min_usd"])
+            elif cfg["provider"] == "sarvam" and sarvam_stt_rate_override is not None:
                 rate = float(sarvam_stt_rate_override)
 
             curr = cfg.get("currency", "USD")
@@ -1205,7 +1209,11 @@ def calculate_call_unit_economics(
             notices.append(f"Default Fallback Rate Applied for STT: {chosen_key}")
 
         rate = float(override_stt_rate if override_stt_rate is not None else cfg["rate"])
-        if cfg["provider"] == "sarvam" and sarvam_stt_rate_override is not None:
+        if cfg["provider"] == "deepgram" and overrides.get("deepgram_stt_cost_per_min_usd") is not None:
+            rate = float(overrides["deepgram_stt_cost_per_min_usd"])
+        elif cfg["provider"] == "smallest_ai" and overrides.get("smallest_stt_cost_per_min_usd") is not None:
+            rate = float(overrides["smallest_stt_cost_per_min_usd"])
+        elif cfg["provider"] == "sarvam" and sarvam_stt_rate_override is not None:
             rate = float(sarvam_stt_rate_override)
 
         curr = cfg.get("currency", "USD")
@@ -1272,6 +1280,12 @@ def calculate_call_unit_economics(
                 notices.append(f"Default Fallback Rate Applied for TTS: {chosen_key}")
 
             rate_1k = float(override_tts_rate if override_tts_rate is not None else cfg["rate_per_1k_chars"])
+            if cfg["provider"] == "smallest_ai" and overrides.get("smallest_tts_cost_per_1k_chars_usd") is not None:
+                rate_1k = float(overrides["smallest_tts_cost_per_1k_chars_usd"])
+            elif cfg["provider"] == "elevenlabs" and overrides.get("elevenlabs_tts_cost_per_1k_chars_usd") is not None:
+                rate_1k = float(overrides["elevenlabs_tts_cost_per_1k_chars_usd"])
+            elif cfg["provider"] == "deepgram" and overrides.get("deepgram_tts_cost_per_1k_chars_usd") is not None:
+                rate_1k = float(overrides["deepgram_tts_cost_per_1k_chars_usd"])
             curr = cfg.get("currency", "USD")
             rate_inr_1k = rate_1k * exchange_rate if curr == "USD" else rate_1k
             item_cost = (chars / 1000.0) * rate_inr_1k
@@ -1298,6 +1312,12 @@ def calculate_call_unit_economics(
             notices.append(f"Default Fallback Rate Applied for TTS: {chosen_key}")
 
         rate_1k = float(override_tts_rate if override_tts_rate is not None else cfg["rate_per_1k_chars"])
+        if cfg["provider"] == "smallest_ai" and overrides.get("smallest_tts_cost_per_1k_chars_usd") is not None:
+            rate_1k = float(overrides["smallest_tts_cost_per_1k_chars_usd"])
+        elif cfg["provider"] == "elevenlabs" and overrides.get("elevenlabs_tts_cost_per_1k_chars_usd") is not None:
+            rate_1k = float(overrides["elevenlabs_tts_cost_per_1k_chars_usd"])
+        elif cfg["provider"] == "deepgram" and overrides.get("deepgram_tts_cost_per_1k_chars_usd") is not None:
+            rate_1k = float(overrides["deepgram_tts_cost_per_1k_chars_usd"])
         curr = cfg.get("currency", "USD")
         model_candidate = rc.get("tts_model") or _get_val(call_log, "tts_model")
         display_model = model_candidate if (model_candidate and (not rc.get("tts_provider") or cfg["provider"] == rc.get("tts_provider") or cfg["provider"] == _get_val(call_log, "tts_provider"))) else cfg["model"]
@@ -1439,6 +1459,11 @@ def calculate_call_unit_economics(
         r_in = float(cfg["input_per_million"])
         r_cached = float(cfg["cached_per_million"])
         r_out = float(cfg["output_per_million"])
+        if not is_qa and not is_pci and not is_extraction and not is_compaction:
+            if overrides.get("llm_cost_per_1m_input_usd") is not None:
+                r_in = float(overrides["llm_cost_per_1m_input_usd"])
+            if overrides.get("llm_cost_per_1m_output_usd") is not None:
+                r_out = float(overrides["llm_cost_per_1m_output_usd"])
         curr = cfg.get("currency", "USD")
 
         # Caching math: uncached input = max(prompt_tokens - cached_tokens, 0) (EC-15)
@@ -1678,6 +1703,8 @@ def estimate_call_cost_inr(
     tts_model: Optional[str] = None,
     runtime_configuration: Optional[Dict[str, Any]] = None,
     call_status: Optional[str] = None,
+    direction: Optional[str] = None,
+    to_phone_number: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Backwards-compatible drop-in replacement for the router's _estimate_call_cost_inr.
@@ -1694,6 +1721,10 @@ def estimate_call_cost_inr(
         "stt_model": stt_model or rc.get("stt_model"),
         "llm_model": llm_model or rc.get("llm_model"),
         "runtime_configuration": rc,
+        "direction": direction,
+        "call_type": direction,
+        "to_phone_number": to_phone_number,
+        "caller_number": to_phone_number,
     }
     workflow_run_mock = {
         "usage_info": usage_info or {},
