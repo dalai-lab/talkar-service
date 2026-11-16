@@ -160,10 +160,10 @@ function getVendorBadge(
     const fallback = fallbackProvider
       ? formatVendorName(fallbackProvider)
       : type === "stt"
-      ? "Deepgram"
-      : type === "tts"
-      ? "Smallest AI"
-      : "OpenAI";
+        ? "Deepgram"
+        : type === "tts"
+          ? "Smallest AI"
+          : "OpenAI";
     return { label: fallback, isMixed: false, primaryVendor: fallback };
   }
 
@@ -439,24 +439,23 @@ function InfrastructureBento({
     },
     ...(hasPostCall && pcBadge
       ? [
-          {
-            label: "Post-Call & QA",
-            icon: Brain,
-            vendor: pcBadge.label,
-            tooltip: pcBadge.tooltip,
-            cost: breakdown.post_call_inr || 0,
-            color: "border-indigo-200 bg-indigo-50/30 text-indigo-700",
-            iconColor: "text-indigo-600",
-          },
-        ]
+        {
+          label: "Post-Call & QA",
+          icon: Brain,
+          vendor: pcBadge.label,
+          tooltip: pcBadge.tooltip,
+          cost: breakdown.post_call_inr || 0,
+          color: "border-indigo-200 bg-indigo-50/30 text-indigo-700",
+          iconColor: "text-indigo-600",
+        },
+      ]
       : []),
   ];
 
   return (
     <div
-      className={`grid grid-cols-2 ${
-        items.length === 5 ? "sm:grid-cols-5" : "sm:grid-cols-4"
-      } gap-2.5`}
+      className={`grid grid-cols-2 ${items.length === 5 ? "sm:grid-cols-5" : "sm:grid-cols-4"
+        } gap-2.5`}
     >
       {items.map((it) => {
         const share = totalCost > 0 ? (it.cost / totalCost) * 100 : 0;
@@ -504,10 +503,10 @@ function ModelsInventorySection({ models }: { models?: ModelsUsedInventory }) {
     totalCols >= 4
       ? "grid-cols-1 sm:grid-cols-2 lg:grid-cols-4"
       : totalCols === 3
-      ? "grid-cols-1 md:grid-cols-3"
-      : totalCols === 2
-      ? "grid-cols-1 sm:grid-cols-2"
-      : "grid-cols-1";
+        ? "grid-cols-1 md:grid-cols-3"
+        : totalCols === 2
+          ? "grid-cols-1 sm:grid-cols-2"
+          : "grid-cols-1";
 
   return (
     <div className="mt-4 pt-3.5 border-t border-slate-200/80">
@@ -712,9 +711,8 @@ function PlanBucketRow({ b }: { b: PlanBucket }) {
           </div>
           <div>
             <div
-              className={`text-xs font-bold ${
-                b.profit_inr >= 0 ? "text-emerald-700" : "text-rose-600"
-              }`}
+              className={`text-xs font-bold ${b.profit_inr >= 0 ? "text-emerald-700" : "text-rose-600"
+                }`}
             >
               {inr(b.profit_inr)}
             </div>
@@ -760,9 +758,8 @@ function CustomerRowCard({
 
   return (
     <div
-      className={`border rounded-xl transition-all duration-200 overflow-hidden bg-white shadow-xs ${
-        isOpen ? "border-slate-300 ring-2 ring-slate-100" : "border-slate-200/80 hover:border-slate-300"
-      }`}
+      className={`border rounded-xl transition-all duration-200 overflow-hidden bg-white shadow-xs ${isOpen ? "border-slate-300 ring-2 ring-slate-100" : "border-slate-200/80 hover:border-slate-300"
+        }`}
     >
       <button
         type="button"
@@ -826,9 +823,8 @@ function CustomerRowCard({
 
           <div className="text-right">
             <div
-              className={`text-xs font-black ${
-                c.profit_inr >= 0 ? "text-emerald-700" : "text-rose-600"
-              }`}
+              className={`text-xs font-black ${c.profit_inr >= 0 ? "text-emerald-700" : "text-rose-600"
+                }`}
             >
               {inr(c.profit_inr)}
             </div>
@@ -1034,11 +1030,10 @@ export default function ProfitabilityPage() {
               <button
                 key={p.value}
                 onClick={() => setPeriod(p.value)}
-                className={`px-3 py-1.5 rounded-lg transition-all font-semibold cursor-pointer ${
-                  period === p.value
+                className={`px-3 py-1.5 rounded-lg transition-all font-semibold cursor-pointer ${period === p.value
                     ? "bg-white text-slate-900 shadow-xs"
                     : "text-slate-600 hover:text-slate-900"
-                }`}
+                  }`}
               >
                 {p.label}
               </button>
@@ -1172,9 +1167,8 @@ export default function ProfitabilityPage() {
               </div>
             </div>
             <div
-              className={`text-2xl font-black mt-2 ${
-                s.gross_profit_inr >= 0 ? "text-emerald-700" : "text-rose-600"
-              }`}
+              className={`text-2xl font-black mt-2 ${s.gross_profit_inr >= 0 ? "text-emerald-700" : "text-rose-600"
+                }`}
             >
               {inr(s.gross_profit_inr)}
             </div>
@@ -1192,25 +1186,23 @@ export default function ProfitabilityPage() {
               </div>
             </div>
             <div
-              className={`text-2xl font-black mt-2 ${
-                s.gross_margin_pct >= 50
+              className={`text-2xl font-black mt-2 ${s.gross_margin_pct >= 50
                   ? "text-emerald-700"
                   : s.gross_margin_pct >= 30
-                  ? "text-amber-700"
-                  : "text-rose-600"
-              }`}
+                    ? "text-amber-700"
+                    : "text-rose-600"
+                }`}
             >
               {pct(s.gross_margin_pct)}
             </div>
             <div className="mt-2 w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
               <div
-                className={`h-full rounded-full transition-all ${
-                  s.gross_margin_pct >= 50
+                className={`h-full rounded-full transition-all ${s.gross_margin_pct >= 50
                     ? "bg-emerald-500"
                     : s.gross_margin_pct >= 30
-                    ? "bg-amber-500"
-                    : "bg-rose-500"
-                }`}
+                      ? "bg-amber-500"
+                      : "bg-rose-500"
+                  }`}
                 style={{ width: `${Math.max(0, Math.min(100, s.gross_margin_pct))}%` }}
               />
             </div>
@@ -1270,43 +1262,39 @@ export default function ProfitabilityPage() {
             <div className="flex items-center bg-slate-100 p-1 rounded-xl text-xs border border-slate-200/60">
               <button
                 onClick={() => setMarginFilter("all")}
-                className={`px-2.5 py-1 rounded-lg font-semibold transition-all cursor-pointer ${
-                  marginFilter === "all"
+                className={`px-2.5 py-1 rounded-lg font-semibold transition-all cursor-pointer ${marginFilter === "all"
                     ? "bg-white text-slate-900 shadow-xs"
                     : "text-slate-600 hover:text-slate-900"
-                }`}
+                  }`}
               >
                 All
               </button>
               <button
                 onClick={() => setMarginFilter("healthy")}
-                className={`px-2.5 py-1 rounded-lg font-semibold transition-all cursor-pointer flex items-center gap-1 ${
-                  marginFilter === "healthy"
+                className={`px-2.5 py-1 rounded-lg font-semibold transition-all cursor-pointer flex items-center gap-1 ${marginFilter === "healthy"
                     ? "bg-white text-emerald-700 shadow-xs"
                     : "text-slate-600 hover:text-slate-900"
-                }`}
+                  }`}
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                 Healthy (≥50%)
               </button>
               <button
                 onClick={() => setMarginFilter("moderate")}
-                className={`px-2.5 py-1 rounded-lg font-semibold transition-all cursor-pointer flex items-center gap-1 ${
-                  marginFilter === "moderate"
+                className={`px-2.5 py-1 rounded-lg font-semibold transition-all cursor-pointer flex items-center gap-1 ${marginFilter === "moderate"
                     ? "bg-white text-amber-700 shadow-xs"
                     : "text-slate-600 hover:text-slate-900"
-                }`}
+                  }`}
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
                 Moderate (30-50%)
               </button>
               <button
                 onClick={() => setMarginFilter("loss")}
-                className={`px-2.5 py-1 rounded-lg font-semibold transition-all cursor-pointer flex items-center gap-1 ${
-                  marginFilter === "loss"
+                className={`px-2.5 py-1 rounded-lg font-semibold transition-all cursor-pointer flex items-center gap-1 ${marginFilter === "loss"
                     ? "bg-white text-rose-700 shadow-xs"
                     : "text-slate-600 hover:text-slate-900"
-                }`}
+                  }`}
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
                 Loss / At Risk (&lt;30%)

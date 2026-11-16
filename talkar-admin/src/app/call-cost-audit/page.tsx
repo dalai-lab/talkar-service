@@ -410,15 +410,15 @@ export default function CallCostAuditPage() {
       },
       ...(displayAudit?.post_call_cost_inr && displayAudit.post_call_cost_inr > 0
         ? [
-            {
-              id: "post_call",
-              label: "Post-Call & QA",
-              cost: displayAudit.post_call_cost_inr,
-              pct: (displayAudit.post_call_cost_inr / totalCost) * 100,
-              color: "#6366f1", // indigo
-              bg: "bg-indigo-500",
-            },
-          ]
+          {
+            id: "post_call",
+            label: "Post-Call & QA",
+            cost: displayAudit.post_call_cost_inr,
+            pct: (displayAudit.post_call_cost_inr / totalCost) * 100,
+            color: "#6366f1", // indigo
+            bg: "bg-indigo-500",
+          },
+        ]
         : []),
     ].filter((s) => s.cost > 0);
   }, [cb, totalCost, displayAudit?.post_call_cost_inr]);
@@ -518,33 +518,30 @@ export default function CallCostAuditPage() {
               <button
                 type="button"
                 onClick={() => setForexMode("88")}
-                className={`px-2.5 py-1 rounded-lg font-medium transition-all ${
-                  forexMode === "88"
+                className={`px-2.5 py-1 rounded-lg font-medium transition-all ${forexMode === "88"
                     ? "bg-white text-zinc-900 shadow-sm border border-zinc-200/80"
                     : "text-zinc-500 hover:text-zinc-800"
-                }`}
+                  }`}
               >
                 ₹88.00 (Base)
               </button>
               <button
                 type="button"
                 onClick={() => setForexMode("95.10")}
-                className={`px-2.5 py-1 rounded-lg font-medium transition-all ${
-                  forexMode === "95.10"
+                className={`px-2.5 py-1 rounded-lg font-medium transition-all ${forexMode === "95.10"
                     ? "bg-white text-zinc-900 shadow-sm border border-zinc-200/80"
                     : "text-zinc-500 hover:text-zinc-800"
-                }`}
+                  }`}
               >
                 ₹95.10 (Live)
               </button>
               <button
                 type="button"
                 onClick={() => setForexMode("custom")}
-                className={`px-2.5 py-1 rounded-lg font-medium transition-all ${
-                  forexMode === "custom"
+                className={`px-2.5 py-1 rounded-lg font-medium transition-all ${forexMode === "custom"
                     ? "bg-white text-zinc-900 shadow-sm border border-zinc-200/80"
                     : "text-zinc-500 hover:text-zinc-800"
-                }`}
+                  }`}
               >
                 Custom
               </button>
@@ -651,11 +648,10 @@ export default function CallCostAuditPage() {
                   <div
                     key={call.id}
                     onClick={() => setSelectedRunId(call.dograh_run_id)}
-                    className={`p-3 transition-all cursor-pointer relative ${
-                      isSelected
+                    className={`p-3 transition-all cursor-pointer relative ${isSelected
                         ? "bg-[#fe6905]/5 border-l-4 border-l-[#fe6905]"
                         : "hover:bg-zinc-50/80 border-l-4 border-l-transparent"
-                    }`}
+                      }`}
                   >
                     <div className="flex items-center justify-between mb-1">
                       <div className="flex items-center gap-2">
@@ -663,11 +659,10 @@ export default function CallCostAuditPage() {
                           #{call.dograh_run_id}
                         </span>
                         <span
-                          className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
-                            isConnected
+                          className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${isConnected
                               ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
                               : "bg-zinc-100 text-zinc-600 border border-zinc-200"
-                          }`}
+                            }`}
                         >
                           {isConnected ? "Connected" : "Unanswered"}
                         </span>
@@ -798,9 +793,8 @@ export default function CallCostAuditPage() {
                       Net Profit
                     </span>
                     <span
-                      className={`text-base font-black block ${
-                        (displayAudit.revenue_inr - totalCost) >= 0 ? "text-emerald-600" : "text-red-600"
-                      }`}
+                      className={`text-base font-black block ${(displayAudit.revenue_inr - totalCost) >= 0 ? "text-emerald-600" : "text-red-600"
+                        }`}
                     >
                       {inr(displayAudit.revenue_inr - totalCost)}
                     </span>
@@ -1115,11 +1109,10 @@ export default function CallCostAuditPage() {
                           {inr(simulation.simulated.total_cost_inr)}
                         </span>
                         <span
-                          className={`text-[10px] font-bold ${
-                            simulation.delta.total_cost_delta_inr <= 0
+                          className={`text-[10px] font-bold ${simulation.delta.total_cost_delta_inr <= 0
                               ? "text-emerald-400"
                               : "text-red-400"
-                          }`}
+                            }`}
                         >
                           {simulation.delta.total_cost_delta_inr >= 0 ? "+" : ""}
                           {inr(simulation.delta.total_cost_delta_inr)}
@@ -1134,11 +1127,10 @@ export default function CallCostAuditPage() {
                           {inr(simulation.simulated.profit_inr)}
                         </span>
                         <span
-                          className={`text-[10px] font-bold ${
-                            simulation.delta.profit_delta_inr >= 0
+                          className={`text-[10px] font-bold ${simulation.delta.profit_delta_inr >= 0
                               ? "text-emerald-400"
                               : "text-red-400"
-                          }`}
+                            }`}
                         >
                           {simulation.delta.profit_delta_inr >= 0 ? "+" : ""}
                           {inr(simulation.delta.profit_delta_inr)}
@@ -1153,11 +1145,10 @@ export default function CallCostAuditPage() {
                           {simulation.simulated.margin_pct.toFixed(1)}%
                         </span>
                         <span
-                          className={`text-[10px] font-bold ${
-                            simulation.delta.margin_pct_delta >= 0
+                          className={`text-[10px] font-bold ${simulation.delta.margin_pct_delta >= 0
                               ? "text-emerald-400"
                               : "text-red-400"
-                          }`}
+                            }`}
                         >
                           {simulation.delta.margin_pct_delta >= 0 ? "+" : ""}
                           {simulation.delta.margin_pct_delta.toFixed(1)}%
