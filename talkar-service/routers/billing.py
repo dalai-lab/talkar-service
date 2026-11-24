@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, text, or_, case
 from sqlalchemy.sql import func
 from db.session import get_db
-from db.models import Customer, Subscription, Wallet, WalletTransaction, CallLog, TransactionType, resolve_transaction_types
+from db.models import Customer, Subscription, Wallet, WalletTransaction, CallLog, Invoice, TransactionType, resolve_transaction_types
 from services import razorpay_client, billing_service, provisioning_service, notification_service
 from services.customer_auth import verify_customer_access
 from pydantic import BaseModel
