@@ -276,6 +276,13 @@ class AutomationAuditLog(Base):
     ip_address = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+class FiscalInvoiceCounter(Base):
+    __tablename__ = "fiscal_invoice_counters"
+
+    financial_year = Column(String(8), primary_key=True)
+    last_seq = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
 class Invoice(Base):
     __tablename__ = "invoices"
 
@@ -284,10 +291,33 @@ class Invoice(Base):
     sub_org_id = Column(Integer, ForeignKey("customers.id"), nullable=True, index=True)
     dograh_org_id = Column(Integer, nullable=True, index=True)
     wallet_transaction_id = Column(Integer, ForeignKey("wallet_transactions.id"), unique=True)
-    invoice_number = Column(Text, nullable=False, unique=True)
+    invoice_number = Column(Text, nullable=False, unique=True, index=True)
+    
+    # Financial breakdown in integer paise
+    subtotal_paise = Column(BigInteger, nullable=True)        # Net credits (e.g. 1000000)
+    tax_paise = Column(BigInteger, nullable=True)             # Total GST (e.g. 180000)
+    cgst_paise = Column(BigInteger, nullable=False, default=0)  # e.g. 90000 if intra-state
+    sgst_paise = Column(BigInteger, nullable=False, default=0)  # e.g. 90000 if intra-state
+    igst_paise = Column(BigInteger, nullable=False, default=0)  # e.g. 180000 if inter-state
+    total_paise = Column(BigInteger, nullable=True)           # Gross total (e.g. 1180000)
+    
+    # Legacy alias for backward compatibility (equal to gross total_paise)
     amount_paise = Column(BigInteger, nullable=False)
+    
+    # Compliance & GST Metadata
+    tax_rate_bps = Column(Integer, nullable=False, default=1800)  # 1800 bps = 18.00%
+    sac_code = Column(String(16), nullable=False, default="998313")
+    invoice_type = Column(String(32), nullable=False, default="tax_invoice") # tax_invoice | internal_debit_note | credit_note
+    place_of_supply = Column(String(64), nullable=True)        # e.g. "27-Maharashtra"
+    buyer_gstin = Column(String(15), nullable=True)
+    supplier_gstin = Column(String(15), nullable=False, default="")
+    
+    # E-Invoicing & Compliance Readiness
+    irn = Column(String(64), nullable=True)
+    signed_qr_code = Column(Text, nullable=True)
+    
     status = Column(Text, nullable=False, default="paid")
-    pdf_url = Column(Text)
+    pdf_url = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

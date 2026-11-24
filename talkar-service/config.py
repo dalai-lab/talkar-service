@@ -17,6 +17,10 @@ class Settings(BaseSettings):
             self.TALKAR_SMALLEST_KEY = self.TALKAR_SMALLEST_AI_KEY
         if not self.TALKAR_OPENAI_KEY and self.OPENAI_API_KEY:
             self.TALKAR_OPENAI_KEY = self.OPENAI_API_KEY
+        if not self.TALKAR_SARVAM_KEY and self.SARVAM_API_KEY:
+            self.TALKAR_SARVAM_KEY = self.SARVAM_API_KEY
+        if not self.SARVAM_API_KEY and self.TALKAR_SARVAM_KEY:
+            self.SARVAM_API_KEY = self.TALKAR_SARVAM_KEY
         return self
     
     # Razorpay Keys
@@ -36,6 +40,8 @@ class Settings(BaseSettings):
     TALKAR_DEEPGRAM_KEY: str = ""
     TALKAR_SMALLEST_AI_KEY: str = ""
     TALKAR_SMALLEST_KEY: str = ""
+    TALKAR_SARVAM_KEY: str = ""
+    SARVAM_API_KEY: str = ""
     TALKAR_PLIVO_AUTH_ID: str = ""
     TALKAR_PLIVO_AUTH_TOKEN: str = ""
     TALKAR_DEEPGRAM_PROJECT_ID: str = ""
@@ -44,6 +50,16 @@ class Settings(BaseSettings):
     VENDOR_BALANCE_MANUAL_REFRESH_COOLDOWN_SECONDS: int = 30
     # Admin auth
     TALKAR_ADMIN_JWT_SECRET: str = "change-me-in-production-admin-secret"
+
+    # Company Tax & Fiscal Identity (GST Invoicing)
+    TALKAR_COMPANY_NAME: str = "4THORBIT BUSINESS SOLUTIONS PVT LTD"
+    TALKAR_COMPANY_CIN: str = "U74999JH2022PTC018848"
+    TALKAR_COMPANY_GSTIN: str = "20AAACB1234A1Z5"
+    TALKAR_COMPANY_PAN: str = "AAACB1234A"
+    TALKAR_COMPANY_ADDRESS: str = "C/O Bundeshwari Devi, PN Bose Compound, Lalpur, Ranchi, Jharkhand 834001"
+    TALKAR_COMPANY_STATE_CODE: str = "20"
+    TALKAR_COMPANY_EMAIL: str = "it@4thorbit.in"
+    TALKAR_SAC_CODE: str = "998313"
 
     # Internal auth token for Dograh → Talkar billing calls
     TALKAR_BILLING_API_TOKEN: str = "change-me-in-production-billing-token"

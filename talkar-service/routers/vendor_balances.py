@@ -18,7 +18,7 @@ router = APIRouter(prefix="/admin/vendor-balances", tags=["Vendor Balances"])
 
 
 class ThresholdUpdateRequest(BaseModel):
-    vendor: str = Field(..., description="Provider name: plivo, deepgram, elevenlabs, smallest, or openai")
+    vendor: str = Field(..., description="Provider name: plivo, deepgram, elevenlabs, smallest, openai, or sarvam")
     warning_threshold: float = Field(..., ge=0, description="Warning threshold level")
     critical_threshold: float = Field(..., ge=0, description="Critical threshold level")
 
@@ -49,8 +49,8 @@ async def update_vendor_thresholds(
 ) -> dict[str, Any]:
     """Update custom warning and critical thresholds for a vendor."""
     vendor = request.vendor.lower().strip()
-    if vendor not in ("plivo", "deepgram", "elevenlabs", "smallest", "openai"):
-        raise HTTPException(status_code=400, detail="Invalid vendor name. Must be plivo, deepgram, elevenlabs, smallest, or openai")
+    if vendor not in ("plivo", "deepgram", "elevenlabs", "smallest", "openai", "sarvam"):
+        raise HTTPException(status_code=400, detail="Invalid vendor name. Must be plivo, deepgram, elevenlabs, smallest, openai, or sarvam")
 
     state = await db.get(VendorAlertState, vendor)
     if not state:

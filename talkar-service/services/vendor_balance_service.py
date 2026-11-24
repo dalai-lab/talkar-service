@@ -35,6 +35,7 @@ CONSOLE_URLS = {
     "elevenlabs": "https://elevenlabs.io/app/subscription",
     "smallest": "https://smallest.ai/dashboard",
     "openai": "https://platform.openai.com/settings/organization/billing/overview",
+    "sarvam": "https://dashboard.sarvam.ai",
 }
 
 DEFAULT_THRESHOLDS = {
@@ -43,6 +44,7 @@ DEFAULT_THRESHOLDS = {
     "elevenlabs": {"warning": 50000.0, "critical": 5000.0},
     "smallest": {"warning": 5.0, "critical": 1.0},
     "openai": {"warning": 20.0, "critical": 5.0},
+    "sarvam": {"warning": 500.0, "critical": 50.0},
 }
 
 
@@ -775,6 +777,129 @@ class VendorBalanceService:
                 checked_at=now,
             )
 
+    async def check_sarvam(self, warning_threshold: float = 500.0, critical_threshold: float = 50.0) -> VendorCheckResult:
+        api_key = (
+            getattr(settings, "TALKAR_SARVAM_KEY", "")
+            or getattr(settings, "SARVAM_API_KEY", "")
+            or os.getenv("TALKAR_SARVAM_KEY", "")
+            or os.getenv("SARVAM_API_KEY", "")
+            or os.getenv("SARVAM_KEY", "")
+        ).strip()
+        now = datetime.now(timezone.utc)
+
+        if not api_key:
+            api_key = await self._get_fallback_key_from_dograh("llm", "sarvam")
+        if not api_key:
+            api_key = await self._get_fallback_key_from_dograh("stt", "sarvam")
+
+        if not api_key:
+            return VendorCheckResult(
+                vendor="sarvam",
+                display_name="Sarvam AI",
+                units="credits",
+                status="not_configured",
+                error_message="TALKAR_SARVAM_KEY not configured",
+                console_url=CONSOLE_URLS["sarvam"],
+                warning_threshold=warning_threshold,
+                critical_threshold=critical_threshold,
+                checked_at=now,
+            )
+
+        client = await self._get_client()
+        headers = {
+            "api-subscription-key": api_key,
+            "Authorization": f"Bearer {api_key}",
+        }
+
+        try:
+            # Note: Sarvam does not provide a public REST API endpoint to query numeric wallet balance.
+            # (GET /v1/models is public and returns 200 even with an invalid key).
+            # To strictly verify authentication credentials and quota status without consuming tokens,
+            # we send a payload probe to /v1/chat/completions:
+            # - Invalid / missing key -> HTTP 403 (invalid_api_key_error)
+            # - Credits exhausted (0 balance) -> HTTP 402 (insufficient_quota_error)
+            # - Valid key with active credits -> HTTP 400 (invalid_request_error, zero tokens consumed)
+            probe_resp = await client.post(
+                "https://api.sarvam.ai/v1/chat/completions",
+                headers=headers,
+                json={},
+            )
+            if probe_resp.status_code == 400 and "invalid_request_error" in probe_resp.text:
+                return VendorCheckResult(
+                    vendor="sarvam",
+                    display_name="Sarvam AI",
+                    units="credits",
+                    status="healthy",
+                    error_message="Active Prepaid Credits • Verified via Sarvam Gateway",
+                    console_url=CONSOLE_URLS["sarvam"],
+                    warning_threshold=warning_threshold,
+                    critical_threshold=critical_threshold,
+                    checked_at=now,
+                )
+            elif probe_resp.status_code == 402:
+                # Sarvam returns 402 Insufficient Quota when prepaid credits are exhausted
+                return VendorCheckResult(
+                    vendor="sarvam",
+                    display_name="Sarvam AI",
+                    balance=0.0,
+                    units="credits",
+                    status="critical",
+                    error_message="Insufficient Quota / Credits Exhausted • Top up on dashboard.sarvam.ai",
+                    console_url=CONSOLE_URLS["sarvam"],
+                    warning_threshold=warning_threshold,
+                    critical_threshold=critical_threshold,
+                    checked_at=now,
+                )
+            elif probe_resp.status_code in (401, 403):
+                return VendorCheckResult(
+                    vendor="sarvam",
+                    display_name="Sarvam AI",
+                    units="credits",
+                    status="error",
+                    error_message=f"Authentication failed: Invalid Sarvam API key (HTTP {probe_resp.status_code})",
+                    console_url=CONSOLE_URLS["sarvam"],
+                    warning_threshold=warning_threshold,
+                    critical_threshold=critical_threshold,
+                    checked_at=now,
+                )
+            elif probe_resp.status_code == 200:
+                return VendorCheckResult(
+                    vendor="sarvam",
+                    display_name="Sarvam AI",
+                    units="credits",
+                    status="healthy",
+                    error_message="Active Prepaid Credits • Verified via Sarvam Gateway",
+                    console_url=CONSOLE_URLS["sarvam"],
+                    warning_threshold=warning_threshold,
+                    critical_threshold=critical_threshold,
+                    checked_at=now,
+                )
+            else:
+                return VendorCheckResult(
+                    vendor="sarvam",
+                    display_name="Sarvam AI",
+                    units="credits",
+                    status="error",
+                    error_message=f"HTTP {probe_resp.status_code}: {probe_resp.text[:150]}",
+                    console_url=CONSOLE_URLS["sarvam"],
+                    warning_threshold=warning_threshold,
+                    critical_threshold=critical_threshold,
+                    checked_at=now,
+                )
+        except Exception as e:
+            logger.error(f"[VENDOR BALANCE] Failed to check Sarvam AI: {e}")
+            return VendorCheckResult(
+                vendor="sarvam",
+                display_name="Sarvam AI",
+                units="credits",
+                status="error",
+                error_message=str(e),
+                console_url=CONSOLE_URLS["sarvam"],
+                warning_threshold=warning_threshold,
+                critical_threshold=critical_threshold,
+                checked_at=now,
+            )
+
     # -------------------------------------------------------------------------
     # Aggregation & Alert Pipeline
     # -------------------------------------------------------------------------
@@ -811,8 +936,10 @@ class VendorBalanceService:
             e_task = self.check_elevenlabs(thresholds["elevenlabs"]["warning"], thresholds["elevenlabs"]["critical"])
             s_task = self.check_smallest(thresholds["smallest"]["warning"], thresholds["smallest"]["critical"])
             o_task = self.check_openai(thresholds.get("openai", {}).get("warning", 20.0), thresholds.get("openai", {}).get("critical", 5.0))
+            sa_th = thresholds.get("sarvam", DEFAULT_THRESHOLDS["sarvam"])
+            sa_task = self.check_sarvam(sa_th["warning"], sa_th["critical"])
 
-            results: list[VendorCheckResult] = await asyncio.gather(p_task, d_task, e_task, s_task, o_task)
+            results: list[VendorCheckResult] = await asyncio.gather(p_task, d_task, e_task, s_task, o_task, sa_task)
 
             # 3. Store snapshots and process alert states
             now = datetime.now(timezone.utc)
@@ -988,13 +1115,14 @@ class VendorBalanceService:
             "elevenlabs": "ElevenLabs Voice TTS",
             "smallest": "Smallest AI (Waves TTS)",
             "openai": "OpenAI Intelligence",
+            "sarvam": "Sarvam AI",
         }
 
         try:
             async with AsyncSessionLocal() as session:
                 # Get latest snapshot per vendor
                 vendors_dict = {}
-                for vendor_name in ("plivo", "deepgram", "elevenlabs", "smallest", "openai"):
+                for vendor_name in ("plivo", "deepgram", "elevenlabs", "smallest", "openai", "sarvam"):
                     snap_res = await session.execute(
                         select(VendorBalanceSnapshot)
                         .where(VendorBalanceSnapshot.vendor == vendor_name)

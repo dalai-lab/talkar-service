@@ -11,6 +11,7 @@ import {
   Volume2,
   Zap,
   Brain,
+  Languages,
   RefreshCw,
   ExternalLink,
   ShieldAlert,
@@ -133,6 +134,7 @@ export function VendorBalancesWidget() {
   const elevenlabs = vendors["elevenlabs"];
   const smallest = vendors["smallest"];
   const openai = vendors["openai"];
+  const sarvam = vendors["sarvam"];
 
   const formatRelativeTime = (isoString?: string) => {
     if (!isoString) return "Never";
@@ -190,7 +192,7 @@ export function VendorBalancesWidget() {
       )}
 
       {/* Bento Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6 gap-4">
         {/* 1. Plivo */}
         <Card className="bg-white border border-slate-200/80 rounded-xl shadow-none flex flex-col justify-between">
           <CardHeader className="flex flex-row items-center justify-between pb-2 p-4">
@@ -511,6 +513,60 @@ export function VendorBalancesWidget() {
                 className="text-[11px] text-[#fe6905] hover:underline font-semibold flex items-center gap-1"
               >
                 OpenAI Billing <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* 6. Sarvam AI */}
+        <Card className="bg-white border border-slate-200/80 rounded-xl shadow-none flex flex-col justify-between">
+          <CardHeader className="flex flex-row items-center justify-between pb-2 p-4">
+            <div className="flex items-center gap-2">
+              <div className="p-1.5 rounded-lg bg-indigo-50 text-indigo-600 border border-indigo-100">
+                <Languages className="h-4 w-4" />
+              </div>
+              <div>
+                <CardTitle className="text-xs font-semibold text-slate-900">Sarvam AI</CardTitle>
+                <p className="text-[10px] text-slate-400">Indic LLM, STT & Bulbul TTS</p>
+              </div>
+            </div>
+            {getStatusBadge(sarvam?.status || "not_configured")}
+          </CardHeader>
+          <CardContent className="px-4 pb-4 pt-1 space-y-3">
+            <div>
+              <div className="text-2xl font-bold font-mono text-slate-900 tracking-tight flex items-baseline gap-1.5 flex-wrap">
+                <span>
+                  {sarvam?.balance !== null && sarvam?.balance !== undefined
+                    ? `${Number(sarvam.balance).toLocaleString()} credits`
+                    : sarvam?.status === "healthy" || sarvam?.status === "payg_active"
+                    ? "Active Credits"
+                    : sarvam?.status === "not_configured"
+                    ? "Not Configured"
+                    : "—"}
+                </span>
+                {sarvam?.balance !== null && sarvam?.balance !== undefined && (
+                  <span className="text-xs text-slate-400 font-sans font-normal">
+                    (₹{sarvam.balance})
+                  </span>
+                )}
+              </div>
+
+              <div className="text-[11px] text-slate-500 mt-1">
+                Unified Indian voice & language credit pool
+              </div>
+              <div className="text-[10px] text-slate-400 mt-0.5 truncate" title={sarvam?.error_message || "Active Indic Voice & Model Pool"}>
+                {sarvam?.error_message || "Active Indic Voice & Model Pool"}
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+              <a
+                href={sarvam?.console_url || "https://dashboard.sarvam.ai"}
+                target="_blank"
+                rel="noreferrer"
+                className="text-[11px] text-[#fe6905] hover:underline font-semibold flex items-center gap-1"
+              >
+                Sarvam Console <ExternalLink className="w-3 h-3" />
               </a>
             </div>
           </CardContent>

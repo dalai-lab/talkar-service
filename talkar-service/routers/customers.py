@@ -836,7 +836,8 @@ async def get_customer_status(
         "is_sub_org": bool(customer.billing_org_id),
         "account_type": "shared" if customer.billing_org_id else "independent",
         "billing_org_id": customer.billing_org_id,
-        "has_onboarding_form": bool(customer.onboarding_form)
+        "has_onboarding_form": bool(customer.onboarding_form),
+        "gstin": (customer.onboarding_form or {}).get("gstin") or (customer.onboarding_form or {}).get("tax_id"),
     }
     
     # Check provisioning state: MODEL_CONFIGURATION_V2 must exist in Dograh for the agent

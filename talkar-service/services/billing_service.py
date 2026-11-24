@@ -45,6 +45,12 @@ async def credit_wallet(
     razorpay_payment_id: str = None,
     sub_org_id: Optional[int] = None,
     dograh_org_id: Optional[int] = None,
+    tax_paise: Optional[int] = None,
+    gross_paise: Optional[int] = None,
+    buyer_gstin: Optional[str] = None,
+    buyer_state_code: Optional[str] = None,
+    is_sez: bool = False,
+    invoice_type: str = "tax_invoice",
 ) -> Wallet:
     """Safely adds balance to a customer's wallet and records the ledger entry."""
     wallet, master_id = await get_billing_wallet(db, customer_id, allow_suspended=True)
@@ -105,20 +111,57 @@ async def credit_wallet(
     )
     db.add(transaction)
     
-    if tx_type == "top_up":
+    if tx_type in ("top_up", TransactionType.TOP_UP.value):
         from db.models import Invoice
-        import datetime
-        import uuid
+        from services.invoice_service import generate_fiscal_invoice_number, compute_tax_breakdown
+        from config import settings
         await db.flush() # flush to get transaction.id
-        invoice_number = f"INV-{datetime.datetime.now().year}-{uuid.uuid4().hex[:6].upper()}"
+
+        # Calculate or use provided tax values
+        if gross_paise is None or tax_paise is None:
+            calc = compute_tax_breakdown(amount_paise, buyer_state_code, is_sez)
+            calc_tax_paise = calc["tax_paise"]
+            calc_gross_paise = calc["gross_payable_paise"]
+            cgst_paise = calc["cgst_paise"]
+            sgst_paise = calc["sgst_paise"]
+            igst_paise = calc["igst_paise"]
+        else:
+            calc_tax_paise = tax_paise
+            calc_gross_paise = gross_paise
+            supplier_state = getattr(settings, "TALKAR_COMPANY_STATE_CODE", "20")
+            resolved_state = str(buyer_state_code).strip() if buyer_state_code else ""
+            if not is_sez and resolved_state == supplier_state:
+                cgst_paise = calc_tax_paise // 2
+                sgst_paise = calc_tax_paise - cgst_paise
+                igst_paise = 0
+            else:
+                cgst_paise = 0
+                sgst_paise = 0
+                igst_paise = calc_tax_paise if not is_sez else 0
+
+        invoice_number = await generate_fiscal_invoice_number(db, invoice_type)
         invoice_customer_id = effective_sub_org_id if effective_sub_org_id is not None else master_id
+        pos = f"{buyer_state_code}-State" if buyer_state_code else getattr(settings, "TALKAR_COMPANY_STATE_CODE", "20")
+
         invoice = Invoice(
             customer_id=invoice_customer_id,
             sub_org_id=effective_sub_org_id,
             dograh_org_id=effective_dograh_org_id,
             wallet_transaction_id=transaction.id,
             invoice_number=invoice_number,
-            amount_paise=amount_paise,
+            subtotal_paise=amount_paise,
+            tax_paise=calc_tax_paise,
+            cgst_paise=cgst_paise,
+            sgst_paise=sgst_paise,
+            igst_paise=igst_paise,
+            total_paise=calc_gross_paise,
+            amount_paise=calc_gross_paise,
+            tax_rate_bps=0 if is_sez else 1800,
+            sac_code=getattr(settings, "TALKAR_SAC_CODE", "998313"),
+            invoice_type=invoice_type,
+            place_of_supply=pos,
+            buyer_gstin=buyer_gstin,
+            supplier_gstin=getattr(settings, "TALKAR_COMPANY_GSTIN", ""),
             status="paid"
         )
         db.add(invoice)
@@ -251,14 +294,31 @@ async def check_and_trigger_auto_recharge(db: AsyncSession, customer_id: int):
         _in_flight_recharges.add(master_id)
         logger.info(f"Wallet {wallet.id} below threshold ({wallet.balance_paise} < {wallet.auto_recharge_threshold_paise}). Triggering auto-recharge.")
         try:
+            from services.invoice_service import compute_tax_breakdown
+            base_credits_paise = wallet.auto_recharge_amount_paise
+            buyer_gstin = (master.onboarding_form or {}).get("gstin")
+            buyer_state_code = buyer_gstin[:2] if buyer_gstin else (master.onboarding_form or {}).get("state_code", "27")
+            is_sez = bool((master.onboarding_form or {}).get("is_sez", False))
+            tax_calc = compute_tax_breakdown(base_credits_paise, buyer_state_code, is_sez)
+            gross_charge_paise = tax_calc["gross_payable_paise"]
+            tax_paise = tax_calc["tax_paise"]
+
             order_id = None
             try:
                 receipt = f"rcpt_auto_{master_id}_{int(time.time())}"
                 order = await razorpay_client.create_topup_order(
-                    amount_paise=wallet.auto_recharge_amount_paise,
+                    amount_paise=gross_charge_paise,
                     receipt=receipt,
                     customer_id=master_id,
-                    extra_notes={"type": "auto_recharge", "customer_id": str(master_id)},
+                    extra_notes={
+                        "type": "auto_recharge",
+                        "customer_id": str(master_id),
+                        "base_credits_paise": str(base_credits_paise),
+                        "tax_paise": str(tax_paise),
+                        "buyer_gstin": buyer_gstin or "",
+                        "buyer_state_code": str(buyer_state_code),
+                        "is_sez": "true" if is_sez else "false",
+                    },
                 )
                 if order and order.get("id"):
                     order_id = order.get("id")
@@ -268,12 +328,17 @@ async def check_and_trigger_auto_recharge(db: AsyncSession, customer_id: int):
             charge = await razorpay_client.charge_saved_card(
                 customer_id=wallet.razorpay_customer_id,
                 payment_method_id=wallet.razorpay_payment_method_id,
-                amount_paise=wallet.auto_recharge_amount_paise,
+                amount_paise=gross_charge_paise,
                 email=master.contact_email if master else None,
                 contact=master.contact_phone if master else None,
                 order_id=order_id,
                 talkar_customer_id=master_id,
-                notes={"type": "auto_recharge", "customer_id": str(master_id)},
+                notes={
+                    "type": "auto_recharge",
+                    "customer_id": str(master_id),
+                    "base_credits_paise": str(base_credits_paise),
+                    "tax_paise": str(tax_paise),
+                },
             )
             if charge.get("status") in ("captured", "authorized"):
                 order_ref = order_id or charge.get("order_id")
@@ -282,10 +347,16 @@ async def check_and_trigger_auto_recharge(db: AsyncSession, customer_id: int):
                 credited_wallet = await credit_wallet(
                     db,
                     master_id,
-                    wallet.auto_recharge_amount_paise,
+                    base_credits_paise,
                     razorpay_order_id=txn_ref,
                     description="Auto-recharge: Low balance top-up via saved card",
                     razorpay_payment_id=payment_ref,
+                    tax_paise=tax_paise,
+                    gross_paise=gross_charge_paise,
+                    buyer_gstin=buyer_gstin,
+                    buyer_state_code=buyer_state_code,
+                    is_sez=is_sez,
+                    invoice_type="tax_invoice",
                 )
                 if credited_wallet:
                     wallet = credited_wallet
@@ -839,7 +910,9 @@ async def charge_initial_phone_number_lease(
     db.add(txn)
     await db.flush()
 
-    invoice_number = f"INV-{now.year}-{uuid.uuid4().hex[:6].upper()}"
+    from services.invoice_service import generate_fiscal_invoice_number
+    from config import settings
+    invoice_number = await generate_fiscal_invoice_number(db, "internal_debit_note")
     invoice_customer_id = sub_org_id if sub_org_id is not None else master_id
     invoice = Invoice(
         customer_id=invoice_customer_id,
@@ -847,7 +920,17 @@ async def charge_initial_phone_number_lease(
         dograh_org_id=dograh_org_id,
         wallet_transaction_id=txn.id,
         invoice_number=invoice_number,
+        subtotal_paise=cost_paise,
+        tax_paise=0,
+        cgst_paise=0,
+        sgst_paise=0,
+        igst_paise=0,
+        total_paise=cost_paise,
         amount_paise=cost_paise,
+        tax_rate_bps=0,
+        sac_code=getattr(settings, "TALKAR_SAC_CODE", "998313"),
+        invoice_type="internal_debit_note",
+        supplier_gstin=getattr(settings, "TALKAR_COMPANY_GSTIN", ""),
         status="paid"
     )
     db.add(invoice)
@@ -976,7 +1059,9 @@ async def bill_monthly_phone_number_leases(db: AsyncSession) -> dict:
             db.add(txn)
             await db.flush()
 
-            invoice_number = f"INV-{now.year}-{uuid.uuid4().hex[:6].upper()}"
+            from services.invoice_service import generate_fiscal_invoice_number
+            from config import settings
+            invoice_number = await generate_fiscal_invoice_number(db, "internal_debit_note")
             invoice_customer_id = sub_org_id if sub_org_id is not None else master_id
             invoice = Invoice(
                 customer_id=invoice_customer_id,
@@ -984,7 +1069,17 @@ async def bill_monthly_phone_number_leases(db: AsyncSession) -> dict:
                 dograh_org_id=cust.dograh_org_id,
                 wallet_transaction_id=txn.id,
                 invoice_number=invoice_number,
+                subtotal_paise=cost_paise,
+                tax_paise=0,
+                cgst_paise=0,
+                sgst_paise=0,
+                igst_paise=0,
+                total_paise=cost_paise,
                 amount_paise=cost_paise,
+                tax_rate_bps=0,
+                sac_code=getattr(settings, "TALKAR_SAC_CODE", "998313"),
+                invoice_type="internal_debit_note",
+                supplier_gstin=getattr(settings, "TALKAR_COMPANY_GSTIN", ""),
                 status="paid"
             )
             db.add(invoice)

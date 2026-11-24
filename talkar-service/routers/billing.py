@@ -60,7 +60,8 @@ router = APIRouter()
 
 class TopupRequest(BaseModel):
     dograh_org_id: int
-    amount_rupees: int
+    amount_rupees: float
+    buyer_gstin: Optional[str] = None
 
 class DograhQuotaRequest(BaseModel):
     organization_id: int
@@ -148,10 +149,56 @@ async def create_topup_order(
         if int(round(data.amount_rupees * 100)) < REGULAR_TOPUP_MIN_PAISE:
             raise HTTPException(400, f"Minimum top-up amount is ₹{REGULAR_TOPUP_MIN_PAISE // 100}.")
         
-    amount_paise = int(round(data.amount_rupees * 100))
-    order = await razorpay_client.create_topup_order(amount_paise, f"topup_{customer.id}", customer.id)
+    base_credits_paise = int(round(data.amount_rupees * 100))
+
+    from services.invoice_service import validate_gstin_format, compute_tax_breakdown
+    from sqlalchemy.orm.attributes import flag_modified
+    from config import settings
+
+    gstin_clean = data.buyer_gstin.strip().upper() if data.buyer_gstin else None
+    if gstin_clean:
+        if not validate_gstin_format(gstin_clean):
+            raise HTTPException(400, "Invalid GSTIN format. Expected 15-character Indian GSTIN.")
+        form = customer.onboarding_form or {}
+        form["gstin"] = gstin_clean
+        customer.onboarding_form = dict(form)
+        flag_modified(customer, "onboarding_form")
+        await db.commit()
+
+    onb = customer.onboarding_form or {}
+    buyer_gstin = gstin_clean or onb.get("gstin")
+    buyer_state = buyer_gstin[:2] if buyer_gstin else (onb.get("state_code") or onb.get("state") or getattr(settings, "TALKAR_COMPANY_STATE_CODE", "20"))
+    is_sez = bool(onb.get("is_sez", False))
+
+    tax_calc = compute_tax_breakdown(base_credits_paise, buyer_state, is_sez)
+    gross_payable_paise = tax_calc["gross_payable_paise"]
+    tax_paise = tax_calc["tax_paise"]
+
+    order = await razorpay_client.create_topup_order(
+        amount_paise=gross_payable_paise,
+        receipt=f"topup_{customer.id}_{int(time.time())}",
+        customer_id=customer.id,
+        extra_notes={
+            "customer_id": str(customer.id),
+            "dograh_org_id": str(data.dograh_org_id),
+            "base_credits_paise": str(base_credits_paise),
+            "tax_paise": str(tax_paise),
+            "buyer_gstin": buyer_gstin or "",
+            "buyer_state_code": str(buyer_state),
+            "is_sez": "true" if is_sez else "false",
+            "type": "wallet_topup",
+        }
+    )
     
-    return {"razorpay_order_id": order["id"], "amount_paise": amount_paise, "currency": "INR"}
+    return {
+        "razorpay_order_id": order["id"],
+        "amount_paise": gross_payable_paise,
+        "base_credits_paise": base_credits_paise,
+        "tax_paise": tax_paise,
+        "gross_payable_paise": gross_payable_paise,
+        "currency": "INR",
+        "breakdown": tax_calc["breakdown"]
+    }
 
 
 class UpgradeOrderRequest(BaseModel):
@@ -296,16 +343,31 @@ async def create_upgrade_order(
         }
     else:
         # Not enough balance, automatically generate a Razorpay order for the difference (Fix 23 / Issue 21)
-        shortfall_paise = activation_min - (wallet.balance_paise if wallet else 0)
-        if shortfall_paise > 0:
+        shortfall_base_paise = activation_min - (wallet.balance_paise if wallet else 0)
+        if shortfall_base_paise > 0:
+            from services.invoice_service import compute_tax_breakdown
+            from config import settings
+            onb = customer.onboarding_form or {}
+            buyer_gstin = onb.get("gstin")
+            buyer_state = buyer_gstin[:2] if buyer_gstin else (onb.get("state_code") or onb.get("state") or getattr(settings, "TALKAR_COMPANY_STATE_CODE", "20"))
+            is_sez = bool(onb.get("is_sez", False))
+            tax_calc = compute_tax_breakdown(shortfall_base_paise, buyer_state, is_sez)
+            gross_payable_paise = tax_calc["gross_payable_paise"]
+            tax_paise = tax_calc["tax_paise"]
+
             order_data = {
-                "amount": shortfall_paise,
+                "amount": gross_payable_paise,
                 "currency": "INR",
                 "receipt": f"upg_{customer.id}_{int(time.time())}",
                 "notes": {
                     "customer_id": str(customer.id),
                     "dograh_org_id": str(customer.dograh_org_id),
                     "requested_tier": data.requested_tier,
+                    "base_credits_paise": str(shortfall_base_paise),
+                    "tax_paise": str(tax_paise),
+                    "buyer_gstin": buyer_gstin or "",
+                    "buyer_state_code": str(buyer_state),
+                    "is_sez": "true" if is_sez else "false",
                     "purpose": "tier_upgrade"
                 }
             }
@@ -313,9 +375,14 @@ async def create_upgrade_order(
             return {
                 "status": "payment_required",
                 "razorpay_order_id": order["id"],
-                "amount_paise": shortfall_paise,
+                "amount_paise": gross_payable_paise,
+                "base_credits_paise": shortfall_base_paise,
+                "tax_paise": tax_paise,
+                "gross_payable_paise": gross_payable_paise,
                 "requested_tier": data.requested_tier,
-                "shortfall_inr": shortfall_paise // 100
+                "shortfall_inr": shortfall_base_paise // 100,
+                "gross_inr": gross_payable_paise // 100,
+                "breakdown": tax_calc["breakdown"],
             }
 
 
@@ -390,6 +457,7 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
 
     # 4. Authoritative amount verification from Razorpay (prevents client-tampered amounts)
     credit_amount_paise: int = 0
+    payment = None
     if not is_mock and razorpay_client.client:
         payment = await razorpay_client.fetch_payment(data.razorpay_payment_id)
         if payment:
@@ -418,15 +486,51 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
             raise HTTPException(400, "amount_paise must be a positive integer in mock mode")
         credit_amount_paise = data.amount_paise
 
-    # 5. Credit wallet with verified amount
+    verified_gross_paise = credit_amount_paise
+
+    # Extract base credits and tax breakdown from authoritative payment / order notes
+    notes = {}
+    if not is_mock and payment:
+        notes = payment.get("notes") or {}
+    if not notes and not is_mock and razorpay_client.client and data.razorpay_order_id:
+        try:
+            fetched_order = await razorpay_client.fetch_order(data.razorpay_order_id)
+            notes = (fetched_order or {}).get("notes") or {}
+        except Exception:
+            pass
+
+    onb = customer.onboarding_form or {}
+    buyer_gstin = notes.get("buyer_gstin") or onb.get("gstin")
+    buyer_state_code = notes.get("buyer_state_code") or (buyer_gstin[:2] if buyer_gstin else (onb.get("state_code") or onb.get("state")))
+    is_sez = notes.get("is_sez") == "true" or bool(onb.get("is_sez", False))
+
+    if notes.get("base_credits_paise"):
+        base_credits_paise = int(notes["base_credits_paise"])
+        tax_paise = int(notes.get("tax_paise", verified_gross_paise - base_credits_paise))
+    else:
+        # Fail-safe mathematical inverse (Edge Case 13)
+        if is_sez:
+            base_credits_paise = verified_gross_paise
+            tax_paise = 0
+        else:
+            base_credits_paise = int(round(verified_gross_paise / 1.18))
+            tax_paise = verified_gross_paise - base_credits_paise
+
+    # 5. Credit wallet with BASE CREDITS ONLY
     is_already_processed = False
     try:
         wallet = await billing_service.credit_wallet(
             db,
             customer.id,
-            credit_amount_paise,
+            base_credits_paise,
             razorpay_order_id=data.razorpay_order_id or data.razorpay_payment_id,
             razorpay_payment_id=data.razorpay_payment_id,
+            tax_paise=tax_paise,
+            gross_paise=verified_gross_paise,
+            buyer_gstin=buyer_gstin,
+            buyer_state_code=buyer_state_code,
+            is_sez=is_sez,
+            invoice_type="tax_invoice",
         )
     except Exception as e:
         if "idx_wallet_transactions_razorpay" in str(e).lower() or "unique constraint" in str(e).lower() or "duplicate key" in str(e).lower():
@@ -687,7 +791,7 @@ async def confirm_topup(data: ConfirmTopupRequest, db: AsyncSession = Depends(ge
 
     from services.notification_service import notify_customer_topup_successful
     if not is_already_processed:
-        await notify_customer_topup_successful(customer.id, credit_amount_paise, wallet.balance_paise if wallet else 0)
+        await notify_customer_topup_successful(customer.id, base_credits_paise, wallet.balance_paise if wallet else 0)
 
     return {"status": "already_processed" if is_already_processed else "ok", "new_balance_paise": wallet.balance_paise if wallet else 0}
 
@@ -802,13 +906,38 @@ async def razorpay_webhook(request: Request, db: AsyncSession = Depends(get_db))
             if customer_id:
                 customer_id = int(customer_id)
                 topup_ref = order_id or payment_id
+
+                cust_res = await db.execute(select(Customer).where(Customer.id == customer_id))
+                topup_customer = cust_res.scalar_one_or_none()
+                onb = topup_customer.onboarding_form or {} if topup_customer else {}
+                buyer_gstin = notes.get("buyer_gstin") or onb.get("gstin")
+                buyer_state_code = notes.get("buyer_state_code") or (buyer_gstin[:2] if buyer_gstin else (onb.get("state_code") or onb.get("state")))
+                is_sez = notes.get("is_sez") == "true" or bool(onb.get("is_sez", False))
+
+                if notes.get("base_credits_paise"):
+                    base_credits_paise = int(notes["base_credits_paise"])
+                    tax_paise = int(notes.get("tax_paise", amount_paise - base_credits_paise))
+                else:
+                    if is_sez:
+                        base_credits_paise = amount_paise
+                        tax_paise = 0
+                    else:
+                        base_credits_paise = int(round(amount_paise / 1.18))
+                        tax_paise = amount_paise - base_credits_paise
+
                 try:
                     await billing_service.credit_wallet(
                         db,
                         customer_id,
-                        amount_paise,
+                        base_credits_paise,
                         razorpay_order_id=topup_ref,
                         razorpay_payment_id=payment_id,
+                        tax_paise=tax_paise,
+                        gross_paise=amount_paise,
+                        buyer_gstin=buyer_gstin,
+                        buyer_state_code=buyer_state_code,
+                        is_sez=is_sez,
+                        invoice_type="tax_invoice",
                     )
                 except Exception as e:
                     if "idx_wallet_transactions_razorpay" in str(e).lower() or "unique constraint" in str(e).lower() or "duplicate key" in str(e).lower():
@@ -1084,6 +1213,79 @@ async def razorpay_webhook(request: Request, db: AsyncSession = Depends(get_db))
                             await sync_wallet_block_policy(db, cust.id)
                         except Exception as e:
                             logger.error(f"Failed to sync wallet block policy after top-up for {cust.id}: {e}")
+
+    elif event_type in ("refund.processed", "payment.refunded"):
+        refund_entity = event.get("payload", {}).get("refund", {}).get("entity", {})
+        payment_id = refund_entity.get("payment_id")
+        refund_amount_paise = refund_entity.get("amount")
+
+        if payment_id and refund_amount_paise:
+            inv_res = await db.execute(
+                select(Invoice, WalletTransaction)
+                .join(WalletTransaction, WalletTransaction.id == Invoice.wallet_transaction_id)
+                .where(or_(
+                    WalletTransaction.razorpay_order_id == payment_id,
+                    Invoice.wallet_transaction_id.in_(
+                        select(WalletTransaction.id).where(WalletTransaction.razorpay_order_id == payment_id)
+                    )
+                ))
+            )
+            row = inv_res.first()
+            if row:
+                orig_invoice, orig_txn = row
+                if orig_invoice.total_paise and orig_invoice.subtotal_paise:
+                    base_refund_paise = int(round(orig_invoice.subtotal_paise * (refund_amount_paise / orig_invoice.total_paise)))
+                    tax_refund_paise = refund_amount_paise - base_refund_paise
+                else:
+                    base_refund_paise = int(round(refund_amount_paise / 1.18))
+                    tax_refund_paise = refund_amount_paise - base_refund_paise
+
+                await db.execute(
+                    update(Wallet)
+                    .where(Wallet.customer_id == orig_txn.customer_id)
+                    .values(balance_paise=Wallet.balance_paise - base_refund_paise)
+                )
+
+                refund_txn = WalletTransaction(
+                    customer_id=orig_txn.customer_id,
+                    sub_org_id=orig_txn.sub_org_id,
+                    dograh_org_id=orig_txn.dograh_org_id,
+                    type=TransactionType.REFUND.value,
+                    amount_paise=-base_refund_paise,
+                    description=f"Refund for invoice {orig_invoice.invoice_number}",
+                    razorpay_order_id=refund_entity.get("id") or f"ref_{payment_id}"
+                )
+                db.add(refund_txn)
+                await db.flush()
+
+                from services.invoice_service import generate_fiscal_invoice_number
+                cn_number = await generate_fiscal_invoice_number(db, "credit_note")
+
+                ratio = refund_amount_paise / (orig_invoice.total_paise or refund_amount_paise)
+                credit_note = Invoice(
+                    customer_id=orig_invoice.customer_id,
+                    sub_org_id=orig_invoice.sub_org_id,
+                    dograh_org_id=orig_invoice.dograh_org_id,
+                    wallet_transaction_id=refund_txn.id,
+                    invoice_number=cn_number,
+                    subtotal_paise=-base_refund_paise,
+                    tax_paise=-tax_refund_paise,
+                    cgst_paise=-int(round((orig_invoice.cgst_paise or 0) * ratio)),
+                    sgst_paise=-int(round((orig_invoice.sgst_paise or 0) * ratio)),
+                    igst_paise=-int(round((orig_invoice.igst_paise or 0) * ratio)),
+                    total_paise=-refund_amount_paise,
+                    amount_paise=-refund_amount_paise,
+                    tax_rate_bps=orig_invoice.tax_rate_bps or 1800,
+                    sac_code=orig_invoice.sac_code or "998313",
+                    invoice_type="credit_note",
+                    place_of_supply=orig_invoice.place_of_supply,
+                    buyer_gstin=orig_invoice.buyer_gstin,
+                    supplier_gstin=orig_invoice.supplier_gstin,
+                    status="refunded"
+                )
+                db.add(credit_note)
+                await db.commit()
+                logger.info(f"Processed refund {refund_entity.get('id')} for payment {payment_id}. Created credit note {cn_number}.")
 
     return {"status": "ok"}
 
@@ -1802,6 +2004,7 @@ async def create_add_card_session(
         "amount_paise": amount_paise,
         "razorpay_order_id": order_id,
         "razorpay_customer_id": wallet.razorpay_customer_id,
+        "max_amount_paise": 10000000,
     }
 
 class ConfirmAddCardRequest(BaseModel):

@@ -1,1 +1,5 @@
 DNS_AND_HOSTING_STRATEGY.md
+.env
+.env.*
+*.env
+!.env.example

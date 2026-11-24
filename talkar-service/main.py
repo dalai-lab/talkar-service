@@ -186,6 +186,44 @@ async def lifespan(app: FastAPI):
                     ('smallest', 'healthy', 500, 50)
                 ON CONFLICT (vendor) DO NOTHING;
             """))
+
+            # Migration v9: Tax-Exclusive GST Invoicing Engine & Fiscal Counters
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS fiscal_invoice_counters (
+                    financial_year VARCHAR(8) PRIMARY KEY,
+                    last_seq INTEGER NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                );
+            """))
+
+            await conn.execute(text("""
+                ALTER TABLE invoices 
+                    ADD COLUMN IF NOT EXISTS subtotal_paise BIGINT,
+                    ADD COLUMN IF NOT EXISTS tax_paise BIGINT,
+                    ADD COLUMN IF NOT EXISTS cgst_paise BIGINT DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS sgst_paise BIGINT DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS igst_paise BIGINT DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS total_paise BIGINT,
+                    ADD COLUMN IF NOT EXISTS tax_rate_bps INTEGER DEFAULT 1800,
+                    ADD COLUMN IF NOT EXISTS sac_code VARCHAR(16) DEFAULT '998313',
+                    ADD COLUMN IF NOT EXISTS invoice_type VARCHAR(32) DEFAULT 'tax_invoice',
+                    ADD COLUMN IF NOT EXISTS place_of_supply VARCHAR(64),
+                    ADD COLUMN IF NOT EXISTS buyer_gstin VARCHAR(15),
+                    ADD COLUMN IF NOT EXISTS supplier_gstin VARCHAR(15) DEFAULT '',
+                    ADD COLUMN IF NOT EXISTS irn VARCHAR(64),
+                    ADD COLUMN IF NOT EXISTS signed_qr_code TEXT;
+            """))
+
+            await conn.execute(text("""
+                UPDATE invoices 
+                SET 
+                  total_paise = amount_paise,
+                  subtotal_paise = ROUND(amount_paise / 1.18),
+                  tax_paise = amount_paise - ROUND(amount_paise / 1.18),
+                  igst_paise = amount_paise - ROUND(amount_paise / 1.18),
+                  invoice_type = 'tax_invoice'
+                WHERE subtotal_paise IS NULL;
+            """))
     except Exception as e:
         _startup_log.critical(f"FATAL: Database migration / backfill failed on startup: {e}", exc_info=True)
         if is_prod:
